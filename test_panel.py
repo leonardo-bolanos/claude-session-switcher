@@ -23,14 +23,18 @@ El tamaño del pty se fija con TIOCSWINSZ: sin eso el viewport queda diminuto y 
 que faltan lineas que si estan.
 """
 
+import atexit
 import fcntl
+import itertools
 import os
 import pty
 import re
 import select
+import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import unittest
@@ -56,7 +60,7 @@ CABECERA_GRUPO = 2
 HUECO = 11
 
 ARRANQUE = f'''
-import datetime, importlib.machinery, importlib.util, sys
+import datetime, importlib.machinery, importlib.util, os, sys
 cargador = importlib.machinery.SourceFileLoader("ccl_mod", {_CCL!r})
 ccl = importlib.util.module_from_spec(
     importlib.util.spec_from_loader("ccl_mod", cargador))
@@ -66,7 +70,10 @@ ahora = datetime.datetime.now(datetime.timezone.utc)
 
 def fila(num, nombre, horas):
     marca = (ahora - datetime.timedelta(hours=horas)).isoformat().replace("+00:00", "Z")
-    return {{"num": num, "name": nombre, "account": "", "repo": "repo", "cwd": "/x",
+    # cwd DISTINTO por sesion: las notas se guardan por directorio, asi que con un cwd
+    # comun las cuatro compartirian nota y no se podria probar el caso normal
+    return {{"num": num, "name": nombre, "account": "", "repo": "repo",
+            "cwd": "/x/" + nombre,
             "kind": "interactive", "status": "idle", "sessionId": "sid-" + nombre,
             "pid": num, "tty": "", "iterm": None, "ts": marca, "branch": "main",
             "model": "sonnet-5", "effort": None, "title": None,
@@ -74,10 +81,28 @@ def fila(num, nombre, horas):
 
 FIJAS = [fila(i + 1, n, i + 1) for i, n in enumerate({NOMBRES!r})]
 
-ccl.collect = lambda: list(FIJAS)
+def coleccionar():
+    # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
+    # filas. Hay que replicar ese paso aqui o la nota no reaparece al reabrir el panel:
+    # se veria solo la copia en memoria del panel que la escribio.
+    notas = ccl.load_notes()
+    filas = [dict(f) for f in FIJAS]
+    for f in filas:
+        f["note"] = notas.get(f["cwd"], "")
+    return filas
+
+ccl.collect = coleccionar
 ccl.get_iterm_map = lambda: {{}}     # NADIE toca ventanas
 ccl.REFRESH_SECONDS = 9999           # sin refresco: el layout no se mueve bajo los pies
 ccl.REFRESH_IDLE = 9999
+# Las notas SI se escriben en disco desde el panel: hay que desviarlas a un temporal o
+# los tests ensuciarian el ~/.claude de quien los ejecute. Se exige la variable en vez de
+# tirar de un valor por defecto: un descuido tiene que fallar ruidosamente aqui, no
+# acabar escribiendo en la configuracion de verdad.
+_notas = os.environ.get("CCL_TEST_NOTES")
+if not _notas:
+    raise SystemExit("falta CCL_TEST_NOTES: el test escribiria en el ~/.claude real")
+ccl.NOTES_FILE = _notas
 sys.exit(ccl.main())
 '''
 
@@ -93,18 +118,28 @@ def press(fila, col=10):
 FACTOR_ESPERA = float(os.environ.get("CCL_TEST_LENTO", "1"))
 
 
+_NOTAS_TMP = tempfile.mkdtemp(prefix="ccl-test-notas-")
+atexit.register(shutil.rmtree, _NOTAS_TMP, True)
+_contador_notas = itertools.count()
+
+
 class Panel:
     """Arranca el panel en un pty, manda eventos y recoge lo que pinta."""
 
     FILAS, COLUMNAS = 30, 100
 
-    def __init__(self, entorno=None, arranque=0.9, por_evento=0.55):
+    def __init__(self, entorno=None, arranque=0.9, por_evento=0.55, notas=None):
         arranque *= FACTOR_ESPERA
         self.por_evento = por_evento * FACTOR_ESPERA
+        # Un archivo de notas propio por panel, salvo que el test pase uno para
+        # comprobar que la nota sobrevive de un arranque al siguiente.
+        self.notas = notas or os.path.join(
+            _NOTAS_TMP, f"notas-{next(_contador_notas)}.json")
         self.trozos = []
         self.pid, self.fd = pty.fork()
         if self.pid == 0:                                  # hijo: es el panel
             os.environ["TERM"] = "xterm-256color"
+            os.environ["CCL_TEST_NOTES"] = self.notas
             os.environ.update(entorno or {})
             os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
@@ -406,10 +441,14 @@ class TestSinPanel(unittest.TestCase):
     """Los caminos no interactivos se prueban directo, sin pty."""
 
     def _correr(self, *args):
+        # CCL_TEST_NOTES tambien aqui: aunque estos caminos no escriban notas, si las
+        # LEEN, y sin desviarlo saldrian las notas reales del usuario en la salida.
+        entorno = dict(os.environ,
+                       CCL_TEST_NOTES=os.path.join(_NOTAS_TMP, "sin-panel.json"))
         return subprocess.run([sys.executable, "-c", ARRANQUE.replace(
             "sys.exit(ccl.main())",
             "sys.argv = ['ccl'] + %r\nsys.exit(ccl.main())" % list(args),
-        )], capture_output=True, text=True, timeout=30)
+        )], capture_output=True, text=True, timeout=30, env=entorno)
 
     def test_list_no_lleva_codigos_de_color(self):
         """Por tuberia va sin color, para poder pegarlo: `ccl --list | pbcopy`."""
@@ -438,6 +477,94 @@ class TestSinPanel(unittest.TestCase):
         r = self._correr("--help")
         self.assertEqual(r.returncode, 0)
         self.assertIn("panel interactivo", r.stdout)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestNotas(unittest.TestCase):
+    """
+    La nota se escribe con Ctrl-N y se guarda por repo. Lo que hay que vigilar de un
+    modo de edicion es que **se quede el teclado**: si no, en medio de la frase una 'q'
+    cierra el panel y un digito arranca el selector por numero.
+    """
+
+    def test_ctrl_n_abre_el_editor_con_el_repo_en_el_prompt(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e")
+            self.assertIn("nota de", p.barra())
+            self.assertIn("enter guarda", p.barra())
+
+    def test_escribir_y_guardar(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"backend de facturacion", b"\r")
+            self.assertIn("✎ backend de facturacion", p.ultima())
+            self.assertIn("guardada", p.aviso())
+
+    def test_esc_cancela_sin_guardar(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"esto no deberia quedar", b"\033")
+            self.assertNotIn("esto no deberia quedar", p.ultima())
+            self.assertIn("sin cambios", p.aviso())
+
+    def test_la_nota_sobrevive_a_cerrar_el_panel(self):
+        """Es la razon de guardarla por repo y no por sesion."""
+        archivo = os.path.join(_NOTAS_TMP, "compartido.json")
+        with con_panel(notas=archivo) as p:
+            p.enviar(b"\x0e", b"nota persistente", b"\r")
+        with con_panel(notas=archivo) as q:
+            self.assertIn("✎ nota persistente", q.ultima())
+
+    def test_una_nota_vacia_la_borra(self):
+        archivo = os.path.join(_NOTAS_TMP, "borrado.json")
+        with con_panel(notas=archivo) as p:
+            p.enviar(b"\x0e", b"temporal", b"\r")
+            self.assertIn("✎ temporal", p.ultima())
+            p.enviar(b"\x0e", b"\x7f" * 8, b"\r")     # borrar las 8 letras y guardar
+            # "✎ temporal", no solo "✎": el aviso de la cabecera tambien lleva el simbolo
+            self.assertNotIn("✎ temporal", p.ultima())
+            self.assertIn("borrada", p.aviso())
+
+    def test_corrige_la_nota_que_ya_habia(self):
+        """Ctrl-N arranca con el texto actual: corregir no es reescribir."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"bakend", b"\r")
+            p.enviar(b"\x0e", b"\x7f" * 5, b"ackend")   # bakend -> backend
+            self.assertIn("backend", p.barra())
+
+    def test_la_q_no_cierra_el_panel_mientras_escribes(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"quedarse aqui", b"\r")
+            self.assertIn("✎ quedarse aqui", p.ultima(),
+                          "la 'q' cerro el panel en medio de la nota")
+
+    def test_un_digito_no_arranca_el_selector_mientras_escribes(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"sprint 3", b"\r")
+            self.assertIn("✎ sprint 3", p.ultima())
+            self.assertNotIn("enter confirma", p.barra())
+
+    def test_se_puede_escribir_con_acentos(self):
+        """
+        Las teclas se leen byte a byte, asi que un caracter multibyte hay que juntarlo:
+        antes "facturación" se guardaba como "facturacin". En un proyecto en español, y
+        para un texto que escribe el usuario a mano, no es un detalle.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0e", "facturación ñ".encode(), b"\r")
+            self.assertIn("✎ facturación ñ", p.ultima())
+
+    def test_se_puede_filtrar_por_la_nota(self):
+        """Media razon para escribirla: encontrar `repo` buscando "facturacion"."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"facturacion", b"\r")
+            p.enviar(b"factur")
+            self.assertIn("1 coincide", p.barra())
+
+    def test_no_escribe_en_el_claude_del_usuario(self):
+        """Guardarrail: el panel escribe notas de verdad en disco."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"nota de prueba", b"\r")
+            self.assertTrue(os.path.exists(p.notas))
+            self.assertTrue(p.notas.startswith(_NOTAS_TMP))
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

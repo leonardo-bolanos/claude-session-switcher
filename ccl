@@ -47,6 +47,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")
+NOTES_FILE = os.path.join(HOME, ".claude", "ccl-notes.json")
+NOTE_MAX = 200            # la linea se recorta al pintar; esto es solo para no guardar
+                          # un pegote de miles de caracteres en el JSON
 TAIL_BYTES = 65536
 REFRESH_SECONDS = 4      # refresco normal, mientras interactuas
 REFRESH_IDLE = 20        # si no tocas nada, se relaja a esto
@@ -447,6 +450,50 @@ def assign_numbers(sessions):
     return index
 
 
+# ─────────────────────────── notas personales ───────────────────────────
+
+
+def load_notes():
+    """
+    {cwd: nota} — las notas que has escrito tu, no algo que venga de Claude Code.
+
+    Van por **directorio**, no por sessionId: los sessionId cambian cada vez que
+    reinicias Claude Code, asi que una nota atada a la sesion se quedaria huerfana justo
+    cuando mas la necesitas. El precio es que dos sesiones del mismo repo comparten nota.
+    """
+    try:
+        with open(NOTES_FILE) as fh:
+            datos = json.load(fh)
+    except Exception:
+        return {}       # sin notas, o el archivo esta corrupto: no es motivo de error
+    if not isinstance(datos, dict):
+        return {}
+    return {k: v for k, v in datos.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def save_note(cwd, nota):
+    """
+    Guarda la nota de un directorio, o la borra si queda vacia. Devuelve la nota final.
+
+    No purga las notas de directorios que ya no existen: un disco externo desmontado, o
+    un repo movido de sitio, borraria notas que el usuario escribio a mano. El archivo
+    es de unos pocos KB aunque acumule.
+    """
+    notas = load_notes()
+    nota = " ".join(str(nota).split())[:NOTE_MAX]   # una linea, sin espacios dobles
+    if nota:
+        notas[cwd] = nota
+    else:
+        notas.pop(cwd, None)
+    try:
+        os.makedirs(os.path.dirname(NOTES_FILE), exist_ok=True)
+        with open(NOTES_FILE, "w") as fh:
+            json.dump(notas, fh, indent=2, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        pass    # sin persistencia se pierde al salir, pero el panel sigue funcionando
+    return nota
+
+
 # ─────────────────────────────── formato ───────────────────────────────
 
 
@@ -490,6 +537,7 @@ def short_model(m):
 
 def build(sessions, ttys, iterm, numbers):
     rows = []
+    notas = load_notes()      # una lectura por refresco: el archivo es diminuto
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
@@ -511,6 +559,7 @@ def build(sessions, ttys, iterm, numbers):
             "effort": info.get("effort"),
             "title": info.get("title"),
             "prompt": info.get("prompt"),
+            "note": notas.get(s["cwd"], ""),
             "startedAt": s.get("startedAt", 0),
         })
     return rows
@@ -522,11 +571,16 @@ def sort_key(r):
 
 
 def matches(row, query):
-    """Coincidencia laxa: sin acentos, sin mayusculas, sobre nombre + repo + rama."""
+    """
+    Coincidencia laxa: sin acentos, sin mayusculas, sobre nombre, repo, rama, cuenta y
+    **tu nota** — que es media razon para escribirla: poner "facturacion" a un repo que
+    se llama `web-app` y poder encontrarlo por esa palabra.
+    """
     if not query:
         return True
     heno = strip_accents(" ".join(str(row.get(k) or "")
-                                  for k in ("name", "repo", "branch", "account")).lower())
+                                  for k in ("name", "repo", "branch", "account",
+                                            "note")).lower())
     return all(t in heno for t in strip_accents(query.lower()).split())
 
 
@@ -599,8 +653,12 @@ def main_line(r, show_account=False):
 
 
 def detail_line(r, width=None):
-    """Rama · modelo · effort · ultimo prompt. Cada pieza con su color."""
-    meta = [x for x in (GREY(r["branch"]) if r["branch"] else "",
+    """Tu nota · rama · modelo · effort · ultimo prompt. Cada pieza con su color."""
+    # La nota va PRIMERA y en su propio color: es lo unico de la linea que escribiste tu,
+    # y puesta al final la habria comido el recorte cuando el prompt es largo.
+    nota = CYAN("✎ " + r["note"]) if r.get("note") else ""
+    meta = [x for x in (nota,
+                        GREY(r["branch"]) if r["branch"] else "",
                         color_model(r["model"]),
                         color_effort(r["effort"])) if x]
     out = DIM(" · ").join(meta)
@@ -706,7 +764,16 @@ def read_key(timeout=None):
         tty.setraw(fd, termios.TCSANOW)
         if timeout is not None and not select.select([fd], [], [], timeout)[0]:
             return None
-        ch = os.read(fd, 1).decode("utf-8", "ignore")
+        crudo = os.read(fd, 1)
+        if crudo and crudo[0] >= 0xC0:
+            # UTF-8 multibyte: cuantos bytes son lo dice el primero. Sin juntarlos, leer
+            # de a un byte parte el caracter y `decode(errors="ignore")` lo tira entero:
+            # no se podian escribir acentos ni ñ, ni al filtrar ni en una nota.
+            faltan = 1 if crudo[0] < 0xE0 else (2 if crudo[0] < 0xF0 else 3)
+            while faltan and select.select([fd], [], [], 0.05)[0]:
+                crudo += os.read(fd, 1)
+                faltan -= 1
+        ch = crudo.decode("utf-8", "ignore")
         if ch == "\x1b":  # secuencia de escape: flechas, Alt-<digito> o Esc suelto
             if not select.select([fd], [], [], 0.05)[0]:
                 return "esc"
@@ -737,6 +804,8 @@ def read_key(timeout=None):
             return "q"
         if ch == "\x12":            # Ctrl-R: refrescar
             return "refresh"
+        if ch == "\x0e":            # Ctrl-N: escribir la nota de este repo
+            return "note"
         if ch == "\x7f":
             return "back"
         return ch
@@ -824,8 +893,15 @@ HELP = [
         ("ccl --list",  "lista sin panel ni colores, se queda en pantalla"),
         ("",            "ccl --list | pbcopy copia todo de una vez"),
     ]),
+    ("tu nota en una sesión", [
+        ("Ctrl-N",     "escribir o corregir la nota de este repo"),
+        ("enter",      "guardar · una nota vacía la borra · esc cancela"),
+        ("",           "va por REPO, no por sesión: sigue ahí cuando reinicies"),
+        ("",           "Claude Code, y la comparten las sesiones del mismo repo"),
+        ("",           "también se busca por ella al filtrar"),
+    ]),
     ("filtrar", [
-        ("cualquier letra", "empieza a filtrar por nombre, repo, rama o cuenta"),
+        ("cualquier letra", "empieza a filtrar por nombre, repo, rama, cuenta o nota"),
         ("",           "ignora mayúsculas y acentos; varios términos se combinan"),
         ("⌫",          "borrar la última letra"),
         ("esc",        "limpiar el filtro"),
@@ -932,6 +1008,7 @@ def interactive(feed):
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = lines[pickable[0]][2]["sessionId"] if pickable else None
     typed, top, flash, query = "", 0, "", ""
+    editando = None   # None = no estas escribiendo una nota; un str = el texto en curso
     last_cols = cols0
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
     requery = False  # fuerza reconstruir la vista tras tocar el filtro
@@ -959,6 +1036,11 @@ def interactive(feed):
                 dirty = True
 
             if not pickable:
+                # Aqui no hay fila sobre la que anotar, asi que se sale del editor. Sin
+                # esto, si el filtro (o la muerte de la ultima sesion) deja la lista
+                # vacia mientras escribes, `editando` se queda con el texto viejo y el
+                # editor reaparece solo cuando vuelva a haber filas.
+                editando = None
                 if query:
                     # hay sesiones, solo que ninguna casa: hay que poder seguir
                     # editando el filtro, no solo salir
@@ -1057,8 +1139,15 @@ def interactive(feed):
 
                 hint = (DIM("↑↓") + " mover  " + DIM("enter") + " abrir  "
                         + CYAN("⌥1-9") + DIM(" esperando  ")
+                        + CYAN("^N") + DIM(" nota  ")
                         + DIM("escribe") + " filtrar  " + CYAN("?") + DIM(" ayuda"))
-                if typed:
+                if editando is not None:
+                    # el cursor ▏ hace falta: sin el, una nota vacia no se distingue de
+                    # "no estoy en modo edicion" y parece que la tecla no hizo nada
+                    hint = (DIM(f"✎ nota de {os.path.basename(sel_row['cwd'])}: ")
+                            + CYAN(BOLD(editando)) + CYAN("▏")
+                            + DIM("  enter guarda · vacía borra · esc cancela"))
+                elif typed:
                     nm = by_num.get(int(typed))
                     hint = (CYAN(BOLD(f"→ [{typed}] {nm['name']}")) if nm
                             else RED(f"[{typed}] no existe")) + DIM("  enter confirma · ⌫ borra")
@@ -1084,6 +1173,28 @@ def interactive(feed):
             dirty = True   # cualquier tecla cambia algo que hay que repintar
             feed.touch()   # vuelve al refresco rapido
             flash = ""
+
+            # Escribiendo una nota, el teclado es del editor: va PRIMERO, o 'q' saldria
+            # del panel y los digitos harian de selector en medio de la frase.
+            if editando is not None:
+                objetivo = lines[cl][2]
+                if k == "enter":
+                    nota = save_note(objetivo["cwd"], editando)
+                    # aplicarla ya en memoria: si no, no se ve hasta el refresco (4 s) y
+                    # parece que no se guardo. Todas las filas del mismo repo la comparten.
+                    for r in rows:
+                        if r["cwd"] == objetivo["cwd"]:
+                            r["note"] = nota
+                    flash = "✎ nota guardada" if nota else "✎ nota borrada"
+                    editando, requery = None, True
+                elif k == "esc":
+                    editando, flash = None, "nota sin cambios"
+                elif k == "back":
+                    editando = editando[:-1]
+                elif len(k) == 1 and k.isprintable():
+                    editando = (editando + k)[:NOTE_MAX]
+                continue
+
             if k == "esc":
                 # esc limpia el filtro antes de salir: perder el filtro por accidente
                 # es mas molesto que tener que pulsar esc dos veces
@@ -1118,6 +1229,11 @@ def interactive(feed):
                         continue
                     break               # cualquier otra tecla vuelve al panel
                 dirty = True
+            elif k == "note":
+                # Ctrl-N, por lo mismo que Ctrl-R: una letra suelta se comeria el filtro.
+                # Arranca con la nota que ya hubiera, para poder corregirla en vez de
+                # tener que reescribirla entera.
+                editando = lines[cl][2].get("note") or ""
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra

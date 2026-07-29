@@ -172,6 +172,32 @@ de golpe, lo que impedia distinguir `ESC`+digito (sin corchete) de `ESC[`. De pa
 son `ESC [ 5 ~` y `ESC [ 6 ~` — hay que **consumir la tilde**, o queda en el buffer y la lectura
 siguiente la ve como un `~` escrito, arrancando un filtro por "~" al pulsar PgDn.
 
+## Notas personales (`Ctrl-N`)
+
+**Van por `cwd`, NO por `sessionId`.** Los sessionId cambian cada vez que reinicias Claude Code,
+asi que una nota atada a la sesion se quedaria huerfana justo cuando mas hace falta. El precio,
+aceptado: dos sesiones del mismo repo comparten nota.
+
+**No se purgan las de directorios inexistentes.** Un disco externo desmontado o un repo movido de
+sitio borraria algo que el usuario escribio a mano. Al contrario que `ccl-numbers.json`, que si se
+purga, porque ahi el dato lo genera el programa y se puede regenerar.
+
+**El modo edicion se queda el teclado, y va PRIMERO en el manejo de teclas.** Si no, en medio de
+una frase la `q` cierra el panel y un digito arranca el selector por numero. Hay dos tests justo
+para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
+
+**Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `cwd`. Si no, no
+se ve hasta el refresco (4 s) y parece que no se guardo.
+
+**El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
+prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece
+que la tecla no hizo nada.
+
+Ojo al probar el panel: `test_panel.py` parchea `collect`, que **se salta `build`**, y es build
+quien pega las notas a las filas. El arnes replica ese paso; sin eso, la nota no reaparece al
+reabrir el panel y parece un fallo de persistencia que no existe. Y `NOTES_FILE` se desvia a un
+temporal: es el unico archivo que el panel escribe de verdad en disco.
+
 ## Multi-cuenta
 
 `config_dirs()` detecta `~/.claude` mas los hermanos `~/.claude-*` con `projects/`.

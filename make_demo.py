@@ -59,13 +59,20 @@ COLORES = {
 # ─────────────────────── guion del demo ───────────────────────
 
 # (que enviar, cuanto se queda en pantalla). None = solo esperar (el estado inicial).
+# El guion cuenta lo que hace la herramienta, en este orden: mirar, anotar, buscar por lo
+# anotado, saltar. Tres flechas para llegar a `api`, que es el unico repo que no comparte
+# cwd con otra fila: asi la nota sale en una sola linea y no confunde.
 GUION = [
-    (None,            2.6),
-    (b"\033[B",       0.7),   # bajar
-    (b"\033[B",       0.7),
-    (b"web",          1.9),   # filtrar
-    (b"\033",         1.1),   # esc limpia el filtro
-    (b"\0331",        2.8),   # ⌥1: salta a la primera que espera
+    (None,                       2.4),
+    (b"\033[B",                  0.55),  # bajar
+    (b"\033[B",                  0.55),
+    (b"\033[B",                  0.75),
+    (b"\x0e",                    0.85),  # Ctrl-N: abre la nota
+    ("bloquea el release".encode(), 1.7),
+    (b"\r",                      2.2),   # guardar: aparece el ✎
+    (b"release",                 2.1),   # y se puede buscar por ella
+    (b"\033",                    0.9),   # esc limpia el filtro
+    (b"\0331",                   2.6),   # ⌥1: salta a la primera que espera
 ]
 
 # Sesiones de mentira, con la pinta de un dia normal de trabajo.
@@ -86,7 +93,7 @@ SESIONES = [
 ]
 
 ARRANQUE = f'''
-import datetime, importlib.machinery, importlib.util, sys
+import datetime, importlib.machinery, importlib.util, os, sys
 cargador = importlib.machinery.SourceFileLoader("ccl_mod", {_CCL!r})
 ccl = importlib.util.module_from_spec(
     importlib.util.spec_from_loader("ccl_mod", cargador))
@@ -111,6 +118,9 @@ ccl.get_iterm_map = lambda: {{}}
 ccl.focus = lambda fila, quiet=False: 0   # NADIE toca ventanas: el salto solo se anuncia
 ccl.REFRESH_SECONDS = 9999                # el layout no se mueve durante la grabacion
 ccl.REFRESH_IDLE = 9999
+# El guion escribe una nota, y las notas SI van a disco: desviarlas o generar el demo
+# dejaria una nota de mentira en el ~/.claude de quien lo genere.
+ccl.NOTES_FILE = os.environ["CCL_DEMO_NOTES"]
 sys.exit(ccl.main())
 '''
 
@@ -118,12 +128,13 @@ sys.exit(ccl.main())
 # ─────────────────────── grabar ───────────────────────
 
 
-def grabar():
+def grabar(notas):
     """[(lineas, segundos)] — un fotograma por paso del guion."""
     pid, fd = pty.fork()
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
         os.environ["CCL_MOUSE"] = "0"     # el raton no aporta nada a una grabacion
+        os.environ["CCL_DEMO_NOTES"] = notas
         os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", FILAS, COLUMNAS, 0, 0))
 
@@ -299,7 +310,15 @@ def main():
     if not hasattr(os, "openpty"):
         print("make_demo.py necesita un pty: solo funciona en Unix.", file=sys.stderr)
         return 1
-    fotogramas = grabar()
+    # Las notas del guion van a un temporal que se borra: generar el demo no puede
+    # dejar rastro en la configuracion de quien lo genere.
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ccl-demo-")
+    try:
+        fotogramas = grabar(os.path.join(tmp, "notas.json"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     if not any(p.strip() for p, _ in fotogramas):
         print("no se capturo nada: ¿arranca `python3 ccl`?", file=sys.stderr)
         return 1

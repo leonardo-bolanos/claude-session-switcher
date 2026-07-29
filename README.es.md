@@ -85,6 +85,7 @@ ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 | `Enter` | Abrir esa sesión (enfoca su ventana y pestaña de iTerm) |
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
+| `Ctrl-N` | Escribir **tu propia nota** sobre este repo |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
@@ -137,6 +138,33 @@ escrito.
 texto de filtro. `⌘1..9` no puede usarse: iTerm2 se lo queda para cambiar de pestaña y nunca
 llega a `ccl` — si lo prefieres, mapea `⌘N` → *Send Escape Sequence* `N` y funcionará igual, a
 costa de perder el cambio de pestaña.
+
+</details>
+
+<details>
+<summary><b>Tu propia nota en una sesión</b></summary>
+
+`Ctrl-N` escribe una nota sobre la sesión seleccionada — un nombre que signifique algo para *ti*,
+cuando `web-app` no dice lo suficiente:
+
+```
+[ 1] web-app-checkout-rework   web-app   hace 12m
+     ✎ backend de facturación · main · opus-5 · "revisa el flujo de pago…"
+```
+
+`Enter` guarda, una nota vacía la borra, `esc` cancela. `Ctrl-N` arranca con el texto que ya
+hubiera, así que corregir no es reescribir. **También se busca por ella al filtrar**, que es media
+razón para escribirla: etiquetas como "facturación" un repo que se llama `web-app` y lo encuentras
+por esa palabra.
+
+Las notas se guardan **por directorio** en `~/.claude/ccl-notes.json`, no por sesión. Es a
+propósito: los `sessionId` cambian cada vez que reinicias Claude Code, así que una nota atada a la
+sesión se quedaría huérfana justo cuando más la necesitas. El precio es que dos sesiones del mismo
+repo comparten nota.
+
+Las notas de directorios que ya no existen **no** se purgan: un disco externo desmontado o un repo
+movido de sitio borraría en silencio algo que escribiste a mano. El archivo son unos pocos KB
+aunque acumule, y es JSON plano que puedes editar tú.
 
 </details>
 

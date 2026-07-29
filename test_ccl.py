@@ -310,7 +310,7 @@ def row(num, sid, status="idle", ts=None, kind="interactive"):
     return {"num": num, "name": f"s{num}", "repo": "r", "cwd": "/x", "kind": kind,
             "status": status, "sessionId": sid, "pid": num, "tty": "", "iterm": None,
             "ts": ts, "branch": None, "model": None, "effort": None,
-            "title": None, "prompt": None, "startedAt": num}
+            "title": None, "prompt": None, "note": "", "startedAt": num}
 
 
 class TestAgrupacion(unittest.TestCase):
@@ -538,6 +538,98 @@ class TestSessionsUnavailable(unittest.TestCase):
 
 
 # ────────────────────────── multi-cuenta ──────────────────────────
+
+
+class TestNotas(unittest.TestCase):
+    """
+    Las notas van por **directorio**, no por sessionId: los sessionId cambian al
+    reiniciar Claude Code y la nota se quedaria huerfana justo cuando mas hace falta.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = ccl.NOTES_FILE
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "sub", "ccl-notes.json")
+
+    def tearDown(self):
+        ccl.NOTES_FILE = self.orig
+        self.tmp.cleanup()
+
+    def test_guarda_y_recupera(self):
+        ccl.save_note("/repos/web", "backend de facturación")
+        self.assertEqual(ccl.load_notes(), {"/repos/web": "backend de facturación"})
+
+    def test_crea_el_directorio_si_no_existe(self):
+        """NOTES_FILE puede caer en un ~/.claude que aun no exista."""
+        ccl.save_note("/repos/web", "algo")
+        self.assertTrue(os.path.exists(ccl.NOTES_FILE))
+
+    def test_sin_archivo_no_hay_notas_y_no_revienta(self):
+        self.assertEqual(ccl.load_notes(), {})
+
+    def test_una_nota_vacia_la_borra(self):
+        ccl.save_note("/repos/web", "algo")
+        ccl.save_note("/repos/web", "   ")
+        self.assertEqual(ccl.load_notes(), {})
+
+    def test_borrar_una_que_no_existe_no_revienta(self):
+        self.assertEqual(ccl.save_note("/no/existe", ""), "")
+
+    def test_normaliza_espacios_y_saltos(self):
+        """Es una linea en un panel: un salto de linea descuadraria el layout."""
+        self.assertEqual(ccl.save_note("/x", "  hola \n\t mundo  "), "hola mundo")
+
+    def test_recorta_las_larguisimas(self):
+        guardada = ccl.save_note("/x", "a" * (ccl.NOTE_MAX + 500))
+        self.assertEqual(len(guardada), ccl.NOTE_MAX)
+        self.assertEqual(len(ccl.load_notes()["/x"]), ccl.NOTE_MAX)
+
+    def test_no_pierde_las_demas_al_guardar_una(self):
+        ccl.save_note("/a", "uno")
+        ccl.save_note("/b", "dos")
+        self.assertEqual(ccl.load_notes(), {"/a": "uno", "/b": "dos"})
+
+    def test_archivo_corrupto_no_revienta(self):
+        os.makedirs(os.path.dirname(ccl.NOTES_FILE), exist_ok=True)
+        with open(ccl.NOTES_FILE, "w") as fh:
+            fh.write("{esto no es json")
+        self.assertEqual(ccl.load_notes(), {})
+
+    def test_json_valido_pero_con_la_forma_equivocada(self):
+        """Una lista, o valores que no son texto: se ignoran en vez de reventar."""
+        os.makedirs(os.path.dirname(ccl.NOTES_FILE), exist_ok=True)
+        for basura in ('["a", "b"]', '{"/x": 42, "/y": "vale"}', '"solo un string"'):
+            with open(ccl.NOTES_FILE, "w") as fh:
+                fh.write(basura)
+            notas = ccl.load_notes()
+            self.assertIsInstance(notas, dict)
+            self.assertNotIn("/x", notas)
+
+    def test_los_acentos_se_guardan_legibles(self):
+        """ensure_ascii=False: el archivo lo puede editar el usuario a mano."""
+        ccl.save_note("/x", "migración")
+        with open(ccl.NOTES_FILE) as fh:
+            self.assertIn("migración", fh.read())
+
+    def test_la_nota_sale_en_la_linea_de_detalle_y_va_primera(self):
+        r = row(1, "a")
+        r.update({"note": "backend de facturación", "branch": "main", "model": "opus-5"})
+        plano = ccl.ANSI_RE.sub("", ccl.detail_line(r))
+        self.assertIn("✎ backend de facturación", plano)
+        self.assertLess(plano.index("backend"), plano.index("main"),
+                        "la nota va primera: al final se la come el recorte")
+
+    def test_sin_nota_la_linea_no_cambia(self):
+        r = row(1, "a")
+        r.update({"branch": "main", "model": "opus-5"})
+        self.assertNotIn("✎", ccl.detail_line(r))
+
+    def test_se_puede_filtrar_por_la_nota(self):
+        r = row(1, "a")
+        r["note"] = "backend de facturación"
+        self.assertTrue(ccl.matches(r, "factur"))
+        self.assertTrue(ccl.matches(r, "facturacion"))   # sin acento tambien
+        self.assertFalse(ccl.matches(r, "frontend"))
 
 
 class TestBuscarClaude(unittest.TestCase):
@@ -846,6 +938,19 @@ class TestLecturaDeTeclas(unittest.TestCase):
     def test_secuencia_de_raton_rota_no_ensucia_el_filtro(self):
         """Basura entre '<' y 'M' debe caer en 'esc', nunca convertirse en texto."""
         self.assertEqual(self._pulsar(b"\x1b[<sarasa;;M"), "esc")
+
+    def test_los_acentos_y_la_ene_llegan_enteros(self):
+        """
+        UTF-8 multibyte: leyendo de a un byte, `decode(errors="ignore")` tiraba el
+        caracter y no se podian escribir acentos ni ñ, ni al filtrar ni en una nota.
+        En un proyecto en español eso no es un detalle.
+        """
+        for texto in ("ó", "ñ", "ü", "é"):
+            self.assertEqual(self._pulsar(texto.encode()), texto)
+
+    def test_los_caracteres_de_cuatro_bytes_tambien(self):
+        """Un emoji son 4 bytes; nadie lo escribira en un filtro, pero no debe colgarse."""
+        self.assertEqual(self._pulsar("🎉".encode()), "🎉")
 
     def test_ctrl_r_y_digitos(self):
         self.assertEqual(self._pulsar(b"\x12"), "refresh")

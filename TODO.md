@@ -94,5 +94,12 @@ En orden de lo que parece más factible:
   Si se hace, hará falta decidir si se localiza (una tabla de cadenas y detección de idioma) o se
   pasa todo a inglés dejando el español solo en comentarios y `CLAUDE.md`. A medias es peor que
   nada: un panel mezclado desconcierta más que uno consistente en un idioma que no es el tuyo.
+- **Las notas no se pueden editar en medio.** `Ctrl-N` abre la nota que ya hubiera, pero solo
+  puedes borrar por el final (`⌫`): no hay cursor que mover, así que corregir una palabra del
+  principio obliga a borrar todo lo de después. Para notas de una línea es tolerable; si se hace,
+  hará falta un mini-editor con `←` `→` y posición de inserción.
+- **Las notas no se purgan nunca.** Es a propósito (un disco desmontado borraría notas escritas a
+  mano), pero el archivo acumula entradas de repos que ya no existen. Estaría bien un
+  `ccl --notes` que las liste y permita limpiar las obsoletas a mano.
 - **Publicar una release etiquetada.** Un repo sin releases parece abandonado desde fuera, y un
   `git clone` de `master` no dice qué versión estás usando. Basta un tag `v1.0.0` con notas.

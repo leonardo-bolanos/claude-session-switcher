@@ -84,6 +84,7 @@ ccl -w2          # same, the second one in the WAITING queue
 | `Enter` | Open that session (focuses its iTerm window and tab) |
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
+| `Ctrl-N` | Write **your own note** on this repo |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |
@@ -136,6 +137,32 @@ Keys). Without that, `⌥1` produces a symbol (`¡`) and the panel treats it as 
 `⌘1..9` can't be used at all: iTerm2 keeps it for tab switching and it never reaches `ccl` — if
 you'd rather have it, map `⌘N` → *Send Escape Sequence* `N` and it works the same, at the cost
 of losing tab switching.
+
+</details>
+
+<details>
+<summary><b>Your own notes on a session</b></summary>
+
+`Ctrl-N` writes a note on the selected session — a name that means something to *you*, when
+`web-app` doesn't say enough:
+
+```
+[ 1] web-app-checkout-rework   web-app   12m ago
+     ✎ billing backend · main · opus-5 · "check the payment flow…"
+```
+
+`Enter` saves, an empty note deletes it, `esc` cancels. `Ctrl-N` starts from the existing text, so
+correcting isn't rewriting. **You can also filter by it**, which is half the point: tag a repo
+called `web-app` as "billing" and find it by that word.
+
+Notes are stored **per directory** in `~/.claude/ccl-notes.json`, not per session. That's
+deliberate: session IDs change every time you restart Claude Code, so a note tied to the session
+would go missing exactly when you need it. The trade-off is that two sessions in the same repo
+share a note.
+
+Notes for directories that no longer exist are **not** pruned — an unmounted external drive or a
+moved repo would silently delete something you typed by hand. The file is a few KB even when it
+piles up, and it's plain JSON you can edit yourself.
 
 </details>
 
