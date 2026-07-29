@@ -46,6 +46,16 @@ refresco; si el cursor fuera posicional, saltaría solo.
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.
 
+**`claude` no esta en el PATH de un lanzador.** Hammerspoon, Raycast, launchd y cron arrancan el
+proceso con el PATH minimo de launchd (`/usr/bin:/bin:/usr/sbin:/sbin`), y con npm bajo nvm
+`claude` vive en `~/.nvm/versions/node/<version>/bin` — ruta que ademas cambia al actualizar Node,
+asi que no se puede fijar a mano en la config de nadie. Por eso `claude_bin()` busca fuera del
+PATH (`CLAUDE_EXTRA`) y **elige por fecha, no por nombre**: ordenando los nombres, v25.9.0 queda
+por delante de v25.10.0. Sin esto, `ccl -w` fallaba desde el atajo global y funcionaba desde la
+terminal, que es el peor sintoma posible — parece cosa del atajo y no lo es. La alternativa
+(`zsh -ic`) costaba ~0,7 s por pulsacion; `zsh -lc` no sirve, porque nvm se carga en `.zshrc` y
+un shell de login no lo lee.
+
 | Fuente | Qué se usa | Si cambia |
 |---|---|---|
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status` | El panel se queda sin datos |
@@ -65,11 +75,33 @@ runner limpio, que es exactamente lo que ocurrió la primera vez que corrió el 
 **Si tocas `vis`/`pad`/`clip`, `assign_numbers`, `get_iterm_map` o `read_transcript`, corre los
 tests**: esas cuatro son justo las que han fallado en silencio antes.
 
+`TestLecturaDeTeclas` si prueba `read_key` con un pty de verdad, porque es la unica forma de ver
+como se descomponen las secuencias de escape. Dos detalles que lo hacian fallar:
+**hay que escribir los bytes DESPUES de que `read_key` entre en modo raw** (`tty.setraw` usa
+`TCSAFLUSH`, que descarta la entrada pendiente, asi que lo escrito antes se pierde) — de ahi el
+`threading.Timer` — y `sys.stdin` se parchea sobre el modulo (`ccl.sys.stdin`), no sobre el del
+test.
+
+`pick_waiting` es puro y se prueba directo. **No lo pruebes llamando a `focus`**: robaria el
+foco a quien este usando la maquina. El salto lo hace quien llama, justamente para esto.
+
+**Para probar el panel entero, parchea `collect` con filas sinteticas y `REFRESH_SECONDS` alto.**
+Sin eso la lista se reordena entre ejecuciones y con el refresco de fondo, y no puedes afirmar
+que fila de la terminal corresponde a que sesion — que es justo lo que hay que verificar del
+clic. Con datos fijos el layout es exacto: fila 1 cabecera, 2 grupo, 3 primera sesion, 4 su
+detalle, 5 la segunda… Y `get_iterm_map()` devolviendo `{}` para no tocar ventanas de nadie.
+
 `TestAyuda.test_ninguna_accion_es_una_letra_suelta` es un guardarraíl de diseño, no una
 comprobación de formato: si documentas una acción en una letra, falla.
 
-Lo que los tests NO cubren, porque necesita iTerm o un terminal real: el bucle interactivo,
-el salto de ventana y el refresco en segundo plano.
+`python3 test_panel.py` arranca **el panel entero en un pty** y cubre lo que antes solo se podia
+comprobar a mano: flechas, rueda, clic, doble clic, `⌥N`, la paginacion de la ayuda y los caminos
+sin panel. Tarda ~1 min (32 arranques reales del programa), asi que va aparte de la suite rapida.
+Las esperas se escalan con `CCL_TEST_LENTO` — el CI usa 2, porque un runner compartido es mas
+lento y si no falla sin que nada este roto.
+
+Lo que sigue SIN cubrir, porque necesita iTerm de verdad: el salto de ventana (`focus` con un
+mapa real) y el refresco en segundo plano contra `claude agents`.
 
 El modo interactivo necesita un TTY: no se puede probar con un pipe. Usa `pty.fork()` y **fija
 el tamaño con `TIOCSWINSZ`** — sin eso el viewport queda diminuto y parece que faltan líneas
@@ -93,6 +125,53 @@ ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es 
 
 Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
 
+**`Cmd` no existe para un programa de terminal.** iTerm2 se queda `⌘1..9` para cambiar de
+pestaña y no lo pasa por el TTY: no hay forma de leerlo desde `ccl`. Por eso el salto a la
+N-esima ESPERANDO es `⌥1..9`, que con «Left Option key: Esc+» llega como `ESC` + digito. Esa
+misma secuencia es la que enviaria un `⌘N` mapeado a *Send Escape Sequence*, asi que el codigo
+sirve para ambos caminos sin ramas extra. Si alguien pide "que sea Cmd", la respuesta es un
+atajo global (Hammerspoon → `ccl -w<n>`), no una tecla del panel.
+
+**`⌥1..9` cuenta sobre `rows`, no sobre las filtradas.** A proposito: la tecla significa
+"sacame de aqui, a la que me espera", y contando sobre lo filtrado el mismo numero llevaria a
+sesiones distintas segun lo que tuvieras escrito.
+
+**`tty.setraw()` descarta la entrada pendiente, y eso comia teclas.** Usa `TCSAFLUSH` por
+defecto, que tira lo recibido y no leido; como `read_key` entra en modo raw en CADA lectura, todo
+lo que llegara mientras el panel repintaba se perdia. Medido con un pty: **de 5 teclas seguidas
+sobrevivia 1**. Se notaba al escribir rapido en el filtro, y hacia imposible el doble clic
+(sus cuatro eventos llegan en una sola rafaga). Va con `termios.TCSANOW` — si alguien lo
+"simplifica" a `tty.setraw(fd)`, vuelve.
+
+**El terminal NO reporta dobles clics**, solo clics sueltos: el doble se sintetiza por tiempo y
+fila (`DOUBLE_CLICK`). Y el **release hay que descartarlo**, o cada clic simple contaria dos veces
+y pareceria doble.
+
+**El mapa fila-de-terminal → sesion se construye pintando, no calculando.** Va dentro del bucle
+de repintado (`screen[y] = i`) porque cualquier cosa que se añada arriba —la cabecera de grupo
+fija, un aviso— desplaza todo; un calculo aparte se desincroniza en silencio y el clic acaba
+enfocando la sesion vecina, que es el peor fallo posible: parece que funciona.
+
+**Con el raton activo, el terminal deja de gestionar la seleccion de texto.** Por eso existe
+`CCL_MOUSE=0`, y por eso el apagado (`MOUSE_OFF`) va **antes** de soltar la pantalla alternativa:
+si el panel muere con el raton activo, el shell recibe escapes por cada clic. Para copiar hay tres
+vias y conviene no confundirlas: `⌥`+arrastrar (iTerm2 no reporta el evento si ese modificador
+esta pulsado — verificado en el binario de iTerm2 3.6.11, que lo registra como *"Not reporting
+mouse event because you pressed option"*), `CCL_MOUSE=0`, o `ccl --list`. La ultima es la mejor
+para copiar de verdad: el panel usa pantalla alternativa, asi que **al salir se restaura lo que
+habia y se lleva la lista**.
+
+**La ayuda se pagina porque ya no cabe.** Se pinta de arriba abajo, asi que sin paginar lo que
+sobra se va por el borde SUPERIOR: se pierde el principio y **no hay ningun aviso** de que faltaba
+algo. Si añades secciones, `TestAyuda` comprueba que ninguna pagina desborde la altura y que al
+partir no se pierda ninguna linea. Los tests que buscan un texto en la ayuda tienen que recorrer
+**todas** las paginas (`_texto_completo`), no solo `render_help(...)`.
+
+**Al parsear una secuencia de escape hay que leer byte a byte.** Antes hacia `os.read(fd, 2)`
+de golpe, lo que impedia distinguir `ESC`+digito (sin corchete) de `ESC[`. De paso: `PgUp`/`PgDn`
+son `ESC [ 5 ~` y `ESC [ 6 ~` — hay que **consumir la tilde**, o queda en el buffer y la lectura
+siguiente la ve como un `~` escrito, arrancando un filtro por "~" al pulsar PgDn.
+
 ## Multi-cuenta
 
 `config_dirs()` detecta `~/.claude` mas los hermanos `~/.claude-*` con `projects/`.
@@ -103,7 +182,37 @@ sesiones de la segunda cuenta saldrian sin rama, modelo ni prompt.
 Si falla la cuenta principal se aborta; si falla una secundaria se ignora — no tiene
 sentido dejar sin panel al usuario porque una config extra este rota.
 
-## Estilo
+## Estilo e idioma
 
-Comentarios y documentación en español, igual que el resto del repo. Los comentarios explican
-**por qué**, no qué hace la línea — casi todos apuntan a una de las trampas de arriba.
+Código, comentarios, mensajes al usuario, nombres de test y este archivo: **en español**. Los
+comentarios explican **por qué**, no qué hace la línea — casi todos apuntan a una de las trampas
+de arriba.
+
+La excepción es el README, y solo por alcance: quien busca una herramienta para Claude Code busca
+en inglés.
+
+| Archivo | Idioma |
+|---|---|
+| `README.md` | inglés — es la portada del repo |
+| `README.es.md` | español — traducción completa, misma estructura |
+| Todo lo demás (`ccl`, tests, `CLAUDE.md`, `TODO.md`) | español |
+
+**Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
+mismo orden justamente para que el diff sea comparable. El enlace cruzado va arriba, bajo el
+titular.
+
+Lo largo va en bloques `<details>` plegados: lo que un recien llegado necesita (que es, demo,
+instalar, teclas) tiene que caber en la primera pantalla, y los detalles internos —el PATH de
+launchd, la configuracion de iTerm2, el rendimiento del AppleScript— hundian eso.
+
+`demo.svg` **se genera, no se edita**: `python3 make_demo.py` graba el programa de verdad en un
+pty. Dos cosas que se rompieron al escribirlo y que no hay que "simplificar":
+
+- **Los `<tspan>` van dentro de un `<text>`.** Sueltos no se renderizan: el SVG sale con el marco
+  pintado y ni una letra.
+- **Cada trozo lleva `textLength`.** Sin eso el visor usa el avance real de SU fuente, que no es
+  el que asume el generador, y un trozo largo se monta encima del siguiente — se veia la comilla
+  de cierre pisando la ultima letra del prompt.
+- La animacion es **CSS, no SMIL**, y el primer fotograma queda visible por defecto: asi un visor
+  que no anime (Quick Look, una vista previa cualquiera) muestra un fotograma fijo en vez de un
+  rectangulo vacio.
