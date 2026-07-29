@@ -6,6 +6,11 @@ Uso:
     ccl              panel interactivo
     ccl --list       solo lista, sin interaccion
     ccl <n>          salta directo a la sesion numero <n>
+    ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
+
+`-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
+quien te espera sin abrir el panel: no necesita TTY y sale al momento. Dentro del panel
+lo mismo se hace con Option-1..9.
 
 El numero de cada sesion es ESTABLE: se guarda en ~/.claude/ccl-numbers.json y se
 mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la sesion muere.
@@ -180,11 +185,53 @@ def account_label(cfg_dir):
     return "" if base == ".claude" else base.replace(".claude-", "", 1)
 
 
+# Donde buscar `claude` si no esta en el PATH, en orden. El glob de nvm cubre npm bajo
+# nvm, que es lo mas comun y lo peor: la ruta lleva la version de Node y cambia al
+# actualizarla, asi que no se puede fijar a mano en la config de nadie.
+CLAUDE_EXTRA = [
+    "~/.claude/local/claude",              # instalador oficial
+    "~/.local/bin/claude",
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+    "~/.nvm/versions/node/*/bin/claude",   # npm bajo nvm
+    "~/.volta/bin/claude",
+    "~/.bun/bin/claude",
+]
+
+_claude_bin = None   # cache: el glob no se repite en cada refresco (cada 4s)
+
+
+def claude_bin():
+    """
+    Ruta del ejecutable `claude`, buscando fuera del PATH si hace falta.
+
+    Un lanzador (Hammerspoon, Raycast, launchd, cron) arranca el proceso con el PATH
+    minimo de launchd — `/usr/bin:/bin:/usr/sbin:/sbin` — donde `claude` NO esta. Sin
+    esta busqueda, `ccl -w` fallaba desde un atajo global y funcionaba desde la terminal,
+    que es el peor sintoma posible: parece cosa del atajo y no lo es.
+    """
+    global _claude_bin
+    if _claude_bin:
+        return _claude_bin
+    hallado = shutil.which("claude")
+    if not hallado:
+        cands = []
+        for patron in CLAUDE_EXTRA:
+            cands.extend(glob.glob(os.path.expanduser(patron)))
+        cands = [c for c in cands if os.access(c, os.X_OK)]
+        # el mas reciente por fecha, NO por nombre: con varias versiones de Node hay un
+        # `claude` por cada una, y ordenar los nombres pone v25.9.0 delante de v25.10.0
+        if cands:
+            hallado = max(cands, key=lambda p: os.stat(p).st_mtime)
+    _claude_bin = hallado
+    return hallado
+
+
 def _sessions_from(cfg_dir):
     env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg_dir)
     try:
         proc = subprocess.run(
-            ["claude", "agents", "--cwd", HOME, "--json"],
+            [claude_bin() or "claude", "agents", "--cwd", HOME, "--json"],
             capture_output=True, text=True, timeout=30, env=env,
         )
     except FileNotFoundError:
@@ -223,7 +270,7 @@ def get_sessions():
     # Orden del diagnostico, de la causa mas profunda a la mas superficial: si falta
     # el comando, decirlo primero. Al reves, alguien sin Claude Code instalado leia
     # "no hay directorio de config", que manda a buscar el problema equivocado.
-    if shutil.which("claude") is None:
+    if claude_bin() is None:
         raise SessionsUnavailable(
             "no encuentro el comando `claude`.\n"
             "  Instala Claude Code, o revisa que este en tu PATH."
@@ -493,12 +540,43 @@ def multi_account(rows):
     return len({r.get("account", "") for r in rows}) > 1
 
 
+def is_waiting(row):
+    """
+    True si la sesion esta esperando algo tuyo: interactiva y no ocupada.
+
+    OJO con el nombre: `claude agents --json` solo distingue busy/idle, no existe un
+    "esperando tu respuesta" real (ver CLAUDE.md). Esto es lo mas cerca que se puede
+    estar. Compartido con `grouped` a proposito, para que "la primera esperando" sea
+    literalmente la primera que se ve en el panel y no dos criterios que se separan.
+    """
+    return row["status"] != "busy" and row["kind"] != "background"
+
+
+def waiting_rows(rows):
+    """Las sesiones esperando, en el MISMO orden en que las pinta el grupo ESPERANDO."""
+    return sorted((r for r in rows if is_waiting(r)), key=sort_key, reverse=True)
+
+
+def pick_waiting(rows, n):
+    """
+    (fila, aviso) — la n-esima sesion esperando, 1-indexada.
+
+    Puro a proposito: el salto lo hace quien llama. Asi se puede probar la eleccion
+    sin enfocar ninguna ventana, que le robaria el foco a quien use la maquina.
+    """
+    pend = waiting_rows(rows)
+    if not pend:
+        return None, "ninguna sesión esperando"
+    if n < 1 or n > len(pend):
+        return None, f"solo hay {len(pend)} esperando"
+    return pend[n - 1], None
+
+
 def grouped(rows):
     """[(etiqueta, color, filas-ordenadas)] — grupos vacios se omiten."""
     out = [
         ("TRABAJANDO", GREEN, [r for r in rows if r["status"] == "busy"]),
-        ("ESPERANDO", YELLOW, [r for r in rows
-                               if r["status"] != "busy" and r["kind"] != "background"]),
+        ("ESPERANDO", YELLOW, [r for r in rows if is_waiting(r)]),
     ]
     # Grupos de background: solo si existen de verdad
     bg = [r for r in rows if r["kind"] == "background" and r["status"] != "busy"]
@@ -553,23 +631,106 @@ def render(rows):
 # ───────────────────────── selector interactivo ─────────────────────────
 
 
+MOUSE_ON = "\033[?1000h\033[?1006h"   # solo clics: 1002/1003 (arrastre, movimiento) no
+MOUSE_OFF = "\033[?1006l\033[?1000l"
+DOUBLE_CLICK = 0.4                    # segundos entre dos clics para que cuenten como doble
+
+
+def _mouse_event(boton, fila):
+    """Traduce un boton del protocolo a una tecla nuestra. None = no nos interesa."""
+    if boton == 64:
+        return "wheelup"
+    if boton == 65:
+        return "wheeldn"
+    if boton == 0:
+        return f"click:{fila}"
+    return "mouse-otro"
+
+
+def _read_mouse_sgr(fd):
+    """
+    Modo SGR (1006): ESC [ < boton ; columna ; fila (M|m).
+
+    Solo el press ('M') vale; el release ('m') se descarta, o cada clic contaria dos
+    veces y un clic simple pareceria doble.
+    """
+    buf = ""
+    while len(buf) < 20:
+        if not select.select([fd], [], [], 0.05)[0]:
+            return "esc"
+        ch = os.read(fd, 1).decode("utf-8", "ignore")
+        if ch in ("M", "m"):
+            if ch == "m":
+                return "mouse-release"
+            partes = buf.split(";")
+            if len(partes) != 3 or not all(p.isdigit() for p in partes):
+                return "esc"
+            boton, _col, fila = (int(p) for p in partes)
+            return _mouse_event(boton, fila)
+        buf += ch
+    return "esc"
+
+
+def _read_mouse_x10(fd):
+    """
+    Modo antiguo (1000 sin SGR): ESC [ M seguido de tres bytes, cada uno +32.
+
+    Se maneja aunque pidamos SGR porque un terminal que ignore 1006 mandaria esto, y
+    sin decodificarlo los clics entrarian como basura al filtro.
+    """
+    datos = b""
+    while len(datos) < 3:
+        if not select.select([fd], [], [], 0.05)[0]:
+            return "esc"
+        datos += os.read(fd, 3 - len(datos))
+    boton, _col, fila = (b - 32 for b in datos[:3])
+    if boton == 3:          # en X10 el release no dice que boton se solto
+        return "mouse-release"
+    return _mouse_event(boton & 0x43, fila)
+
+
 def read_key(timeout=None):
     """
-    Una pulsacion en modo raw. Devuelve 'up','down','enter','esc','q','r', un digito,
-    o None si vencio el timeout (para poder refrescar sin bloquear).
+    Una pulsacion en modo raw. Devuelve 'up','down','enter','esc','q','refresh',
+    'alt-<digito>', 'click:<fila>', 'wheelup','wheeldn', un digito, o None si vencio
+    el timeout (para refrescar sin bloquear).
     """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        # TCSANOW, no el TCSAFLUSH que usa tty.setraw() por defecto: FLUSH descarta la
+        # entrada recibida y no leida, y como aqui se entra en modo raw en CADA lectura,
+        # todo lo que llegaba mientras el panel repintaba se tiraba. Medido: de 5 teclas
+        # seguidas sobrevivia 1. Rompia el doble clic (press,release,press,release llegan
+        # juntos) y comia letras al escribir rapido en el filtro.
+        tty.setraw(fd, termios.TCSANOW)
         if timeout is not None and not select.select([fd], [], [], timeout)[0]:
             return None
         ch = os.read(fd, 1).decode("utf-8", "ignore")
-        if ch == "\x1b":  # secuencia de escape: flechas o Esc suelto
+        if ch == "\x1b":  # secuencia de escape: flechas, Alt-<digito> o Esc suelto
             if not select.select([fd], [], [], 0.05)[0]:
                 return "esc"
-            rest = os.read(fd, 2).decode("utf-8", "ignore")
-            return {"[A": "up", "[B": "down", "[5": "pgup", "[6": "pgdn"}.get(rest, "esc")
+            # Byte a byte, no os.read(fd, 2): hay que decidir con el primero si es una
+            # secuencia CSI ('[') o un Alt-<digito>, que no lleva corchete.
+            nxt = os.read(fd, 1).decode("utf-8", "ignore")
+            if nxt.isdigit():
+                return "alt-" + nxt   # Option-N (con "Esc+") o Cmd-N remapeado en iTerm
+            if nxt != "[":
+                return "esc"
+            if not select.select([fd], [], [], 0.05)[0]:
+                return "esc"
+            rest = os.read(fd, 1).decode("utf-8", "ignore")
+            if rest == "<":
+                return _read_mouse_sgr(fd)
+            if rest == "M":
+                return _read_mouse_x10(fd)
+            key = {"A": "up", "B": "down", "5": "pgup", "6": "pgdn"}.get(rest, "esc")
+            # PgUp/PgDn son ESC [ 5 ~ / ESC [ 6 ~ : hay que comerse la tilde. Sin esto
+            # quedaba en el buffer y la lectura siguiente la veia como un '~' escrito,
+            # que arrancaba un filtro por "~" al pulsar PgDn.
+            if key in ("pgup", "pgdn") and select.select([fd], [], [], 0.05)[0]:
+                os.read(fd, 1)
+            return key
         if ch in ("\r", "\n"):
             return "enter"
         if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
@@ -642,6 +803,27 @@ HELP = [
         ("⌫",          "corregir el número"),
         ("enter",      "confirmar"),
     ]),
+    ("ir a la que está esperando", [
+        ("⌥1 … ⌥9",    "saltar directo a la 1ª, 2ª … de ESPERANDO, sin confirmar"),
+        ("",           "cuenta sobre la lista completa, ignora el filtro activo"),
+        ("",           "requiere «Left Option key: Esc+» en el perfil de iTerm2"),
+        ("",           "fuera del panel: ccl -w2 (átalo a un atajo global)"),
+    ]),
+    ("ratón", [
+        ("clic",       "seleccionar esa sesión"),
+        ("doble clic", "abrirla, igual que enter"),
+        ("rueda",      "mover la selección"),
+        ("",           "CCL_MOUSE=0 ccl arranca sin ratón"),
+    ]),
+    ("seleccionar texto para copiar", [
+        ("⌥ arrastrar", "seleccionar: con el panel abierto los clics van al"),
+        ("",            "panel, y ⌥ hace que iTerm2 no se los pase"),
+        ("⌘C",          "copiar lo seleccionado, como siempre"),
+        ("",            "al salir se restaura la pantalla y se lleva lo que"),
+        ("",            "había: copia antes de salir"),
+        ("ccl --list",  "lista sin panel ni colores, se queda en pantalla"),
+        ("",            "ccl --list | pbcopy copia todo de una vez"),
+    ]),
     ("filtrar", [
         ("cualquier letra", "empieza a filtrar por nombre, repo, rama o cuenta"),
         ("",           "ignora mayúsculas y acentos; varios términos se combinan"),
@@ -656,16 +838,65 @@ HELP = [
 ]
 
 
-def render_help(cols, term_rows):
-    """Pantalla de ayuda completa. La barra de abajo solo lleva lo imprescindible."""
-    buf = ["\033[H\033[2J", " " + CYAN(BOLD("ccl")) + DIM("  ·  atajos") + "\r\n\r\n"]
+def help_lines(cols):
+    """Las lineas de la ayuda, sin paginar ni terminadores."""
+    out = [" " + CYAN(BOLD("ccl")) + DIM("  ·  atajos"), ""]
     for titulo, filas in HELP:
-        buf.append(" " + YELLOW(BOLD(titulo)) + "\r\n")
+        out.append(" " + YELLOW(BOLD(titulo)))
         for tecla, desc in filas:
             k = pad(CYAN(tecla) if tecla else "", 18)
-            buf.append("   " + k + clip(DIM(desc) if not tecla else desc, cols - 24) + "\r\n")
-        buf.append("\r\n")
-    buf.append(" " + DIM("cualquier tecla para volver") + "\r\n")
+            out.append("   " + k + clip(DIM(desc) if not tecla else desc, cols - 24))
+        out.append("")
+    return out
+
+
+def help_pages(cols, term_rows):
+    """
+    La ayuda partida en paginas que caben en la ventana.
+
+    Hace falta porque la ayuda ya no cabe en una pantalla normal: se pinta de arriba
+    abajo, asi que sin paginar lo que sobra se va por el borde SUPERIOR y se pierde el
+    principio, sin ningun aviso de que faltaba algo.
+    """
+    cuerpo = max(3, term_rows - 2)   # una fila para el pie, otra de margen: sin margen
+    lineas = help_lines(cols)        # el salto final hace scroll y se come la primera
+    if len(lineas) <= cuerpo:
+        return [lineas]
+
+    paginas, resto = [], lineas
+    while resto:
+        if len(resto) <= cuerpo:
+            paginas.append(resto)
+            break
+        # Cortar al final de una seccion (linea en blanco), no en la fila exacta donde
+        # se acaba el hueco: partiendo a ciegas, la pagina siguiente empieza por una
+        # linea de nota sin su tecla ni su titulo, y se lee como texto colgando.
+        corte = cuerpo
+        while corte > 1 and resto[corte - 1] != "":
+            corte -= 1
+        if corte <= 1:               # una seccion mas alta que la ventana: partirla igual
+            corte = cuerpo
+        paginas.append(resto[:corte])
+        resto = resto[corte:]
+    return paginas
+
+
+def render_help(cols, term_rows, pagina=0):
+    """Una pagina de la ayuda. La barra de abajo solo lleva lo imprescindible."""
+    paginas = help_pages(cols, term_rows)
+    pagina = max(0, min(pagina, len(paginas) - 1))
+    buf = ["\033[H\033[2J"]
+    buf.extend(linea + "\r\n" for linea in paginas[pagina])
+    if len(paginas) == 1:
+        buf.append(" " + DIM("cualquier tecla para volver") + "\r\n")
+    elif pagina + 1 < len(paginas):
+        buf.append(" " + DIM(f"página {pagina + 1}/{len(paginas)} · ")
+                   + CYAN("espacio") + DIM(" sigue · otra tecla vuelve") + "\r\n")
+    else:
+        # en la ultima no hay "siguiente": ofrecer espacio ahi seria mentira, el espacio
+        # vuelve al panel como cualquier otra tecla
+        buf.append(" " + DIM(f"página {pagina + 1}/{len(paginas)} · ")
+                   + DIM("cualquier tecla vuelve") + "\r\n")
     return "".join(buf)
 
 
@@ -692,7 +923,7 @@ def build_display(rows, width=100):
 
 def interactive(feed):
     """
-    Panel vivo: flechas o numero para elegir, Enter para saltar a la ventana.
+    Panel vivo: flechas, numero o clic para elegir; Enter o doble clic para saltar.
     NO se cierra al saltar — sigue abierto y refrescandose hasta que pulses esc/q.
     """
     cols0 = os.get_terminal_size().columns if sys.stdout.isatty() else 100
@@ -704,8 +935,16 @@ def interactive(feed):
     last_cols = cols0
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
     requery = False  # fuerza reconstruir la vista tras tocar el filtro
+    screen = {}     # fila de la terminal -> indice en `lines`, para saber donde se hizo clic
+    last_click = (0, 0.0)   # (fila, momento) del ultimo clic, para detectar el doble
 
+    # El raton se puede desactivar: mientras esta activo, iTerm2 le pasa los clics al
+    # programa y pierdes la seleccion de texto normal dentro del panel (con ⌥ pulsado
+    # se puede seleccionar igual, pero a quien le moleste le sobra con CCL_MOUSE=0).
+    mouse = os.environ.get("CCL_MOUSE", "1") != "0"
     sys.stdout.write("\033[?1049h\033[?25l")  # pantalla alternativa, sin cursor
+    if mouse:
+        sys.stdout.write(MOUSE_ON)
     try:
         while True:
             fresh, new_stamp = feed.snapshot()
@@ -739,7 +978,13 @@ def interactive(feed):
                     return
                 if k == "q" and not query:
                     return
-                if k == "back" and query:
+                if k.startswith("alt-"):
+                    # tiene que funcionar tambien aqui: es justo el caso "escribi mal
+                    # el filtro, llevame a la que me espera"
+                    target, _ = pick_waiting(rows, int(k[4:]))
+                    if target:
+                        focus(target, quiet=True)
+                elif k == "back" and query:
                     query, requery, top = query[:-1], True, 0
                 elif len(k) == 1 and k.isprintable():
                     query, requery, top = query + k, True, 0
@@ -768,11 +1013,18 @@ def interactive(feed):
             if dirty:
                 sel_row = lines[cl][2]
                 buf = ["\033[H\033[2J"]
+                # El mapa fila-de-terminal -> linea se construye AQUI, pintando, no
+                # calculando: cualquier cosa que se añada arriba (cabecera de grupo fija,
+                # un aviso) desplaza todo, y un calculo aparte se desincronizaria en
+                # silencio, mandando el clic a la sesion vecina.
+                screen = {}
+                y = 1
                 busy_n = sum(1 for r in rows if r["status"] == "busy")
                 more = DIM(" ↕") if len(lines) > body else ""
                 head = (DIM("  ") + BOLD(str(len(rows))) + DIM(" sesiones · ")
                         + GREEN(f"{busy_n} activas") + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
+                y += 1
 
                 # Cabecera de grupo fija: en ventanas pequeñas el scroll se lleva la
                 # cabecera por arriba y pierdes de vista en que grupo estas.
@@ -781,9 +1033,12 @@ def interactive(feed):
                 if group_i is not None and group_i < top:
                     buf.append(" " + lines[group_i][1] + DIM(" …") + "\r\n")
                     body -= 1
+                    y += 1
 
                 for i in range(top, min(top + body, len(lines))):
                     role, text, row = lines[i]
+                    screen[y] = i
+                    y += 1
                     # la fila resaltada abarca sus DOS lineas (principal + detalle)
                     on_cur = row is not None and row is sel_row and role in ("main", "sub")
                     if on_cur:
@@ -801,6 +1056,7 @@ def interactive(feed):
                         buf.append("\r\n")
 
                 hint = (DIM("↑↓") + " mover  " + DIM("enter") + " abrir  "
+                        + CYAN("⌥1-9") + DIM(" esperando  ")
                         + DIM("escribe") + " filtrar  " + CYAN("?") + DIM(" ayuda"))
                 if typed:
                     nm = by_num.get(int(typed))
@@ -821,6 +1077,10 @@ def interactive(feed):
             k = read_key(timeout=0.4)  # corto: detecta el refresco de fondo sin frenar teclas
             if k is None:
                 continue
+            if k.startswith("mouse-"):
+                continue   # soltar el boton, o un boton que no usamos: ni repintar
+            if not mouse and (k.startswith("click:") or k in ("wheelup", "wheeldn")):
+                continue   # CCL_MOUSE=0 significa sin raton, aunque algo los mande igual
             dirty = True   # cualquier tecla cambia algo que hay que repintar
             feed.touch()   # vuelve al refresco rapido
             flash = ""
@@ -848,15 +1108,62 @@ def interactive(feed):
                 elif query:
                     query, requery, top = query[:-1], True, 0
             elif k == "?" and not query:
-                sys.stdout.write(render_help(cols, term_rows))
-                sys.stdout.flush()
-                read_key()          # cualquier tecla vuelve
+                pagina, total = 0, len(help_pages(cols, term_rows))
+                while True:
+                    sys.stdout.write(render_help(cols, term_rows, pagina))
+                    sys.stdout.flush()
+                    tecla = read_key()
+                    if tecla == " " and pagina + 1 < total:
+                        pagina += 1
+                        continue
+                    break               # cualquier otra tecla vuelve al panel
                 dirty = True
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra
                 feed.force()
                 flash = "actualizando…"
+            elif k == "wheelup":
+                sel_id = lines[pickable[max(0, cur - 1)]][2]["sessionId"]; typed = ""
+            elif k == "wheeldn":
+                i = min(len(pickable) - 1, cur + 1)
+                sel_id = lines[pickable[i]][2]["sessionId"]; typed = ""
+            elif k.startswith("click:"):
+                # El terminal NO reporta dobles clics, solo clics sueltos: el doble hay
+                # que sintetizarlo por tiempo y fila. Simple selecciona, doble abre.
+                fila_y = int(k[6:])
+                idx = screen.get(fila_y)
+                tocada = (lines[idx][2] if idx is not None
+                          and lines[idx][0] in ("main", "sub") else None)
+                ahora = time.time()
+                doble = (tocada is not None and last_click[0] == fila_y
+                         and ahora - last_click[1] < DOUBLE_CLICK)
+                last_click = (fila_y, ahora)
+                if tocada is None:
+                    dirty = False   # cabecera o hueco: no hay nada que elegir ni repintar
+                elif doble:
+                    sel_id = tocada["sessionId"]
+                    ok = focus(tocada, quiet=True)
+                    flash = (f"→ {tocada['name']}" if ok == 0
+                             else f"⚠ {tocada['name']} no está en iTerm")
+                    # que un triple clic no cuente como un segundo doble
+                    last_click = (0, 0.0)
+                else:
+                    sel_id, typed = tocada["sessionId"], ""
+            elif k.startswith("alt-"):
+                # Option-N: salta a la N-esima ESPERANDO. Cuenta sobre `rows` (la lista
+                # completa), no sobre las filtradas: el sentido de la tecla es "sacame
+                # de aqui hacia la que me espera", y dependiendo del filtro cambiaria
+                # a que sesion va el mismo numero.
+                n = int(k[4:])
+                target, aviso = pick_waiting(rows, n)
+                if aviso:
+                    flash = "⚠ " + aviso
+                else:
+                    sel_id = target["sessionId"]
+                    ok = focus(target, quiet=True)
+                    flash = (f"→ {n}ª esperando: {target['name']}" if ok == 0
+                             else f"⚠ {target['name']} no está en iTerm")
             elif k.isdigit() and not query:
                 # los digitos son seleccion... salvo si ya estas filtrando, donde
                 # forman parte del texto buscado (p.ej. "v5", "0042")
@@ -880,6 +1187,10 @@ def interactive(feed):
                     flash = (f"→ {target['name']}" if ok == 0
                              else f"⚠ {target['name']} no está en iTerm")
     finally:
+        # apagar el raton ANTES de soltar la pantalla alternativa: si se queda activo,
+        # la terminal sigue mandando escapes por cada clic y el shell los ve como texto
+        if mouse:
+            sys.stdout.write(MOUSE_OFF)
         sys.stdout.write("\033[?25h\033[?1049l")  # restaurar cursor y pantalla
         sys.stdout.flush()
 
@@ -929,10 +1240,48 @@ def collect():
     return build(sessions, ttys, iterm, numbers)
 
 
+def parse_args(argv):
+    """
+    (opciones, error) — parseo a mano, sin argparse: son cuatro banderas y argparse
+    tarda mas en importarse que todo lo demas en arrancar.
+    """
+    opts = {"list": False, "num": None, "waiting": None, "help": False}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-h", "--help"):
+            opts["help"] = True
+        elif a in ("-l", "--list"):
+            opts["list"] = True
+        elif a in ("-w", "--waiting"):
+            # el numero puede ir suelto ("-w 2") o pegado ("-w2"); sin numero, la primera
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and nxt.isdigit():
+                opts["waiting"] = int(nxt)
+                i += 1
+            else:
+                opts["waiting"] = 1
+        elif a.startswith("-w") and a[2:].isdigit():
+            opts["waiting"] = int(a[2:])
+        elif a.isdigit():
+            opts["num"] = int(a)
+        else:
+            return opts, f"opcion desconocida: {a}"
+        i += 1
+    if opts["waiting"] is not None and opts["waiting"] < 1:
+        return opts, "-w cuenta desde 1"
+    return opts, None
+
+
 def main():
-    args = sys.argv[1:]
-    only_list = "--list" in args or "-l" in args
-    direct = next((a for a in args if a.isdigit()), None)
+    opts, err = parse_args(sys.argv[1:])
+    if err:
+        print(f"ccl: {err}\n", file=sys.stderr)
+        print(__doc__.strip().split("\n\nEl numero")[0], file=sys.stderr)
+        return 2
+    if opts["help"]:
+        print(__doc__.strip())
+        return 0
 
     try:
         rows = collect()
@@ -944,15 +1293,22 @@ def main():
         print("No hay sesiones de Claude Code activas.")
         return 0
 
-    if direct:
-        row = next((r for r in rows if r["num"] == int(direct)), None)
+    if opts["waiting"] is not None:
+        row, aviso = pick_waiting(rows, opts["waiting"])
         if not row:
-            print(f"No existe la sesion numero {direct}.", file=sys.stderr)
+            print(f"ccl: {aviso}.", file=sys.stderr)
+            return 1
+        return focus(row)
+
+    if opts["num"] is not None:
+        row = next((r for r in rows if r["num"] == opts["num"]), None)
+        if not row:
+            print(f"No existe la sesion numero {opts['num']}.", file=sys.stderr)
             return 1
         return focus(row)
 
     # Sin TTY (pipe, script) o --list: salida estatica, sin interaccion
-    if only_list or not sys.stdin.isatty() or not sys.stdout.isatty():
+    if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
         render(rows)
         return 0
 

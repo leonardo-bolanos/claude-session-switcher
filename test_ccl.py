@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -341,6 +342,95 @@ class TestAgrupacion(unittest.TestCase):
         self.assertEqual(items[-1]["sessionId"], "b")
 
 
+class TestEsperando(unittest.TestCase):
+    """
+    `pick_waiting` es lo que hay detras de Option-1..9 y de `ccl -w`. Se prueba puro
+    porque saltar de verdad le robaria el foco a quien este usando la maquina.
+    """
+
+    def test_el_orden_es_el_mismo_que_pinta_el_panel(self):
+        rows = [row(1, "vieja", "idle", ts=iso(days=2)),
+                row(2, "media", "idle", ts=iso(hours=3)),
+                row(3, "nueva", "idle", ts=iso(minutes=1))]
+        _, _, del_grupo = next(g for g in ccl.grouped(rows) if g[0] == "ESPERANDO")
+        self.assertEqual([r["sessionId"] for r in ccl.waiting_rows(rows)],
+                         [r["sessionId"] for r in del_grupo])
+
+    def test_primera_segunda_y_tercera(self):
+        rows = [row(1, "vieja", "idle", ts=iso(days=2)),
+                row(2, "media", "idle", ts=iso(hours=3)),
+                row(3, "nueva", "idle", ts=iso(minutes=1))]
+        for n, esperado in ((1, "nueva"), (2, "media"), (3, "vieja")):
+            elegida, aviso = ccl.pick_waiting(rows, n)
+            self.assertIsNone(aviso)
+            self.assertEqual(elegida["sessionId"], esperado, f"-w{n}")
+
+    def test_ignora_las_ocupadas_y_las_de_background(self):
+        rows = [row(1, "trabajando", "busy", ts=iso(minutes=1)),
+                row(2, "bg", "idle", ts=iso(minutes=2), kind="background"),
+                row(3, "la-buena", "idle", ts=iso(minutes=3))]
+        elegida, _ = ccl.pick_waiting(rows, 1)
+        self.assertEqual(elegida["sessionId"], "la-buena")
+
+    def test_sin_ninguna_esperando_avisa_y_no_elige(self):
+        elegida, aviso = ccl.pick_waiting([row(1, "a", "busy", ts=iso(minutes=1))], 1)
+        self.assertIsNone(elegida)
+        self.assertIn("ninguna", aviso)
+
+    def test_pedir_mas_de_las_que_hay_avisa_cuantas_son(self):
+        elegida, aviso = ccl.pick_waiting([row(1, "a", "idle", ts=iso(minutes=1))], 4)
+        self.assertIsNone(elegida)
+        self.assertIn("1", aviso)
+
+    def test_cero_y_negativos_no_dan_la_ultima(self):
+        """n<1 debe avisar, no indexar desde el final como haria pend[-1] en Python."""
+        rows = [row(1, "a", "idle", ts=iso(minutes=1)), row(2, "b", "idle", ts=iso(hours=2))]
+        for n in (0, -1):
+            elegida, aviso = ccl.pick_waiting(rows, n)
+            self.assertIsNone(elegida, f"n={n} no debe elegir nada")
+            self.assertTrue(aviso)
+
+
+class TestParseoDeArgumentos(unittest.TestCase):
+    def test_sin_argumentos_es_el_panel(self):
+        opts, err = ccl.parse_args([])
+        self.assertIsNone(err)
+        self.assertEqual(opts, {"list": False, "num": None, "waiting": None, "help": False})
+
+    def test_numero_suelto_es_ir_a_esa_sesion(self):
+        opts, err = ccl.parse_args(["7"])
+        self.assertIsNone(err)
+        self.assertEqual(opts["num"], 7)
+
+    def test_waiting_pegado_suelto_y_a_secas(self):
+        for argv, esperado in ((["-w2"], 2), (["-w", "2"], 2), (["-w"], 1),
+                               (["--waiting", "3"], 3), (["--waiting"], 1)):
+            opts, err = ccl.parse_args(argv)
+            self.assertIsNone(err, argv)
+            self.assertEqual(opts["waiting"], esperado, argv)
+
+    def test_el_numero_de_w_no_se_confunde_con_el_de_sesion(self):
+        """`-w 2` es 'la 2a esperando', no 'la sesion [2]'. Consumirlo mal las mezclaba."""
+        opts, err = ccl.parse_args(["-w", "2"])
+        self.assertIsNone(err)
+        self.assertEqual(opts["waiting"], 2)
+        self.assertIsNone(opts["num"])
+
+    def test_list_y_help(self):
+        self.assertTrue(ccl.parse_args(["--list"])[0]["list"])
+        self.assertTrue(ccl.parse_args(["-l"])[0]["list"])
+        self.assertTrue(ccl.parse_args(["--help"])[0]["help"])
+        self.assertTrue(ccl.parse_args(["-h"])[0]["help"])
+
+    def test_cero_es_error_no_la_ultima(self):
+        self.assertTrue(ccl.parse_args(["-w0"])[1])
+        self.assertTrue(ccl.parse_args(["-w", "0"])[1])
+
+    def test_opcion_desconocida_da_error(self):
+        opts, err = ccl.parse_args(["--sarasa"])
+        self.assertIn("--sarasa", err)
+
+
 class TestBuildDisplay(unittest.TestCase):
     def test_roles_y_solo_main_es_seleccionable(self):
         lines = ccl.build_display([row(1, "a", "busy", ts=iso(minutes=1))], width=100)
@@ -370,39 +460,43 @@ class TestSessionsUnavailable(unittest.TestCase):
         # Parchear tambien config_dirs: en una maquina limpia (CI) no existe ~/.claude
         # y get_sessions abortaria antes de llegar al mock. Lo cazo el CI, no la
         # maquina de desarrollo, donde ~/.claude si existe.
+        #
+        # Y `claude_bin`, no `shutil.which`: ahora hay un fallback que busca en disco, asi
+        # que anular which no basta para simular "no esta instalado" — encontraria el
+        # claude real de la maquina y el test dejaria de ser hermetico.
         orig_run, orig_dirs = ccl.subprocess.run, ccl.config_dirs
-        orig_which = ccl.shutil.which
+        orig_bin = ccl.claude_bin
         ccl.subprocess.run = fake
         ccl.config_dirs = lambda: ["/tmp/fake-claude"]
-        ccl.shutil.which = lambda _: "/usr/bin/claude"
+        ccl.claude_bin = lambda: "/usr/bin/claude"
         try:
             return ccl.get_sessions()
         finally:
             ccl.subprocess.run, ccl.config_dirs = orig_run, orig_dirs
-            ccl.shutil.which = orig_which
+            ccl.claude_bin = orig_bin
 
     def test_sin_ningun_directorio_de_config(self):
-        orig_dirs, orig_which = ccl.config_dirs, ccl.shutil.which
+        orig_dirs, orig_bin = ccl.config_dirs, ccl.claude_bin
         ccl.config_dirs = lambda: []
-        ccl.shutil.which = lambda _: "/usr/bin/claude"   # el comando SI existe
+        ccl.claude_bin = lambda: "/usr/bin/claude"   # el comando SI existe
         try:
             with self.assertRaises(ccl.SessionsUnavailable) as cm:
                 ccl.get_sessions()
             self.assertIn("config", str(cm.exception))
         finally:
-            ccl.config_dirs, ccl.shutil.which = orig_dirs, orig_which
+            ccl.config_dirs, ccl.claude_bin = orig_dirs, orig_bin
 
     def test_comando_ausente_gana_al_de_config(self):
         # si no hay ni comando ni config, el mensaje util es el del comando
-        orig_dirs, orig_which = ccl.config_dirs, ccl.shutil.which
+        orig_dirs, orig_bin = ccl.config_dirs, ccl.claude_bin
         ccl.config_dirs = lambda: []
-        ccl.shutil.which = lambda _: None
+        ccl.claude_bin = lambda: None
         try:
             with self.assertRaises(ccl.SessionsUnavailable) as cm:
                 ccl.get_sessions()
             self.assertIn("no encuentro el comando", str(cm.exception))
         finally:
-            ccl.config_dirs, ccl.shutil.which = orig_dirs, orig_which
+            ccl.config_dirs, ccl.claude_bin = orig_dirs, orig_bin
 
     def test_comando_ausente(self):
         def boom(*a, **k):
@@ -444,6 +538,75 @@ class TestSessionsUnavailable(unittest.TestCase):
 
 
 # ────────────────────────── multi-cuenta ──────────────────────────
+
+
+class TestBuscarClaude(unittest.TestCase):
+    """
+    Un atajo global arranca el proceso con el PATH minimo de launchd, donde `claude` no
+    esta: con npm bajo nvm vive en ~/.nvm/versions/node/<version>/bin. Sin esta busqueda,
+    `ccl -w` fallaba desde el atajo y funcionaba desde la terminal.
+    """
+
+    def setUp(self):
+        self.orig_which, self.orig_extra = ccl.shutil.which, ccl.CLAUDE_EXTRA
+        ccl._claude_bin = None      # el cache es de modulo: hay que limpiarlo entre tests
+
+    def tearDown(self):
+        ccl.shutil.which, ccl.CLAUDE_EXTRA = self.orig_which, self.orig_extra
+        ccl._claude_bin = None
+
+    def _ejecutable(self, ruta, mtime):
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(ruta, 0o755)
+        os.utime(ruta, (mtime, mtime))
+
+    def test_el_PATH_manda_si_esta_ahi(self):
+        ccl.shutil.which = lambda _: "/usr/bin/claude"
+        ccl.CLAUDE_EXTRA = ["/no/existe/claude"]
+        self.assertEqual(ccl.claude_bin(), "/usr/bin/claude")
+
+    def test_lo_busca_fuera_del_PATH(self):
+        ccl.shutil.which = lambda _: None
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = os.path.join(tmp, "nvm", "v25.9.0", "bin", "claude")
+            self._ejecutable(ruta, 1000)
+            ccl.CLAUDE_EXTRA = [os.path.join(tmp, "nvm", "*", "bin", "claude")]
+            self.assertEqual(ccl.claude_bin(), ruta)
+
+    def test_con_varias_versiones_de_node_coge_la_mas_reciente(self):
+        """Por fecha, no por nombre: ordenar los nombres pone v25.9.0 antes de v25.10.0."""
+        ccl.shutil.which = lambda _: None
+        with tempfile.TemporaryDirectory() as tmp:
+            vieja = os.path.join(tmp, "nvm", "v25.9.0", "bin", "claude")
+            nueva = os.path.join(tmp, "nvm", "v25.10.0", "bin", "claude")
+            self._ejecutable(vieja, 1000)
+            self._ejecutable(nueva, 2000)
+            ccl.CLAUDE_EXTRA = [os.path.join(tmp, "nvm", "*", "bin", "claude")]
+            self.assertEqual(ccl.claude_bin(), nueva)
+
+    def test_ignora_lo_que_no_es_ejecutable(self):
+        ccl.shutil.which = lambda _: None
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = os.path.join(tmp, "claude")
+            self._ejecutable(ruta, 1000)
+            os.chmod(ruta, 0o644)          # existe pero no se puede ejecutar
+            ccl.CLAUDE_EXTRA = [ruta]
+            self.assertIsNone(ccl.claude_bin())
+
+    def test_si_no_esta_en_ningun_sitio_devuelve_None(self):
+        ccl.shutil.which = lambda _: None
+        ccl.CLAUDE_EXTRA = ["/no/existe/en/absoluto/claude"]
+        self.assertIsNone(ccl.claude_bin())
+
+    def test_no_repite_la_busqueda(self):
+        """Se cachea: el glob no puede correr en cada refresco, que es cada 4s."""
+        veces = []
+        ccl.shutil.which = lambda _: (veces.append(1), "/usr/bin/claude")[1]
+        ccl.claude_bin()
+        ccl.claude_bin()
+        self.assertEqual(len(veces), 1)
 
 
 class TestMultiCuenta(unittest.TestCase):
@@ -547,6 +710,149 @@ class TestFiltro(unittest.TestCase):
         self.assertEqual(ccl.strip_accents("sin acentos"), "sin acentos")
 
 
+# ────────────────────────── lectura de teclas ──────────────────────────
+
+
+class TestLecturaDeTeclas(unittest.TestCase):
+    """
+    `read_key` sobre un pty de verdad: es la unica forma de ver como se descomponen
+    las secuencias de escape. Distinguir ESC+digito (Option-N) de ESC+[ (flechas) es
+    exactamente el tipo de cosa que falla en silencio.
+    """
+
+    def _pulsar(self, data):
+        """Devuelve lo que read_key() decodifica al recibir `data` por el terminal."""
+        maestro, esclavo = os.openpty()
+        # Escribir DESPUES de que read_key entre en modo raw: tty.setraw usa TCSAFLUSH,
+        # que descarta la entrada pendiente, asi que lo escrito antes se perderia.
+        hilo = threading.Timer(0.05, lambda: os.write(maestro, data))
+        stdin_real = ccl.sys.stdin
+        try:
+            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
+            hilo.start()
+            return ccl.read_key(timeout=3.0)
+        finally:
+            hilo.cancel()
+            ccl.sys.stdin.close()
+            ccl.sys.stdin = stdin_real
+            os.close(esclavo)
+            os.close(maestro)
+
+    def test_option_digito_llega_como_alt(self):
+        self.assertEqual(self._pulsar(b"\x1b1"), "alt-1")
+        self.assertEqual(self._pulsar(b"\x1b9"), "alt-9")
+
+    def test_las_flechas_siguen_funcionando(self):
+        self.assertEqual(self._pulsar(b"\x1b[A"), "up")
+        self.assertEqual(self._pulsar(b"\x1b[B"), "down")
+
+    def test_pgup_pgdn_no_dejan_la_tilde_en_el_buffer(self):
+        """
+        ESC [ 5 ~ : si no se consume la '~', la lectura siguiente la ve como texto
+        escrito y PgDn arrancaba un filtro por "~".
+        """
+        for data, esperado in ((b"\x1b[5~", "pgup"), (b"\x1b[6~", "pgdn")):
+            maestro, esclavo = os.openpty()
+            hilo = threading.Timer(0.05, lambda: os.write(maestro, data))
+            stdin_real = ccl.sys.stdin
+            try:
+                ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
+                hilo.start()
+                self.assertEqual(ccl.read_key(timeout=3.0), esperado)
+                # nada mas que leer: la tilde ya se consumio
+                self.assertIsNone(ccl.read_key(timeout=0.3), f"quedo basura tras {esperado}")
+            finally:
+                hilo.cancel()
+                ccl.sys.stdin.close()
+                ccl.sys.stdin = stdin_real
+                os.close(esclavo)
+                os.close(maestro)
+
+    def test_esc_suelto_sigue_siendo_esc(self):
+        self.assertEqual(self._pulsar(b"\x1b"), "esc")
+
+    def test_no_se_pierden_las_teclas_que_llegan_juntas(self):
+        """
+        `tty.setraw` usa TCSAFLUSH por defecto, que DESCARTA la entrada recibida y no
+        leida. Como se entra en modo raw en cada lectura, de 5 teclas seguidas llegaba 1:
+        se comia letras al escribir rapido y el doble clic (press,release,press,release
+        de golpe) no llegaba nunca a verse como doble.
+        """
+        maestro, esclavo = os.openpty()
+        stdin_real = ccl.sys.stdin
+        hilo = threading.Timer(0.05, lambda: os.write(maestro, b"abcde"))
+        try:
+            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
+            hilo.start()
+            leidas = []
+            for _ in range(5):
+                k = ccl.read_key(timeout=1.0)
+                if k is None:
+                    break
+                leidas.append(k)
+        finally:
+            hilo.cancel()
+            ccl.sys.stdin.close()
+            ccl.sys.stdin = stdin_real
+            os.close(esclavo)
+            os.close(maestro)
+        self.assertEqual(leidas, ["a", "b", "c", "d", "e"])
+
+    def test_dos_clics_seguidos_llegan_los_dos(self):
+        """El doble clic depende de esto: los 4 eventos vienen en una sola rafaga."""
+        maestro, esclavo = os.openpty()
+        stdin_real = ccl.sys.stdin
+        rafaga = b"\x1b[<0;5;9M\x1b[<0;5;9m\x1b[<0;5;9M\x1b[<0;5;9m"
+        hilo = threading.Timer(0.05, lambda: os.write(maestro, rafaga))
+        try:
+            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
+            hilo.start()
+            leidas = [ccl.read_key(timeout=1.0) for _ in range(4)]
+        finally:
+            hilo.cancel()
+            ccl.sys.stdin.close()
+            ccl.sys.stdin = stdin_real
+            os.close(esclavo)
+            os.close(maestro)
+        self.assertEqual(leidas, ["click:9", "mouse-release", "click:9", "mouse-release"])
+
+    def test_clic_izquierdo_da_la_fila(self):
+        """SGR: ESC [ < boton ; columna ; fila M — solo interesa la fila."""
+        self.assertEqual(self._pulsar(b"\x1b[<0;42;7M"), "click:7")
+        self.assertEqual(self._pulsar(b"\x1b[<0;1;23M"), "click:23")
+
+    def test_soltar_el_boton_no_es_un_clic(self):
+        """Si el release contara, cada clic simple pareceria doble."""
+        self.assertEqual(self._pulsar(b"\x1b[<0;42;7m"), "mouse-release")
+
+    def test_rueda(self):
+        self.assertEqual(self._pulsar(b"\x1b[<64;10;5M"), "wheelup")
+        self.assertEqual(self._pulsar(b"\x1b[<65;10;5M"), "wheeldn")
+
+    def test_botones_que_no_usamos(self):
+        for data in (b"\x1b[<1;10;5M", b"\x1b[<2;10;5M"):   # medio, derecho
+            self.assertEqual(self._pulsar(data), "mouse-otro")
+
+    def test_modo_x10_por_si_el_terminal_ignora_sgr(self):
+        """
+        ESC [ M + tres bytes (+32 cada uno). Sin decodificarlo, un terminal que ignore
+        1006 metia los clics como basura en el filtro.
+        """
+        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32, 32 + 42, 32 + 7])), "click:7")
+        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32 + 3, 32 + 5, 32 + 5])),
+                         "mouse-release")
+        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32 + 64, 32 + 5, 32 + 5])), "wheelup")
+
+    def test_secuencia_de_raton_rota_no_ensucia_el_filtro(self):
+        """Basura entre '<' y 'M' debe caer en 'esc', nunca convertirse en texto."""
+        self.assertEqual(self._pulsar(b"\x1b[<sarasa;;M"), "esc")
+
+    def test_ctrl_r_y_digitos(self):
+        self.assertEqual(self._pulsar(b"\x12"), "refresh")
+        self.assertEqual(self._pulsar(b"3"), "3")
+        self.assertEqual(self._pulsar(b"\r"), "enter")
+
+
 # ────────────────────────── ayuda y teclas reservadas ──────────────────────────
 
 
@@ -559,22 +865,83 @@ class TestAyuda(unittest.TestCase):
             for tecla, desc in filas:
                 self.assertTrue(desc, f"toda fila necesita descripcion: {titulo}/{tecla}")
 
+    def _texto_completo(self, cols=110, term_rows=40):
+        """Todas las paginas juntas: la ayuda ya no cabe en una sola pantalla."""
+        n = len(ccl.help_pages(cols, term_rows))
+        return ccl.ANSI_RE.sub("", "".join(ccl.render_help(cols, term_rows, p)
+                                           for p in range(n)))
+
     def test_render_incluye_todas_las_secciones(self):
-        out = ccl.render_help(110, 40)
-        plano = ccl.ANSI_RE.sub("", out)
+        plano = self._texto_completo()
         for titulo, _ in ccl.HELP:
             self.assertIn(titulo, plano)
 
     def test_render_documenta_las_teclas_de_accion(self):
-        plano = ccl.ANSI_RE.sub("", ccl.render_help(110, 40))
+        plano = self._texto_completo()
         for tecla in ("Ctrl-R", "?", "enter", "esc"):
             self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
 
+    def test_documenta_como_copiar(self):
+        """Con el raton activo la seleccion normal no funciona: hay que decir como."""
+        plano = self._texto_completo()
+        for pista in ("copiar", "⌥", "--list"):
+            self.assertIn(pista, plano, f"falta {pista!r}: no se explica como copiar")
+
     def test_render_no_desborda_el_ancho(self):
         cols = 80
-        for linea in ccl.render_help(cols, 40).split("\r\n"):
-            self.assertLessEqual(ccl.vis(linea), cols,
-                                 f"linea mas ancha que la terminal: {linea!r}")
+        for p in range(len(ccl.help_pages(cols, 40))):
+            for linea in ccl.render_help(cols, 40, p).split("\r\n"):
+                self.assertLessEqual(ccl.vis(linea), cols,
+                                     f"linea mas ancha que la terminal: {linea!r}")
+
+    def test_ninguna_pagina_desborda_la_altura(self):
+        """
+        Se pinta de arriba abajo: si una pagina es mas alta que la ventana, lo que sobra
+        se va por el borde SUPERIOR y se pierde el principio sin avisar.
+        """
+        for term_rows in (10, 24, 30, 44, 60):
+            for p, pag in enumerate(ccl.help_pages(110, term_rows)):
+                # +1 del pie; debe caber con al menos una fila de margen
+                self.assertLess(len(pag) + 1, term_rows + 1,
+                                f"pagina {p} no cabe en {term_rows} filas")
+
+    def test_una_ventana_alta_no_pagina(self):
+        self.assertEqual(len(ccl.help_pages(110, 200)), 1)
+
+    def test_una_ventana_baja_pagina(self):
+        self.assertGreater(len(ccl.help_pages(110, 20)), 1)
+
+    def test_las_paginas_cortan_al_final_de_una_seccion(self):
+        """
+        Partiendo a ciegas, la pagina siguiente empezaba por una linea de nota sin su
+        tecla ni su titulo — se leia como texto colgando. Alturas donde toda seccion
+        cabe: con una ventana diminuta hay que partir por dentro y no queda opcion.
+        """
+        for term_rows in (24, 30, 44):
+            paginas = ccl.help_pages(110, term_rows)
+            for i, pag in enumerate(paginas[:-1]):
+                self.assertEqual(ccl.ANSI_RE.sub("", pag[-1]).strip(), "",
+                                 f"{term_rows} filas: la página {i + 1} corta a medias")
+
+    def test_la_ultima_pagina_no_ofrece_siguiente(self):
+        """Decir «espacio sigue» en la ultima es mentira: ahi el espacio vuelve."""
+        paginas = ccl.help_pages(110, 24)
+        self.assertGreater(len(paginas), 1)
+        ultima = ccl.ANSI_RE.sub("", ccl.render_help(110, 24, len(paginas) - 1))
+        self.assertNotIn("sigue", ultima)
+        primera = ccl.ANSI_RE.sub("", ccl.render_help(110, 24, 0))
+        self.assertIn("sigue", primera)
+
+    def test_una_sola_pagina_no_habla_de_paginas(self):
+        plano = ccl.ANSI_RE.sub("", ccl.render_help(110, 200))
+        # "página 1/" y no "página": PgUp/PgDn se documenta como "media página"
+        self.assertNotIn("página 1/", plano)
+        self.assertIn("cualquier tecla", plano)
+
+    def test_no_se_pierde_ninguna_linea_al_paginar(self):
+        enteras = ccl.help_lines(110)
+        partidas = [l for pag in ccl.help_pages(110, 20) for l in pag]
+        self.assertEqual(partidas, enteras)
 
     def test_ninguna_accion_es_una_letra_suelta(self):
         """
