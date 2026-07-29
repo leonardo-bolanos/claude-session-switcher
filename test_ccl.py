@@ -371,22 +371,38 @@ class TestSessionsUnavailable(unittest.TestCase):
         # y get_sessions abortaria antes de llegar al mock. Lo cazo el CI, no la
         # maquina de desarrollo, donde ~/.claude si existe.
         orig_run, orig_dirs = ccl.subprocess.run, ccl.config_dirs
+        orig_which = ccl.shutil.which
         ccl.subprocess.run = fake
         ccl.config_dirs = lambda: ["/tmp/fake-claude"]
+        ccl.shutil.which = lambda _: "/usr/bin/claude"
         try:
             return ccl.get_sessions()
         finally:
             ccl.subprocess.run, ccl.config_dirs = orig_run, orig_dirs
+            ccl.shutil.which = orig_which
 
     def test_sin_ningun_directorio_de_config(self):
-        orig = ccl.config_dirs
+        orig_dirs, orig_which = ccl.config_dirs, ccl.shutil.which
         ccl.config_dirs = lambda: []
+        ccl.shutil.which = lambda _: "/usr/bin/claude"   # el comando SI existe
         try:
             with self.assertRaises(ccl.SessionsUnavailable) as cm:
                 ccl.get_sessions()
             self.assertIn("config", str(cm.exception))
         finally:
-            ccl.config_dirs = orig
+            ccl.config_dirs, ccl.shutil.which = orig_dirs, orig_which
+
+    def test_comando_ausente_gana_al_de_config(self):
+        # si no hay ni comando ni config, el mensaje util es el del comando
+        orig_dirs, orig_which = ccl.config_dirs, ccl.shutil.which
+        ccl.config_dirs = lambda: []
+        ccl.shutil.which = lambda _: None
+        try:
+            with self.assertRaises(ccl.SessionsUnavailable) as cm:
+                ccl.get_sessions()
+            self.assertIn("no encuentro el comando", str(cm.exception))
+        finally:
+            ccl.config_dirs, ccl.shutil.which = orig_dirs, orig_which
 
     def test_comando_ausente(self):
         def boom(*a, **k):

@@ -30,6 +30,7 @@ import json
 import os
 import re
 import select
+import shutil
 import subprocess
 import sys
 import termios
@@ -219,9 +220,21 @@ def get_sessions():
     esta instalado"). Si una cuenta secundaria falla, se ignora: no tiene sentido
     dejar sin panel al usuario porque una config extra este rota.
     """
+    # Orden del diagnostico, de la causa mas profunda a la mas superficial: si falta
+    # el comando, decirlo primero. Al reves, alguien sin Claude Code instalado leia
+    # "no hay directorio de config", que manda a buscar el problema equivocado.
+    if shutil.which("claude") is None:
+        raise SessionsUnavailable(
+            "no encuentro el comando `claude`.\n"
+            "  Instala Claude Code, o revisa que este en tu PATH."
+        )
+
     dirs = config_dirs()
     if not dirs:
-        raise SessionsUnavailable(f"no hay ningun directorio de config en {HOME}/.claude*")
+        raise SessionsUnavailable(
+            f"`claude` existe pero no hay ninguna config en {HOME}/.claude*.\n"
+            "  Ejecuta Claude Code al menos una vez, o define CCL_CONFIG_DIRS."
+        )
 
     todas, primero = [], True
     for d in dirs:
