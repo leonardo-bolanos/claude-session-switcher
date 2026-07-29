@@ -233,7 +233,7 @@ Cuando una sesión muere, su número se libera y se recicla.
 
 | Elemento | Significado |
 |---|---|
-| Nota `✎` | magenta en negrita, el color del repo — es lo único de esa línea que escribiste tú |
+| Nota `✎` | salmón apagado en negrita — es lo único de esa línea que escribiste tú |
 | Antigüedad | verde reciente → amarillo → gris viejo |
 | Modelo | azul Opus · verde Sonnet · gris Haiku · magenta Fable |
 | `effort` | amarillo solo en `xhigh` / `max` |

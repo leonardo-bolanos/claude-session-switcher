@@ -641,8 +641,30 @@ class TestNotas(unittest.TestCase):
         apertura = codigos[0]
         self.assertIn("1;", apertura, "debe llevar negrita")
         self.assertNotIn("2;", apertura, "DIM haria justo lo contrario de resaltar")
-        # y un color de texto de verdad, no solo el atributo de negrita
-        self.assertRegex(apertura, r"3[0-7]|9[0-7]")
+        # Y un color de texto de verdad, no solo el atributo de negrita. Se acepta la
+        # paleta de 256 (`38;5;N`) porque el rojo desaturado que se quiere para la nota
+        # no existe entre los 16 basicos.
+        self.assertRegex(apertura, r"38;5;\d+|3[0-7]\b|9[0-7]\b")
+
+    def test_el_color_de_la_nota_no_choca_con_los_demas(self):
+        """
+        Cada cosa de la fila tiene que distinguirse de las otras. Ya paso: la nota se
+        puso en magenta, que es el color del repo, y quedaba duplicado.
+        """
+        nota = ccl.ANSI_RE.findall(ccl.NOTE("x"))[0]
+        otros = {
+            "repo/fable": ccl.ANSI_RE.findall(ccl.MAGENTA("x"))[0],
+            "rama/haiku": ccl.ANSI_RE.findall(ccl.GREY("x"))[0],
+            "sonnet": ccl.ANSI_RE.findall(ccl.GREEN("x"))[0],
+            "opus": ccl.ANSI_RE.findall(ccl.BLUE("x"))[0],
+            "effort": ccl.ANSI_RE.findall(ccl.YELLOW("x"))[0],
+            "⚠ y errores": ccl.ANSI_RE.findall(ccl.RED("x"))[0],
+            "numero y UI": ccl.ANSI_RE.findall(ccl.CYAN("x"))[0],
+        }
+        for quien, codigo in otros.items():
+            # comparar el numero de color, ignorando el ';1' de la negrita
+            self.assertNotEqual(nota.replace("1;", ""), codigo,
+                                f"la nota usa el mismo color que {quien}")
 
     def test_sin_nota_la_linea_no_cambia(self):
         r = row(1, "a")

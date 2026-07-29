@@ -176,6 +176,30 @@ def grabar(notas):
 # ─────────────────────── ANSI -> SVG ───────────────────────
 
 
+NIVELES_256 = (0, 95, 135, 175, 215, 255)   # los seis valores del cubo de color de xterm
+
+
+def color_256(indice):
+    """
+    Un indice de la paleta de 256 a hex, como lo define xterm.
+
+    Hace falta porque el panel pinta la nota con `38;5;N`: sin esto el generador se comia
+    el codigo y la nota salia BLANCA en el demo — y el demo es justo la pieza del README
+    que ensena el color.
+    """
+    if indice < 8:
+        return COLORES[str(30 + indice)]
+    if indice < 16:
+        return COLORES[str(90 + indice - 8)]
+    if indice < 232:                          # cubo 6x6x6
+        n = indice - 16
+        return "#%02x%02x%02x" % (NIVELES_256[n // 36],
+                                  NIVELES_256[(n // 6) % 6],
+                                  NIVELES_256[n % 6])
+    gris = 8 + (indice - 232) * 10            # rampa de grises
+    return "#%02x%02x%02x" % (gris, gris, gris)
+
+
 def trozos_con_color(linea):
     """[(texto, color, tenue, negrita)] a partir de una linea con codigos SGR."""
     salida, pos = [], 0
@@ -183,15 +207,26 @@ def trozos_con_color(linea):
     for m in SGR_RE.finditer(linea):
         if m.start() > pos:
             salida.append((linea[pos:m.start()], color, tenue, negrita))
-        for codigo in (m.group(1) or "0").split(";"):
+        codigos = (m.group(1) or "0").split(";")
+        i = 0
+        while i < len(codigos):
+            codigo = codigos[i]
             if codigo in ("", "0"):
                 color, tenue, negrita = None, False, False
             elif codigo == "1":
                 negrita = True
             elif codigo == "2":
                 tenue = True
+            elif codigo == "38" and codigos[i + 1:i + 2] == ["5"]:
+                # 38;5;N : color de la paleta de 256. Consume los dos codigos siguientes.
+                try:
+                    color = color_256(int(codigos[i + 2]))
+                except (IndexError, ValueError):
+                    pass
+                i += 2
             elif codigo in COLORES:
                 color = COLORES[codigo]
+            i += 1
         pos = m.end()
     if pos < len(linea):
         salida.append((linea[pos:], color, tenue, negrita))

@@ -202,17 +202,26 @@ para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
 **Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `cwd`. Si no, no
 se ve hasta el refresco (4 s) y parece que no se guardo.
 
-**La nota se pinta con `NOTE` (negrita + magenta), nunca con un color a secas.** La linea de
-detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo —
-justo lo contrario de para lo que sirve.
+**La nota se pinta con `NOTE` (negrita + salmon apagado), nunca con un color a secas.** La linea
+de detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo
+— justo lo contrario de para lo que sirve.
 
-Magenta a proposito: en la linea principal el **repo** ya va en magenta, y la nota es una etiqueta
-del repo (se guarda por `cwd`), asi que el color refuerza esa asociacion; y en la linea de detalle
-el magenta casi no aparece —solo con Fable—, asi que no compite con el verde/azul de los modelos.
+**Es el unico sitio del script que se sale de los 16 colores ANSI**, y no por capricho: los
+disponibles estaban todos cogidos —magenta el repo, verde/azul/gris los modelos, amarillo el
+effort, gris la rama, cian el numero y la UI— y de rojo solo hay `31`, que aqui significa error y
+`⚠`. Una nota no es una alarma, hace falta un rojo desaturado, y eso solo existe en la paleta de
+256: `1;38;5;174` (#d78787). Un terminal sin 256 colores ignora el codigo y pinta el texto normal:
+se pierde el enfasis, no se rompe nada.
 
-El codigo es `1;35` combinado y no `BOLD(MAGENTA(x))`: anidado deja dos resets pegados. Los tests
-comprueban **`NOTE`**, no el codigo concreto: el color se puede cambiar de opinion sin tocarlos,
-pero que la nota vaya resaltada, con negrita y con color de verdad, no.
+Ese `38;5;N` **rompio el generador del demo**, que solo entendia los 16 basicos: se comia el
+codigo y la nota salia BLANCA en `demo.svg`, justo en la pieza que sirve para ensenar el color.
+Por eso `make_demo.py` tiene `color_256()` con el cubo 6x6x6 de xterm, y hay un test que
+comprueba que la nota del demo lleva `fill=`.
+
+El codigo va combinado (`1;38;5;174`) y no `BOLD(...)`: anidado deja dos resets pegados. Los tests
+comprueban **`NOTE`** y no el codigo concreto —el color ya se cambio dos veces—, mas uno que
+verifica que ningun otro elemento de la fila usa el mismo color, que es como se colo el magenta
+duplicado con el repo.
 
 **El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
 prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece

@@ -76,14 +76,17 @@ GREY = lambda s: c("90", s)
 # La nota es lo unico de la linea de detalle que escribio el usuario, y esa linea es casi
 # toda DIM y grises: sin resaltarla se perdia entre la rama y el modelo.
 #
-# Magenta y no otro color, por dos razones: en la linea principal el REPO ya va en magenta,
-# y la nota es justamente una etiqueta del repo (se guarda por cwd), asi que el color
-# refuerza esa asociacion; y en la linea de detalle el magenta no aparece practicamente
-# nunca —solo si el modelo es Fable—, asi que no compite con el verde/azul de los modelos
-# ni con el gris de la rama.
+# Salmon apagado, y es el unico sitio del script que se sale de los 16 colores ANSI. Con
+# 16 no se podia: los libres estaban cogidos —magenta es el repo, verde/azul/gris los
+# modelos, amarillo el effort, gris la rama— y de rojo solo hay `31`, que aqui significa
+# error y ⚠. Una nota no es una alarma, asi que hace falta un rojo desaturado, y eso ya
+# solo existe en la paleta de 256.
 #
-# Negrita y color en un solo codigo, no BOLD(MAGENTA(x)): anidado deja dos resets pegados.
-NOTE = lambda s: c("1;35", s)
+# Requiere un terminal con 256 colores (iTerm2 los tiene). Uno que no los soporte ignora
+# el codigo y pinta el texto en su color normal: se pierde el enfasis, no se rompe nada.
+#
+# Negrita y color en un solo codigo, no BOLD(...): anidado deja dos resets pegados.
+NOTE = lambda s: c("1;38;5;174", s)
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 TTY_RE = re.compile(r"(?:/dev/)?tty[a-z]*\d+")

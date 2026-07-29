@@ -112,6 +112,18 @@ def press(fila, col=10):
     return (f"\033[<0;{col};{fila}M\033[<0;{col};{fila}m").encode()
 
 
+def _cargar_make_demo():
+    """El generador del demo como modulo, para probar sus funciones sueltas."""
+    import importlib.machinery
+    import importlib.util
+    cargador = importlib.machinery.SourceFileLoader(
+        "make_demo_mod", os.path.join(_HERE, "make_demo.py"))
+    modulo = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader("make_demo_mod", cargador))
+    cargador.exec_module(modulo)
+    return modulo
+
+
 # Las esperas son de reloj, asi que en una maquina lenta (un runner de CI compartido) se
 # quedan cortas y los tests fallan sin que nada este roto. Se escalan con esta variable
 # en vez de subir el valor base, que ralentizaria a todo el mundo: el CI usa 2.
@@ -625,6 +637,26 @@ class TestGeneradorDelDemo(unittest.TestCase):
         texto = re.sub(r"<[^>]+>", "", self.svg)
         self.assertIn("filtro:", texto, "el demo no muestra el filtrado")
         self.assertIn("esperando:", texto, "el demo no muestra el salto")
+
+    def test_la_nota_sale_con_color_y_no_en_blanco(self):
+        """
+        El panel pinta la nota con `38;5;N` (paleta de 256). El generador solo entendia
+        los 16 basicos, asi que se comia el codigo y la nota salia BLANCA — y justo en la
+        pieza del README que sirve para ensenar el color.
+        """
+        # "✎ bloquea", el texto que escribe el guion de make_demo, y no un ✎ cualquiera:
+        # el prompt del editor tambien lleva uno y ese va DIM a proposito, sin color.
+        m = re.search(r"<tspan[^>]*>✎ bloquea[^<]*</tspan>", self.svg)
+        self.assertIsNotNone(m, "el demo deberia mostrar la nota ya guardada")
+        self.assertIn("fill=", m.group(), "la nota sale sin color")
+
+    def test_la_paleta_de_256_se_convierte_bien(self):
+        """La aritmetica del cubo 6x6x6 de xterm es facil de equivocar."""
+        md = _cargar_make_demo()
+        casos = {0: "#4a4a4a", 15: "#ffffff", 16: "#000000", 174: "#d78787",
+                 196: "#ff0000", 231: "#ffffff", 232: "#080808", 255: "#eeeeee"}
+        for indice, esperado in casos.items():
+            self.assertEqual(md.color_256(indice), esperado, f"indice {indice}")
 
     def test_no_expone_datos_reales(self):
         """Las sesiones son sinteticas: el demo no puede filtrar repos ni prompts."""
