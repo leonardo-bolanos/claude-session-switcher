@@ -391,7 +391,15 @@ def assign_numbers(sessions):
 
 
 def ago(iso_ts):
-    """'hace 5m' / 'ayer 17:31' / '24-jul 21:52'."""
+    """
+    'ahora' / 'hace 5m' / 'hace 3h' / 'ayer 17:31' / '24-jul 21:52'.
+
+    Se basa en el tiempo TRANSCURRIDO, no en el dia del calendario. Antes usaba
+    `now.date() == dt.date()` para decidir si mostrar horas, y eso hacia que lo mismo
+    se viera distinto segun la hora: a las 15:00, algo de hace 3h salia como "hace 3h";
+    a las 02:00 cruzaba medianoche y salia como "ayer 23:00". Lo cazo el CI, que corre
+    en UTC de madrugada.
+    """
     if not iso_ts:
         return "?"
     try:
@@ -400,15 +408,16 @@ def ago(iso_ts):
     except Exception:
         return "?"
     now = datetime.datetime.now(dt.tzinfo)
-    delta = now - dt
-    mins = delta.total_seconds() / 60
+    mins = (now - dt).total_seconds() / 60
+    if mins < 0:
+        return "ahora"          # reloj desincronizado: no mostrar futuro
     if mins < 1:
         return "ahora"
     if mins < 60:
         return f"hace {int(mins)}m"
-    if mins < 24 * 60 and now.date() == dt.date():
+    if mins < 24 * 60:
         return f"hace {int(mins / 60)}h"
-    if (now.date() - dt.date()).days == 1:
+    if mins < 48 * 60:
         return f"ayer {dt.strftime('%H:%M')}"
     return dt.strftime("%d-%b %H:%M").lower()
 

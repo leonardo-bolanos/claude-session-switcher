@@ -267,7 +267,21 @@ class TestFormato(unittest.TestCase):
         self.assertEqual(ccl.ago(iso(minutes=5)), "hace 5m")
 
     def test_ago_horas(self):
-        self.assertTrue(ccl.ago(iso(hours=3)).startswith("hace "))
+        self.assertEqual(ccl.ago(iso(hours=3)), "hace 3h")
+        self.assertEqual(ccl.ago(iso(hours=23)), "hace 23h")
+
+    def test_ago_no_depende_de_la_hora_del_dia(self):
+        # el bug que cazo el CI: cruzar medianoche cambiaba "hace 3h" por "ayer 23:00"
+        # para el mismo tiempo transcurrido
+        self.assertEqual(ccl.ago(iso(hours=3)), "hace 3h")
+
+    def test_ago_ayer_y_mas_atras(self):
+        self.assertTrue(ccl.ago(iso(hours=30)).startswith("ayer "))
+        self.assertFalse(ccl.ago(iso(days=5)).startswith(("hace", "ayer")))
+
+    def test_ago_futuro_no_muestra_negativos(self):
+        futuro = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        self.assertEqual(ccl.ago(futuro), "ahora")
 
     def test_short_model(self):
         self.assertIsNone(ccl.short_model(None))
