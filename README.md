@@ -231,7 +231,7 @@ a session dies its number is freed and recycled.
 
 | Element | Meaning |
 |---|---|
-| `✎` note | bold cyan — the only thing on that line you wrote yourself |
+| `✎` note | bold magenta, matching the repo colour — the only thing on that line you wrote yourself |
 | Age | green recent → yellow → grey old |
 | Model | blue Opus · green Sonnet · grey Haiku · magenta Fable |
 | `effort` | yellow only on `xhigh` / `max` |

@@ -621,16 +621,28 @@ class TestNotas(unittest.TestCase):
 
     def test_la_nota_va_resaltada(self):
         """
-        La linea de detalle es casi toda DIM y grises: sin negrita la nota se pierde
+        La linea de detalle es casi toda DIM y grises: sin resaltarla, la nota se pierde
         entre la rama y el modelo, que es justo lo contrario de para lo que sirve.
+
+        Se comprueba contra `NOTE`, no contra un codigo concreto: el color se puede
+        cambiar de opinion sin tocar el test, pero que la nota se resalte, no.
         """
         r = row(1, "a")
         r.update({"note": "mi nota", "branch": "main", "model": "opus-5"})
         linea = ccl.detail_line(r)
-        codigos = ccl.ANSI_RE.findall(linea[:linea.index("✎")] or linea)
-        self.assertIn("\033[1;36m", linea, "la nota debe ir en negrita y color")
-        # y el resto de la linea NO debe quedarse en negrita
+        self.assertIn(ccl.NOTE("✎ mi nota"), linea, "la nota debe pintarse con NOTE")
+        # y el resto de la linea NO debe quedarse con el atributo abierto
         self.assertIn("\033[0m", linea[linea.index("nota"):])
+
+    def test_el_resalte_de_la_nota_es_negrita_con_color(self):
+        """Ni DIM (seria invisible) ni color a secas (se pierde entre los demas)."""
+        codigos = ccl.ANSI_RE.findall(ccl.NOTE("x"))
+        self.assertTrue(codigos, "NOTE tiene que emitir algun codigo")
+        apertura = codigos[0]
+        self.assertIn("1;", apertura, "debe llevar negrita")
+        self.assertNotIn("2;", apertura, "DIM haria justo lo contrario de resaltar")
+        # y un color de texto de verdad, no solo el atributo de negrita
+        self.assertRegex(apertura, r"3[0-7]|9[0-7]")
 
     def test_sin_nota_la_linea_no_cambia(self):
         r = row(1, "a")

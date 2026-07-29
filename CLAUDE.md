@@ -202,10 +202,17 @@ para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
 **Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `cwd`. Si no, no
 se ve hasta el refresco (4 s) y parece que no se guardo.
 
-**La nota va en `NOTE` (negrita + cian), no en `CYAN` a secas.** La linea de detalle es casi toda
-`DIM` y grises, y en cian plano la nota se perdia entre la rama y el modelo — justo lo contrario
-de para lo que sirve. El codigo es `1;36` combinado y no `BOLD(CYAN(x))`: anidado deja dos resets
-pegados.
+**La nota se pinta con `NOTE` (negrita + magenta), nunca con un color a secas.** La linea de
+detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo —
+justo lo contrario de para lo que sirve.
+
+Magenta a proposito: en la linea principal el **repo** ya va en magenta, y la nota es una etiqueta
+del repo (se guarda por `cwd`), asi que el color refuerza esa asociacion; y en la linea de detalle
+el magenta casi no aparece —solo con Fable—, asi que no compite con el verde/azul de los modelos.
+
+El codigo es `1;35` combinado y no `BOLD(MAGENTA(x))`: anidado deja dos resets pegados. Los tests
+comprueban **`NOTE`**, no el codigo concreto: el color se puede cambiar de opinion sin tocarlos,
+pero que la nota vaya resaltada, con negrita y con color de verdad, no.
 
 **El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
 prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece

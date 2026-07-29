@@ -74,9 +74,16 @@ MAGENTA = lambda s: c("35", s)
 RED = lambda s: c("31", s)
 GREY = lambda s: c("90", s)
 # La nota es lo unico de la linea de detalle que escribio el usuario, y esa linea es casi
-# toda DIM y grises: en cian normal se perdia entre la rama y el modelo. Negrita + cian en
-# un solo codigo, no BOLD(CYAN(x)), que anidado deja dos resets pegados.
-NOTE = lambda s: c("1;36", s)
+# toda DIM y grises: sin resaltarla se perdia entre la rama y el modelo.
+#
+# Magenta y no otro color, por dos razones: en la linea principal el REPO ya va en magenta,
+# y la nota es justamente una etiqueta del repo (se guarda por cwd), asi que el color
+# refuerza esa asociacion; y en la linea de detalle el magenta no aparece practicamente
+# nunca —solo si el modelo es Fable—, asi que no compite con el verde/azul de los modelos
+# ni con el gris de la rama.
+#
+# Negrita y color en un solo codigo, no BOLD(MAGENTA(x)): anidado deja dos resets pegados.
+NOTE = lambda s: c("1;35", s)
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 TTY_RE = re.compile(r"(?:/dev/)?tty[a-z]*\d+")
