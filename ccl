@@ -562,6 +562,14 @@ def interactive(feed):
                         + GREEN(f"{busy_n} activas") + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
 
+                # Cabecera de grupo fija: en ventanas pequeñas el scroll se lleva la
+                # cabecera por arriba y pierdes de vista en que grupo estas.
+                group_i = max((j for j in range(cl, -1, -1)
+                               if lines[j][0] == "head"), default=None)
+                if group_i is not None and group_i < top:
+                    buf.append(" " + lines[group_i][1] + DIM(" …") + "\r\n")
+                    body -= 1
+
                 for i in range(top, min(top + body, len(lines))):
                     role, text, row = lines[i]
                     # la fila resaltada abarca sus DOS lineas (principal + detalle)

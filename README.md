@@ -7,23 +7,11 @@ Si trabajas con varias sesiones de Claude Code abiertas a la vez —una por repo
 repo— llega un punto en que no sabes cuál está en qué pestaña, ni cuál dejaste a medias.
 `ccl` las lista todas con lo que estaban haciendo, y con `Enter` te lleva a su ventana.
 
-```
-  17 sesiones · 2 activas ↕
+![ccl en acción](demo.svg)
 
-  TRABAJANDO (2)
-▌ [ 6] api-rate-limit-retry              backend-api      ahora
-▌   main · opus-5 · xhigh · "añade backoff exponencial al cliente"
-  [ 3] mobile-deeplink-spec              mobile-app       hace 12m
-      develop · sonnet-5 · high · "revisa la spec de deep linking"
-
-  ESPERANDO (15)
-  [16] fix-onboarding-flow               backend-api      hace 29m
-      main · opus-5 · xhigh · "commit your changes"
-  [ 9] docs-migration                    docs             ayer 18:36
-      main · sonnet-5 · high · "adelgaza el README"
-
-  ↑↓ mover  enter abrir  nº ir  r refrescar  esc salir
-```
+Cada sesión muestra su rama, modelo, nivel de `effort` y el último prompt que le diste, para
+que reconozcas en cuál estabas sin tener que entrar. El número de la izquierda es fijo: lo
+tecleas y saltas.
 
 ## Por qué existe
 
@@ -82,7 +70,8 @@ ccl 7            # salta directo a la sesión número 7
 | `esc` / `q` | Salir |
 
 El panel **se refresca solo** y **no se cierra al saltar**: vuelves a la lista con una
-confirmación de a dónde fuiste.
+confirmación de a dónde fuiste. En ventanas pequeñas la cabecera del grupo queda **fija
+arriba** al hacer scroll, para que no pierdas de vista si estás en TRABAJANDO o en ESPERANDO.
 
 ### Numeración estable
 
