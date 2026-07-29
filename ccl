@@ -12,9 +12,10 @@ mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la se
 
 Requiere macOS + iTerm2 (el salto de ventana usa AppleScript) y Python 3.7+.
 
+Detecta varias cuentas solo: ~/.claude y cualquier ~/.claude-<algo> con projects/
+dentro. Se puede fijar la lista con CCL_CONFIG_DIRS (separada por ':').
+
 LIMITACIONES CONOCIDAS
-  - Solo ve UNA instalacion de Claude Code: la de ~/.claude. Si usas varias cuentas
-    apuntando CLAUDE_CONFIG_DIR a otro directorio, esas sesiones no apareceran.
   - Los campos `aiTitle` y `lastPrompt` salen del transcript interno de Claude Code,
     que no esta documentado y puede cambiar. Se tratan como opcionales: si desaparecen,
     el resto sigue funcionando.
@@ -149,18 +150,41 @@ class SessionsUnavailable(Exception):
     """No se pudo consultar a `claude`. Distinto de 'hay cero sesiones'."""
 
 
-def get_sessions():
+def config_dirs():
     """
-    `claude agents --cwd ~ --json` -> lista de sesiones.
+    Directorios de configuracion de Claude Code a consultar.
 
-    Lanza SessionsUnavailable si el comando no existe, tarda demasiado o devuelve algo
-    que no es JSON. Devolver [] en esos casos haria que el usuario leyera "no hay
-    sesiones activas" cuando el problema real es que la herramienta no esta instalada.
+    Por defecto ~/.claude mas cualquier hermano ~/.claude-<algo> que tenga projects/
+    dentro (asi se ven las sesiones de una segunda cuenta sin configurar nada).
+    Se puede fijar la lista con CCL_CONFIG_DIRS, separada por ':'.
     """
+    override = os.environ.get("CCL_CONFIG_DIRS")
+    if override:
+        dirs = [os.path.expanduser(p) for p in override.split(":") if p.strip()]
+        return [d for d in dirs if os.path.isdir(d)]
+
+    found = [os.path.join(HOME, ".claude")]
+    for name in sorted(os.listdir(HOME)):
+        if not name.startswith(".claude-"):
+            continue
+        path = os.path.join(HOME, name)
+        if os.path.isdir(os.path.join(path, "projects")):
+            found.append(path)
+    return [d for d in found if os.path.isdir(d)]
+
+
+def account_label(cfg_dir):
+    """'' para el principal, '-personal' para ~/.claude-personal, etc."""
+    base = os.path.basename(cfg_dir)
+    return "" if base == ".claude" else base.replace(".claude-", "", 1)
+
+
+def _sessions_from(cfg_dir):
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=cfg_dir)
     try:
         proc = subprocess.run(
             ["claude", "agents", "--cwd", HOME, "--json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, env=env,
         )
     except FileNotFoundError:
         raise SessionsUnavailable(
@@ -173,7 +197,7 @@ def get_sessions():
         raise SessionsUnavailable(f"no pude ejecutar `claude agents`: {e}")
 
     try:
-        return json.loads(proc.stdout)
+        out = json.loads(proc.stdout)
     except ValueError:
         detail = (proc.stderr or proc.stdout or "").strip().splitlines()
         hint = f"\n  Dijo: {detail[0][:120]}" if detail else ""
@@ -181,6 +205,33 @@ def get_sessions():
             "`claude agents --json` no devolvio JSON. "
             f"Necesitas Claude Code v2.1.139 o superior.{hint}"
         )
+    for s in out:
+        s["_cfg"] = cfg_dir
+        s["_account"] = account_label(cfg_dir)
+    return out
+
+
+def get_sessions():
+    """
+    Sesiones de TODAS las cuentas detectadas, cada una etiquetada con la suya.
+
+    Lanza SessionsUnavailable solo si falla la primera cuenta (el caso de "claude no
+    esta instalado"). Si una cuenta secundaria falla, se ignora: no tiene sentido
+    dejar sin panel al usuario porque una config extra este rota.
+    """
+    dirs = config_dirs()
+    if not dirs:
+        raise SessionsUnavailable(f"no hay ningun directorio de config en {HOME}/.claude*")
+
+    todas, primero = [], True
+    for d in dirs:
+        try:
+            todas.extend(_sessions_from(d))
+        except SessionsUnavailable:
+            if primero:
+                raise
+        primero = False
+    return todas
 
 
 def get_ttys(pids):
@@ -257,10 +308,17 @@ def get_iterm_map():
     return result
 
 
-def read_transcript(session_id):
-    """Lee solo la cola del transcript. Todo campo es opcional."""
+def read_transcript(session_id, cfg_dir=None):
+    """
+    Lee solo la cola del transcript. Todo campo es opcional.
+
+    `cfg_dir` es el directorio de config de la cuenta duena de la sesion; sin el se
+    buscaria siempre en ~/.claude y las sesiones de una segunda cuenta saldrian sin
+    rama, modelo ni ultimo prompt.
+    """
     info = {}
-    hits = glob.glob(os.path.join(HOME, ".claude", "projects", "*", f"{session_id}.jsonl"))
+    base = cfg_dir or os.path.join(HOME, ".claude")
+    hits = glob.glob(os.path.join(base, "projects", "*", f"{session_id}.jsonl"))
     if not hits:
         return info
     try:
@@ -364,11 +422,12 @@ def short_model(m):
 def build(sessions, ttys, iterm, numbers):
     rows = []
     for s in sessions:
-        info = read_transcript(s["sessionId"])
+        info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
         rows.append({
             "num": numbers[s["sessionId"]],
             "name": s["name"],
+            "account": s.get("_account", ""),
             "repo": os.path.basename(s["cwd"]),
             "cwd": s["cwd"],
             "kind": s.get("kind", "interactive"),
@@ -393,6 +452,25 @@ def sort_key(r):
     return (r["ts"] or "", r["startedAt"])
 
 
+def matches(row, query):
+    """Coincidencia laxa: sin acentos, sin mayusculas, sobre nombre + repo + rama."""
+    if not query:
+        return True
+    heno = strip_accents(" ".join(str(row.get(k) or "")
+                                  for k in ("name", "repo", "branch", "account")).lower())
+    return all(t in heno for t in strip_accents(query.lower()).split())
+
+
+def strip_accents(s):
+    return "".join(ch for ch in unicodedata.normalize("NFD", s)
+                   if not unicodedata.combining(ch))
+
+
+def multi_account(rows):
+    """True si hay sesiones de mas de una cuenta: solo entonces vale la pena la columna."""
+    return len({r.get("account", "") for r in rows}) > 1
+
+
 def grouped(rows):
     """[(etiqueta, color, filas-ordenadas)] — grupos vacios se omiten."""
     out = [
@@ -408,13 +486,16 @@ def grouped(rows):
             for lbl, col, items in out if items]
 
 
-def main_line(r):
+def main_line(r, show_account=False):
     """Linea principal coloreada, con las columnas alineadas por ancho VISIBLE."""
     num = CYAN(BOLD(f"[{r['num']:>2}]"))
     name = pad(BOLD(r["name"][:36]), 38)
     repo = pad(MAGENTA(r["repo"][:15]), 17)
+    # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
+    # seria una columna vacia en todas las filas.
+    acct = pad(GREY(r.get("account") or ""), 11) if show_account else ""
     warn = RED(" ⚠") if not r["iterm"] else ""
-    return f"{num} {name}{repo}{color_age(r['ts'])}{warn}"
+    return f"{num} {name}{repo}{acct}{color_age(r['ts'])}{warn}"
 
 
 def detail_line(r, width=None):
@@ -434,12 +515,13 @@ def detail_line(r, width=None):
 def render(rows):
     """Listado estatico de dos lineas por sesion (para --list y terminales sin TTY)."""
     width = (os.get_terminal_size().columns if sys.stdout.isatty() else 110)
+    multi = multi_account(rows)
     print()
     for label, color, items in grouped(rows):
         print(color(BOLD(f"  {label} ({len(items)})")))
         print()
         for r in items:
-            print("  " + main_line(r))
+            print("  " + main_line(r, multi))
             d = detail_line(r, width - 9)
             if d:
                 print("       " + d)
@@ -534,10 +616,11 @@ def build_display(rows, width=100):
       'blank'  separador
     """
     lines = []
+    multi = multi_account(rows)
     for label, color, items in grouped(rows):
         lines.append(("head", color(BOLD(f"{label} ({len(items)})")), None))
         for r in items:
-            lines.append(("main", main_line(r), r))
+            lines.append(("main", main_line(r, multi), r))
             d = detail_line(r, width - 9)
             if d:
                 lines.append(("sub", d, r))
@@ -552,29 +635,52 @@ def interactive(feed):
     """
     cols0 = os.get_terminal_size().columns if sys.stdout.isatty() else 100
     rows, stamp = feed.snapshot()
-    lines = build_display(rows, cols0)
+    lines = build_display(rows, cols0)  # query vacia al arrancar
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = lines[pickable[0]][2]["sessionId"] if pickable else None
-    typed, top, flash = "", 0, ""
+    typed, top, flash, query = "", 0, "", ""
     last_cols = cols0
-    dirty = True  # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
+    dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
+    requery = False  # fuerza reconstruir la vista tras tocar el filtro
 
     sys.stdout.write("\033[?1049h\033[?25l")  # pantalla alternativa, sin cursor
     try:
         while True:
             fresh, new_stamp = feed.snapshot()
             now_cols = os.get_terminal_size().columns
-            if new_stamp != stamp or now_cols != last_cols:
-                stamp, rows, last_cols = new_stamp, fresh, now_cols
-                lines = build_display(rows, now_cols)
+            if new_stamp != stamp or now_cols != last_cols or requery:
+                stamp, rows, last_cols, requery = new_stamp, fresh, now_cols, False
+                shown = [r for r in rows if matches(r, query)]
+                lines = build_display(shown, now_cols)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
+                if pickable and not any(lines[i][2]["sessionId"] == sel_id for i in pickable):
+                    sel_id = lines[pickable[0]][2]["sessionId"]  # el filtro dejo fuera al cursor
                 dirty = True
 
             if not pickable:
-                sys.stdout.write("\033[H\033[2J  Sin sesiones activas. esc para salir\r\n")
+                if query:
+                    # hay sesiones, solo que ninguna casa: hay que poder seguir
+                    # editando el filtro, no solo salir
+                    msg = ("  " + DIM("filtro: ") + CYAN(BOLD(query)) + "  "
+                           + RED("sin resultados") + DIM("  ⌫ borra · esc limpia"))
+                else:
+                    msg = "  " + DIM("Sin sesiones activas. esc para salir")
+                sys.stdout.write("\033[H\033[2J" + msg + "\r\n")
                 sys.stdout.flush()
-                if read_key(1.0) in ("q", "esc"):
+                k = read_key(1.0)
+                if k is None:
+                    continue
+                if k == "esc":
+                    if query:
+                        query, requery, top = "", True, 0
+                        continue
                     return
+                if k == "q" and not query:
+                    return
+                if k == "back" and query:
+                    query, requery, top = query[:-1], True, 0
+                elif len(k) == 1 and k.isprintable():
+                    query, requery, top = query + k, True, 0
                 continue
 
             # el cursor sigue a la MISMA sesion aunque la lista se reordene
@@ -633,12 +739,18 @@ def interactive(feed):
                         buf.append("\r\n")
 
                 hint = (DIM("↑↓") + " mover  " + DIM("enter") + " abrir  "
-                        + DIM("nº") + " ir  " + DIM("r") + " refrescar  "
+                        + DIM("nº") + " ir  " + DIM("escribe") + " filtrar  "
                         + DIM("esc") + " salir")
                 if typed:
                     nm = by_num.get(int(typed))
                     hint = (CYAN(BOLD(f"→ [{typed}] {nm['name']}")) if nm
                             else RED(f"[{typed}] no existe")) + DIM("  enter confirma · ⌫ borra")
+                elif query:
+                    n = len(pickable)
+                    cuenta = (GREEN(f"{n} coincide" + ("n" if n != 1 else ""))
+                              if n else RED("sin resultados"))
+                    hint = (DIM("filtro: ") + CYAN(BOLD(query)) + "  " + cuenta
+                            + DIM("  ⌫ borra · esc limpia"))
                 buf.append("\r\n " + hint + "\r\n")
 
                 sys.stdout.write("".join(buf))
@@ -651,8 +763,15 @@ def interactive(feed):
             dirty = True   # cualquier tecla cambia algo que hay que repintar
             feed.touch()   # vuelve al refresco rapido
             flash = ""
-            if k in ("q", "esc"):
-                return
+            if k == "esc":
+                # esc limpia el filtro antes de salir: perder el filtro por accidente
+                # es mas molesto que tener que pulsar esc dos veces
+                if query:
+                    query, requery, top = "", True, 0
+                else:
+                    return
+            elif k == "q" and not query:
+                return  # con filtro activo, 'q' es texto que se busca
             elif k == "up":
                 sel_id = lines[pickable[(cur - 1) % len(pickable)]][2]["sessionId"]; typed = ""
             elif k == "down":
@@ -663,16 +782,23 @@ def interactive(feed):
                 i = min(len(pickable) - 1, cur + body // 2)
                 sel_id = lines[pickable[i]][2]["sessionId"]; typed = ""
             elif k == "back":
-                typed = typed[:-1]
-            elif k == "r":
+                if typed:
+                    typed = typed[:-1]
+                elif query:
+                    query, requery, top = query[:-1], True, 0
+            elif k == "r" and not query and not typed:
                 feed.force()
                 flash = "actualizando…"
-            elif k.isdigit():
+            elif k.isdigit() and not query:
+                # los digitos son seleccion... salvo si ya estas filtrando, donde
+                # forman parte del texto buscado (p.ej. "v5", "0042")
                 cand = typed + k
                 if any(str(n).startswith(cand) for n in by_num):
                     typed = cand
                 elif int(k) in by_num:
                     typed = k
+            elif len(k) == 1 and k.isprintable():
+                query, requery, top, typed = query + k, True, 0, ""
             elif k == "enter":
                 target = None
                 if typed:

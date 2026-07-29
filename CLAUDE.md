@@ -49,7 +49,7 @@ Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionale
 | Fuente | Qué se usa | Si cambia |
 |---|---|---|
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status` | El panel se queda sin datos |
-| Transcript `~/.claude/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, y los tipos `ai-title` / `last-prompt` | Esos campos desaparecen; el resto sigue |
+| Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, y los tipos `ai-title` / `last-prompt` | Esos campos desaparecen; el resto sigue |
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y
 `waitingFor` que aparecen en la documentación no existen en la salida real, y `--all` no añade
@@ -77,6 +77,16 @@ que el panel no se cierra al saltar, usa una copia con `get_iterm_map()` devolvi
 salto falla con elegancia y se comprueba el flujo sin tocar ninguna ventana.
 
 Los caminos no interactivos (`--list`, `ccl <n>`, salida por pipe) sí se prueban directo.
+
+## Multi-cuenta
+
+`config_dirs()` detecta `~/.claude` mas los hermanos `~/.claude-*` con `projects/`.
+Cada sesion se etiqueta con `_cfg` (su directorio de config) y `_account`.
+**`read_transcript` necesita el `_cfg`**: sin el buscaria siempre en `~/.claude` y las
+sesiones de la segunda cuenta saldrian sin rama, modelo ni prompt.
+
+Si falla la cuenta principal se aborta; si falla una secundaria se ignora — no tiene
+sentido dejar sin panel al usuario porque una config extra este rota.
 
 ## Estilo
 

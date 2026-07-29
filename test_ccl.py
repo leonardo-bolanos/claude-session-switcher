@@ -382,11 +382,14 @@ class TestSessionsUnavailable(unittest.TestCase):
             self._run(lambda *a, **k: R())
         self.assertIn("JSON", str(cm.exception))
 
-    def test_json_valido_devuelve_la_lista(self):
+    def test_json_valido_devuelve_la_lista_etiquetada(self):
         class R:
             stdout = '[{"sessionId": "x"}]'
             stderr = ""
-        self.assertEqual(self._run(lambda *a, **k: R()), [{"sessionId": "x"}])
+        got = self._run(lambda *a, **k: R())
+        self.assertEqual(got[0]["sessionId"], "x")
+        self.assertIn("_cfg", got[0], "cada sesion debe saber de que cuenta viene")
+        self.assertIn("_account", got[0])
 
     def test_lista_vacia_NO_es_error(self):
         # cero sesiones es un estado valido, no un fallo
@@ -394,6 +397,110 @@ class TestSessionsUnavailable(unittest.TestCase):
             stdout = "[]"
             stderr = ""
         self.assertEqual(self._run(lambda *a, **k: R()), [])
+
+
+# ────────────────────────── multi-cuenta ──────────────────────────
+
+
+class TestMultiCuenta(unittest.TestCase):
+    """Ver tambien las sesiones de una segunda cuenta (~/.claude-personal, etc.)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._home, self._env = ccl.HOME, os.environ.get("CCL_CONFIG_DIRS")
+        ccl.HOME = self.dir
+        os.environ.pop("CCL_CONFIG_DIRS", None)
+
+    def tearDown(self):
+        ccl.HOME = self._home
+        if self._env is None:
+            os.environ.pop("CCL_CONFIG_DIRS", None)
+        else:
+            os.environ["CCL_CONFIG_DIRS"] = self._env
+
+    def _mk(self, name, con_projects=True):
+        d = os.path.join(self.dir, name)
+        os.makedirs(os.path.join(d, "projects") if con_projects else d, exist_ok=True)
+        return d
+
+    def test_detecta_la_principal_y_las_secundarias(self):
+        self._mk(".claude"); self._mk(".claude-personal")
+        got = [os.path.basename(d) for d in ccl.config_dirs()]
+        self.assertEqual(got, [".claude", ".claude-personal"])
+
+    def test_ignora_directorios_sin_projects(self):
+        self._mk(".claude"); self._mk(".claude-basura", con_projects=False)
+        got = [os.path.basename(d) for d in ccl.config_dirs()]
+        self.assertEqual(got, [".claude"])
+
+    def test_CCL_CONFIG_DIRS_manda_sobre_la_deteccion(self):
+        self._mk(".claude"); otro = self._mk(".claude-personal")
+        os.environ["CCL_CONFIG_DIRS"] = otro
+        self.assertEqual(ccl.config_dirs(), [otro])
+
+    def test_etiqueta_de_cuenta(self):
+        self.assertEqual(ccl.account_label("/x/.claude"), "")
+        self.assertEqual(ccl.account_label("/x/.claude-personal"), "personal")
+        self.assertEqual(ccl.account_label("/x/.claude-trabajo"), "trabajo")
+
+    def test_la_columna_de_cuenta_solo_sale_si_hay_varias(self):
+        una = [dict(row(1, "a"), account="")]
+        varias = [dict(row(1, "a"), account=""), dict(row(2, "b"), account="personal")]
+        self.assertFalse(ccl.multi_account(una))
+        self.assertTrue(ccl.multi_account(varias))
+
+    def test_transcript_se_busca_en_la_cuenta_correcta(self):
+        otro = self._mk(".claude-personal")
+        proj = os.path.join(otro, "projects", "p")
+        os.makedirs(proj)
+        with open(os.path.join(proj, "sid.jsonl"), "w") as fh:
+            fh.write(json.dumps({"gitBranch": "de-la-personal"}))
+        # sin cfg_dir busca en ~/.claude y no lo encuentra
+        self.assertEqual(ccl.read_transcript("sid"), {})
+        # con cfg_dir si
+        self.assertEqual(ccl.read_transcript("sid", otro)["branch"], "de-la-personal")
+
+
+# ────────────────────────── filtro de busqueda ──────────────────────────
+
+
+class TestFiltro(unittest.TestCase):
+    def r(self, **kw):
+        base = {"name": "api-rate-limit", "repo": "backend", "branch": "main", "account": ""}
+        base.update(kw)
+        return base
+
+    def test_vacio_deja_pasar_todo(self):
+        self.assertTrue(ccl.matches(self.r(), ""))
+
+    def test_casa_por_nombre_repo_rama_y_cuenta(self):
+        self.assertTrue(ccl.matches(self.r(), "rate"))
+        self.assertTrue(ccl.matches(self.r(), "backend"))
+        self.assertTrue(ccl.matches(self.r(), "main"))
+        self.assertTrue(ccl.matches(self.r(account="personal"), "personal"))
+
+    def test_ignora_mayusculas(self):
+        self.assertTrue(ccl.matches(self.r(), "API"))
+        self.assertTrue(ccl.matches(self.r(name="Migración"), "migracion"))
+
+    def test_ignora_acentos_en_ambos_sentidos(self):
+        self.assertTrue(ccl.matches(self.r(name="migración"), "migracion"))
+        self.assertTrue(ccl.matches(self.r(name="migracion"), "migración"))
+
+    def test_varios_terminos_son_AND_y_sin_orden(self):
+        self.assertTrue(ccl.matches(self.r(), "api backend"))
+        self.assertTrue(ccl.matches(self.r(), "backend api"))
+        self.assertFalse(ccl.matches(self.r(), "api inexistente"))
+
+    def test_no_casa_devuelve_falso(self):
+        self.assertFalse(ccl.matches(self.r(), "zzz"))
+
+    def test_campos_nulos_no_revientan(self):
+        self.assertTrue(ccl.matches({"name": "x", "repo": None, "branch": None}, "x"))
+
+    def test_strip_accents(self):
+        self.assertEqual(ccl.strip_accents("áéíóúñü"), "aeiounu")
+        self.assertEqual(ccl.strip_accents("sin acentos"), "sin acentos")
 
 
 if __name__ == "__main__":

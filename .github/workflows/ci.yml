@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Los tests son logica pura (iTerm y `claude` van mockeados), asi que corren en
+    # Linux — mas rapido y gratis. La matriz cubre desde el minimo declarado (3.7)
+    # hasta la version actual, porque `datetime.fromisoformat` es lo que fija el suelo.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Tests
+        run: python3 test_ccl.py -v
+
+  macos:
+    # Una pasada en macOS: es la unica plataforma soportada de verdad, y aqui se
+    # comprueba que el script arranca y responde --list sin iTerm delante.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tests
+        run: python3 test_ccl.py
+
+      - name: El script compila y es ejecutable
+        run: |
+          python3 -m py_compile ccl
+          test -x ccl || { echo "ccl perdio el permiso de ejecucion"; exit 1; }
+
+      - name: install.sh tiene sintaxis valida
+        run: bash -n install.sh
+
+      - name: Degrada bien sin Claude Code instalado
+        run: |
+          # En el runner no existe `claude`: debe dar un error claro y salir con 1,
+          # no decir "no hay sesiones activas", que mandaria a diagnosticar otra cosa.
+          set +e
+          out=$(./ccl --list 2>&1); code=$?
+          set -e
+          echo "$out"
+          test $code -eq 1 || { echo "esperaba exit 1, dio $code"; exit 1; }
+          echo "$out" | grep -q "no encuentro el comando" \
+            || { echo "el mensaje de error no es el esperado"; exit 1; }

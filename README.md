@@ -1,5 +1,7 @@
 # claude-session-switcher
 
+[![CI](https://github.com/leonardo-bolanos/claude-session-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/leonardo-bolanos/claude-session-switcher/actions/workflows/ci.yml)
+
 Un panel para todas tus sesiones de Claude Code, y un atajo para saltar a la ventana de iTerm2
 que tiene cada una.
 
@@ -66,12 +68,35 @@ ccl 7            # salta directo a la sesión número 7
 | `PgUp` `PgDn` | Media página |
 | `Enter` | Abrir esa sesión (enfoca su ventana y pestaña de iTerm) |
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
-| `r` | Forzar refresco |
-| `esc` / `q` | Salir |
+| cualquier letra | **Filtrar** por nombre, repo, rama o cuenta |
+| `r` | Forzar refresco (si no estás filtrando) |
+| `esc` | Limpia el filtro; si no hay filtro, sale |
+| `q` | Salir (si no estás filtrando — con filtro activo es texto) |
+
+### Filtrar
+
+Con muchas sesiones, escribe para reducir la lista: `supp` deja solo las de `support-agent`.
+Ignora mayúsculas y acentos (`migracion` encuentra `migración`), y varios términos se combinan
+sin importar el orden: `api backend` casa igual que `backend api`.
+
+Mientras filtras, los dígitos forman parte del texto (para buscar `v5` o `0042`); con el filtro
+vacío vuelven a ser selección de número.
 
 El panel **se refresca solo** y **no se cierra al saltar**: vuelves a la lista con una
 confirmación de a dónde fuiste. En ventanas pequeñas la cabecera del grupo queda **fija
 arriba** al hacer scroll, para que no pierdas de vista si estás en TRABAJANDO o en ESPERANDO.
+
+### Varias cuentas de Claude Code
+
+Detecta sola `~/.claude` y cualquier `~/.claude-<algo>` que tenga un `projects/` dentro, así
+que las sesiones de una segunda cuenta aparecen sin configurar nada. Cuando hay más de una,
+se añade una columna con el nombre de la cuenta.
+
+Para fijar la lista a mano:
+
+```bash
+export CCL_CONFIG_DIRS=~/.claude:~/.claude-trabajo
+```
 
 ### Numeración estable
 
@@ -113,21 +138,22 @@ Un par de detalles de rendimiento que costaron encontrar:
 ## Tests
 
 ```bash
-python3 test_ccl.py         # 46 tests, ~5 ms
+python3 test_ccl.py         # 60 tests, ~7 ms
 python3 test_ccl.py -v      # verboso
 ```
 
 Solo stdlib, sin dependencias. Cubren la lógica pura —helpers de ancho, numeración estable,
-parseo de la salida de AppleScript, lectura de transcripts, agrupación y manejo de errores—
-sin tocar iTerm ni lanzar `claude`.
+parseo de la salida de AppleScript, lectura de transcripts, agrupación, filtro, multi-cuenta
+y manejo de errores— sin tocar iTerm ni lanzar `claude`.
+
+El CI los corre en Linux (Python 3.9/3.11/3.13) y en macOS, donde además comprueba que el
+script degrada con un error claro cuando Claude Code no está instalado.
 
 Son **herméticos**: parchean `INDEX_FILE` y `HOME` a directorios temporales, así que nunca
 escriben en el `~/.claude` de quien los ejecute.
 
 ## Limitaciones conocidas
 
-- **Solo una instalación de Claude Code**: la de `~/.claude`. Si usas varias cuentas apuntando
-  `CLAUDE_CONFIG_DIR` a otro directorio, esas sesiones no salen.
 - **Formato interno no documentado**: `aiTitle` y `lastPrompt` vienen del transcript de Claude
   Code, que Anthropic no documenta y puede cambiar en cualquier versión. Se tratan como
   opcionales — si desaparecen, el panel sigue funcionando sin esa información.
