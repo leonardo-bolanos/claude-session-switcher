@@ -170,8 +170,16 @@ escriben en el `~/.claude` de quien los ejecute.
   opcionales — si desaparecen, el panel sigue funcionando sin esa información.
 - **Los índices de pestaña se desplazan** si cierras una pestaña de la misma ventana entre
   listar y elegir. El riesgo es de segundos y el peor caso es enfocar la pestaña vecina.
-- **Solo iTerm2.** Terminal.app, Ghostty, WezTerm y otros no exponen el TTY por AppleScript
-  del mismo modo. El listado funciona en cualquiera; el salto, no.
+- **Solo iTerm2** para el salto de ventana. El listado funciona en cualquier terminal.
+  Terminal.app sí sería viable (expone `tty` por AppleScript) y tmux también; ver
+  [TODO.md](TODO.md).
+- **Solo macOS.** En Windows el script ni arranca: el panel usa `termios`/`tty`, que no existen
+  ahí. Portarlo es un trabajo real, no un ajuste — está desglosado en [TODO.md](TODO.md).
+
+## Qué falta
+
+Terminal.app, Windows, otras terminales y algunos detalles menores, con lo ya investigado de
+cada uno: [TODO.md](TODO.md).
 
 ## Licencia
 

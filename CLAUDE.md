@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Un solo script: `ccl`, 717 líneas de Python sin dependencias externas. Lista las sesiones
+Un solo script: `ccl`, Python sin dependencias externas. Lista las sesiones
 de Claude Code y salta a su ventana de iTerm2. El README explica qué hace y por qué existe;
 esto son las trampas que no se ven leyendo el código.
 
