@@ -78,6 +78,15 @@ salto falla con elegancia y se comprueba el flujo sin tocar ninguna ventana.
 
 Los caminos no interactivos (`--list`, `ccl <n>`, salida por pipe) sí se prueban directo.
 
+## Las teclas que NO pueden ser letras
+
+Cualquier letra empieza a filtrar, asi que ninguna accion puede colgar de una letra suelta:
+se comeria el filtrado de todo lo que empiece por ella. Paso con `r` (refrescar), que impedia
+buscar por "revisa" o "report", y por eso ahora es `Ctrl-R`. Lo mismo descarta `h` para la
+ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es el estandar en TUIs.
+
+Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
+
 ## Multi-cuenta
 
 `config_dirs()` detecta `~/.claude` mas los hermanos `~/.claude-*` con `projects/`.

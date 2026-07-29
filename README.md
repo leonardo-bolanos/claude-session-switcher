@@ -69,9 +69,14 @@ ccl 7            # salta directo a la sesión número 7
 | `Enter` | Abrir esa sesión (enfoca su ventana y pestaña de iTerm) |
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | cualquier letra | **Filtrar** por nombre, repo, rama o cuenta |
-| `r` | Forzar refresco (si no estás filtrando) |
+| `Ctrl-R` | Forzar refresco |
+| `?` | **Ayuda** con todos los atajos |
 | `esc` | Limpia el filtro; si no hay filtro, sale |
 | `q` | Salir (si no estás filtrando — con filtro activo es texto) |
+
+`?` abre la lista completa dentro del propio panel, así que la barra de abajo se queda con lo
+imprescindible. Nota: el refresco es `Ctrl-R` y no `r` a secas porque cualquier letra empieza a
+filtrar — con `r` no podrías buscar nada que empezara por esa letra.
 
 ### Filtrar
 

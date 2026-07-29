@@ -574,6 +574,8 @@ def read_key(timeout=None):
             return "enter"
         if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
             return "q"
+        if ch == "\x12":            # Ctrl-R: refrescar
+            return "refresh"
         if ch == "\x7f":
             return "back"
         return ch
@@ -627,6 +629,44 @@ class Feed:
     def stop(self):
         self._stop.set()
         self._wake.set()
+
+
+HELP = [
+    ("navegación", [
+        ("↑ ↓",        "mover la selección"),
+        ("PgUp PgDn",  "media página"),
+        ("enter",      "abrir la sesión: enfoca su ventana y pestaña de iTerm"),
+    ]),
+    ("ir a una sesión por número", [
+        ("1 2 3 …",    "teclear el número que aparece a la izquierda"),
+        ("⌫",          "corregir el número"),
+        ("enter",      "confirmar"),
+    ]),
+    ("filtrar", [
+        ("cualquier letra", "empieza a filtrar por nombre, repo, rama o cuenta"),
+        ("",           "ignora mayúsculas y acentos; varios términos se combinan"),
+        ("⌫",          "borrar la última letra"),
+        ("esc",        "limpiar el filtro"),
+    ]),
+    ("otras", [
+        ("^R",         "refrescar ya (el panel se refresca solo cada 4s)"),
+        ("?",          "esta ayuda"),
+        ("esc / q",    "salir — con filtro activo, esc lo limpia primero"),
+    ]),
+]
+
+
+def render_help(cols, term_rows):
+    """Pantalla de ayuda completa. La barra de abajo solo lleva lo imprescindible."""
+    buf = ["\033[H\033[2J", " " + CYAN(BOLD("ccl")) + DIM("  ·  atajos") + "\r\n\r\n"]
+    for titulo, filas in HELP:
+        buf.append(" " + YELLOW(BOLD(titulo)) + "\r\n")
+        for tecla, desc in filas:
+            k = pad(CYAN(tecla) if tecla else "", 18)
+            buf.append("   " + k + clip(DIM(desc) if not tecla else desc, cols - 24) + "\r\n")
+        buf.append("\r\n")
+    buf.append(" " + DIM("cualquier tecla para volver") + "\r\n")
+    return "".join(buf)
 
 
 def build_display(rows, width=100):
@@ -761,8 +801,7 @@ def interactive(feed):
                         buf.append("\r\n")
 
                 hint = (DIM("↑↓") + " mover  " + DIM("enter") + " abrir  "
-                        + DIM("nº") + " ir  " + DIM("escribe") + " filtrar  "
-                        + DIM("esc") + " salir")
+                        + DIM("escribe") + " filtrar  " + CYAN("?") + DIM(" ayuda"))
                 if typed:
                     nm = by_num.get(int(typed))
                     hint = (CYAN(BOLD(f"→ [{typed}] {nm['name']}")) if nm
@@ -808,7 +847,14 @@ def interactive(feed):
                     typed = typed[:-1]
                 elif query:
                     query, requery, top = query[:-1], True, 0
-            elif k == "r" and not query and not typed:
+            elif k == "?" and not query:
+                sys.stdout.write(render_help(cols, term_rows))
+                sys.stdout.flush()
+                read_key()          # cualquier tecla vuelve
+                dirty = True
+            elif k == "refresh":
+                # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
+                # comia el filtrado de todo lo que empezara por esa letra
                 feed.force()
                 flash = "actualizando…"
             elif k.isdigit() and not query:
