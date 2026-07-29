@@ -57,6 +57,14 @@ nada. Por eso hay dos grupos y no los tres del panel oficial.
 
 ## Cómo probar
 
+`python3 test_ccl.py` cubre toda la lógica pura (46 tests, sin dependencias). Son herméticos:
+parchean `INDEX_FILE` y `HOME` a temporales. **Si tocas `vis`/`pad`/`clip`, `assign_numbers`,
+`get_iterm_map` o `read_transcript`, corre los tests** — esas cuatro son justo las que han
+fallado en silencio antes.
+
+Lo que los tests NO cubren, porque necesita iTerm o un terminal real: el bucle interactivo,
+el salto de ventana y el refresco en segundo plano.
+
 El modo interactivo necesita un TTY: no se puede probar con un pipe. Usa `pty.fork()` y **fija
 el tamaño con `TIOCSWINSZ`** — sin eso el viewport queda diminuto y parece que faltan líneas
 que sí están.

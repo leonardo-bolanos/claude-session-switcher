@@ -35,6 +35,7 @@ import termios
 import threading
 import time
 import tty
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 HOME = os.path.expanduser("~")
@@ -64,11 +65,24 @@ RED = lambda s: c("31", s)
 GREY = lambda s: c("90", s)
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+TTY_RE = re.compile(r"(?:/dev/)?tty[a-z]*\d+")
+
+
+def char_width(ch):
+    """
+    Columnas que ocupa un caracter en la terminal.
+
+    No es lo mismo que len(): los ideogramas CJK y muchos emoji ocupan DOS columnas,
+    y los diacriticos combinantes cero. Contarlos como uno desalinea las columnas.
+    """
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
 
 def vis(s):
-    """Largo visible: sin esto, ljust() cuenta los codigos de color y desalinea."""
-    return len(ANSI_RE.sub("", s))
+    """Ancho visible en columnas: ignora los codigos de color y cuenta los CJK como 2."""
+    return sum(char_width(c) for c in ANSI_RE.sub("", s))
 
 
 def pad(s, width):
@@ -82,12 +96,14 @@ def clip(s, width):
         return s
     out, seen = [], 0
     i = 0
-    while i < len(s) and seen < width:
+    while i < len(s):
         m = ANSI_RE.match(s, i)
         if m:
-            out.append(m.group()); i = m.end()
-        else:
-            out.append(s[i]); seen += 1; i += 1
+            out.append(m.group()); i = m.end(); continue
+        w = char_width(s[i])
+        if seen + w > width:   # no partir un caracter de doble ancho por la mitad
+            break
+        out.append(s[i]); seen += w; i += 1
     res = "".join(out)
     # cerrar el color solo si de verdad habia alguno abierto: si no, el reset
     # se veria como texto literal "[0m" en salidas sin color (pipes, --list)
@@ -129,17 +145,42 @@ def color_age(ts):
 # ─────────────────────────── recoleccion de datos ───────────────────────────
 
 
+class SessionsUnavailable(Exception):
+    """No se pudo consultar a `claude`. Distinto de 'hay cero sesiones'."""
+
+
 def get_sessions():
-    """claude agents --cwd ~ --json -> lista de sesiones."""
+    """
+    `claude agents --cwd ~ --json` -> lista de sesiones.
+
+    Lanza SessionsUnavailable si el comando no existe, tarda demasiado o devuelve algo
+    que no es JSON. Devolver [] en esos casos haria que el usuario leyera "no hay
+    sesiones activas" cuando el problema real es que la herramienta no esta instalada.
+    """
     try:
-        out = subprocess.run(
+        proc = subprocess.run(
             ["claude", "agents", "--cwd", HOME, "--json"],
             capture_output=True, text=True, timeout=30,
-        ).stdout
-        return json.loads(out)
+        )
+    except FileNotFoundError:
+        raise SessionsUnavailable(
+            "no encuentro el comando `claude`.\n"
+            "  Instala Claude Code, o revisa que este en tu PATH."
+        )
+    except subprocess.TimeoutExpired:
+        raise SessionsUnavailable("`claude agents` no respondio en 30s.")
     except Exception as e:
-        print(f"No se pudo obtener la lista de sesiones: {e}", file=sys.stderr)
-        return []
+        raise SessionsUnavailable(f"no pude ejecutar `claude agents`: {e}")
+
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        hint = f"\n  Dijo: {detail[0][:120]}" if detail else ""
+        raise SessionsUnavailable(
+            "`claude agents --json` no devolvio JSON. "
+            f"Necesitas Claude Code v2.1.139 o superior.{hint}"
+        )
 
 
 def get_ttys(pids):
@@ -196,7 +237,10 @@ def get_iterm_map():
 
     head, ttys = out.split("@@@", 1)
     wins = [p.split(":") for p in head.strip().rstrip(",").split(",") if ":" in p]
-    tlist = [t.strip() for t in ttys.split(",") if t.strip()]
+    # Validar la forma: si los text item delimiters fallaran, los ttys llegarian
+    # concatenados ("/dev/ttys001/dev/ttys002") y produciriamos claves basura que
+    # no casan con nada. Mejor descartarlas y que se vea el aviso "sin iTerm".
+    tlist = [t for t in (x.strip() for x in ttys.split(",")) if TTY_RE.fullmatch(t)]
 
     result = {}
     i = 0
@@ -696,7 +740,12 @@ def main():
     only_list = "--list" in args or "-l" in args
     direct = next((a for a in args if a.isdigit()), None)
 
-    rows = collect()
+    try:
+        rows = collect()
+    except SessionsUnavailable as e:
+        print(f"ccl: {e}", file=sys.stderr)
+        return 1
+
     if not rows:
         print("No hay sesiones de Claude Code activas.")
         return 0

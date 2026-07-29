@@ -110,6 +110,20 @@ Un par de detalles de rendimiento que costaron encontrar:
   varias sesiones acaban con la misma marca. Hay que usar el último campo `timestamp` de
   dentro del archivo.
 
+## Tests
+
+```bash
+python3 test_ccl.py         # 46 tests, ~5 ms
+python3 test_ccl.py -v      # verboso
+```
+
+Solo stdlib, sin dependencias. Cubren la lógica pura —helpers de ancho, numeración estable,
+parseo de la salida de AppleScript, lectura de transcripts, agrupación y manejo de errores—
+sin tocar iTerm ni lanzar `claude`.
+
+Son **herméticos**: parchean `INDEX_FILE` y `HOME` a directorios temporales, así que nunca
+escriben en el `~/.claude` de quien los ejecute.
+
 ## Limitaciones conocidas
 
 - **Solo una instalación de Claude Code**: la de `~/.claude`. Si usas varias cuentas apuntando
