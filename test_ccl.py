@@ -353,12 +353,26 @@ class TestSessionsUnavailable(unittest.TestCase):
     """
 
     def _run(self, fake):
-        orig = ccl.subprocess.run
+        # Parchear tambien config_dirs: en una maquina limpia (CI) no existe ~/.claude
+        # y get_sessions abortaria antes de llegar al mock. Lo cazo el CI, no la
+        # maquina de desarrollo, donde ~/.claude si existe.
+        orig_run, orig_dirs = ccl.subprocess.run, ccl.config_dirs
         ccl.subprocess.run = fake
+        ccl.config_dirs = lambda: ["/tmp/fake-claude"]
         try:
             return ccl.get_sessions()
         finally:
-            ccl.subprocess.run = orig
+            ccl.subprocess.run, ccl.config_dirs = orig_run, orig_dirs
+
+    def test_sin_ningun_directorio_de_config(self):
+        orig = ccl.config_dirs
+        ccl.config_dirs = lambda: []
+        try:
+            with self.assertRaises(ccl.SessionsUnavailable) as cm:
+                ccl.get_sessions()
+            self.assertIn("config", str(cm.exception))
+        finally:
+            ccl.config_dirs = orig
 
     def test_comando_ausente(self):
         def boom(*a, **k):
