@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+Genera demo.svg: una animacion del panel, grabada del programa de verdad.
+
+    python3 make_demo.py            # escribe demo.svg
+    python3 make_demo.py salida.svg
+
+Sin dependencias, como el resto del proyecto: arranca `ccl` en un pty, le manda un
+guion de pulsaciones, captura lo que pinta y lo convierte en un SVG animado. No hay
+paso de grabacion manual, asi que cuando cambie la interfaz el demo se regenera solo.
+
+Es hermetico igual que test_panel.py, y por las mismas razones:
+  - las sesiones son SINTETICAS, para que el demo sea estable y no exponga los repos
+    ni los prompts reales de quien lo genere;
+  - `get_iterm_map` y `focus` estan anulados: **nadie toca ventanas de nadie**, ni se
+    ejecuta osascript. El salto se ve en el mensaje, sin robarle el foco a nadie.
+"""
+
+import fcntl
+import os
+import pty
+import re
+import select
+import struct
+import sys
+import termios
+import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CCL = os.path.join(_HERE, "ccl")
+
+FILAS, COLUMNAS = 20, 96
+LIMPIAR = "\033[H\033[2J"
+SGR_RE = re.compile(r"\033\[([0-9;]*)m")
+
+# ─────────────────────── aspecto del SVG ───────────────────────
+
+FUENTE = ("ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, "
+          "'DejaVu Sans Mono', monospace")
+TAM = 14
+AVANCE = TAM * 0.60          # ancho de un caracter en una monoespaciada
+ALTO_LINEA = TAM * 1.42
+MARGEN_X, MARGEN_Y = 18, 14
+BARRA = 28                    # la barra de titulo con los tres circulos
+
+FONDO = "#1d1f21"
+BARRA_FONDO = "#2b2d30"
+TEXTO = "#c5c8c6"
+
+# Los colores que emite ccl. Paleta oscura legible, no la ANSI cruda: el rojo y el
+# azul puros sobre fondo oscuro se leen mal.
+COLORES = {
+    "30": "#4a4a4a", "31": "#e06c75", "32": "#98c379", "33": "#e5c07b",
+    "34": "#61afef", "35": "#c678dd", "36": "#56b6c2", "37": "#c5c8c6",
+    "90": "#7f848e", "91": "#e06c75", "92": "#98c379", "93": "#e5c07b",
+    "94": "#61afef", "95": "#c678dd", "96": "#56b6c2", "97": "#ffffff",
+}
+
+# ─────────────────────── guion del demo ───────────────────────
+
+# (que enviar, cuanto se queda en pantalla). None = solo esperar (el estado inicial).
+GUION = [
+    (None,            2.6),
+    (b"\033[B",       0.7),   # bajar
+    (b"\033[B",       0.7),
+    (b"web",          1.9),   # filtrar
+    (b"\033",         1.1),   # esc limpia el filtro
+    (b"\0331",        2.8),   # ⌥1: salta a la primera que espera
+]
+
+# Sesiones de mentira, con la pinta de un dia normal de trabajo.
+SESIONES = [
+    # (numero, nombre, repo, rama, modelo, effort, prompt, minutos, estado)
+    (3,  "fix-login-redirect-loop",   "web-app",  "fix/login",  "opus-5",   "high",
+     "el redirect entra en bucle si el token expiró", 1,   "busy"),
+    (7,  "invoice-pdf-margins",       "billing",  "main",       "sonnet-5", None,
+     "los márgenes se descuadran en A4", 4,   "busy"),
+    (1,  "web-app-checkout-rework",   "web-app",  "main",       "opus-5",   "xhigh",
+     "revisa el flujo de pago y dime qué falta", 12,  "idle"),
+    (5,  "api-rate-limit-headers",    "api",      "develop",    "sonnet-5", None,
+     "añade los headers de rate limit", 47,  "idle"),
+    (2,  "migrate-jobs-to-queue",     "workers",  "main",       "opus-5",   "high",
+     "migra los cron a la cola nueva", 190, "idle"),
+    (9,  "docs-api-reference",        "docs",     "main",       "haiku-4-5", None,
+     "genera la referencia desde los tipos", 1400, "idle"),
+]
+
+ARRANQUE = f'''
+import datetime, importlib.machinery, importlib.util, sys
+cargador = importlib.machinery.SourceFileLoader("ccl_mod", {_CCL!r})
+ccl = importlib.util.module_from_spec(
+    importlib.util.spec_from_loader("ccl_mod", cargador))
+cargador.exec_module(ccl)
+
+ahora = datetime.datetime.now(datetime.timezone.utc)
+
+def fila(num, nombre, repo, rama, modelo, effort, prompt, minutos, estado):
+    marca = (ahora - datetime.timedelta(minutes=minutos)).isoformat().replace("+00:00", "Z")
+    return {{"num": num, "name": nombre, "account": "", "repo": repo, "cwd": "/x/" + repo,
+            "kind": "interactive", "status": estado, "sessionId": "sid-%d" % num,
+            "pid": num, "tty": "ttys%03d" % num,
+            # un par ventana/pestaña de mentira: sin esto todas saldrian con el ⚠ de
+            # "no esta en iTerm", que en un demo parece que la herramienta esta rota
+            "iterm": ("1", num), "ts": marca, "branch": rama, "model": modelo,
+            "effort": effort, "title": None, "prompt": prompt, "startedAt": num}}
+
+FIJAS = [fila(*s) for s in {SESIONES!r}]
+
+ccl.collect = lambda: list(FIJAS)
+ccl.get_iterm_map = lambda: {{}}
+ccl.focus = lambda fila, quiet=False: 0   # NADIE toca ventanas: el salto solo se anuncia
+ccl.REFRESH_SECONDS = 9999                # el layout no se mueve durante la grabacion
+ccl.REFRESH_IDLE = 9999
+sys.exit(ccl.main())
+'''
+
+
+# ─────────────────────── grabar ───────────────────────
+
+
+def grabar():
+    """[(lineas, segundos)] — un fotograma por paso del guion."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.environ["CCL_MOUSE"] = "0"     # el raton no aporta nada a una grabacion
+        os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", FILAS, COLUMNAS, 0, 0))
+
+    trozos = []
+
+    def drenar(segundos):
+        fin = time.time() + segundos
+        while time.time() < fin:
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    trozos.append(os.read(fd, 65536).decode("utf-8", "ignore"))
+                except OSError:
+                    return
+
+    def ultima_pantalla():
+        pantallas = [p for p in "".join(trozos).split(LIMPIAR) if "sesiones" in p]
+        return pantallas[-1] if pantallas else ""
+
+    fotogramas = []
+    drenar(1.0)                                   # que acabe de pintar el primer cuadro
+    for tecla, duracion in GUION:
+        if tecla is not None:
+            os.write(fd, tecla)
+            drenar(0.45)                          # dejar que repinte
+        fotogramas.append((ultima_pantalla(), duracion))
+
+    os.write(fd, b"\x03")
+    time.sleep(0.2)
+    for cerrar in (lambda: os.close(fd), lambda: os.waitpid(pid, 0)):
+        try:
+            cerrar()
+        except OSError:
+            pass
+        except ChildProcessError:
+            pass
+    return fotogramas
+
+
+# ─────────────────────── ANSI -> SVG ───────────────────────
+
+
+def trozos_con_color(linea):
+    """[(texto, color, tenue, negrita)] a partir de una linea con codigos SGR."""
+    salida, pos = [], 0
+    color, tenue, negrita = None, False, False
+    for m in SGR_RE.finditer(linea):
+        if m.start() > pos:
+            salida.append((linea[pos:m.start()], color, tenue, negrita))
+        for codigo in (m.group(1) or "0").split(";"):
+            if codigo in ("", "0"):
+                color, tenue, negrita = None, False, False
+            elif codigo == "1":
+                negrita = True
+            elif codigo == "2":
+                tenue = True
+            elif codigo in COLORES:
+                color = COLORES[codigo]
+        pos = m.end()
+    if pos < len(linea):
+        salida.append((linea[pos:], color, tenue, negrita))
+    return salida
+
+
+def escapar(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def fotograma_svg(lineas, indice):
+    """Un fotograma como grupo. Quien lo enciende y apaga es el CSS de construir_svg."""
+    partes = []
+    for n, linea in enumerate(lineas):
+        if not SGR_RE.sub("", linea).strip():
+            continue
+        y = BARRA + MARGEN_Y + (n + 1) * ALTO_LINEA
+        tspans, columna = [], 0
+        for texto, color, tenue, negrita in trozos_con_color(linea.rstrip("\r")):
+            if not texto:
+                continue
+            estilo = []
+            if color:
+                estilo.append(f'fill="{color}"')
+            if tenue:
+                estilo.append('opacity="0.55"')
+            if negrita:
+                estilo.append('font-weight="600"')
+            x = MARGEN_X + columna * AVANCE
+            # textLength fuerza el ancho exacto del trozo. Sin esto el texto se pinta
+            # con el avance REAL de la fuente que elija el visor, que no es el que yo
+            # asumo: un trozo largo (el ultimo prompt, ~45 caracteres) acumulaba la
+            # diferencia y su final se montaba encima del tspan siguiente — se veia la
+            # comilla de cierre pisando la ultima letra. lengthAdjust="spacing" reparte
+            # la correccion entre los huecos y no deforma las letras.
+            ancho = len(texto) * AVANCE
+            tspans.append(f'<tspan x="{x:.1f}" y="{y:.1f}" textLength="{ancho:.1f}" '
+                          f'lengthAdjust="spacing" '
+                          f'{" ".join(estilo)}>{escapar(texto)}</tspan>')
+            columna += len(texto)
+        if tspans:
+            partes.append("".join(tspans))
+
+    # Los tspan van DENTRO de un <text>: un tspan suelto no se renderiza, y el SVG sale
+    # con el marco pintado y ni una letra. Cada tspan lleva su x/y absolutos, asi que un
+    # unico <text> por fotograma basta para colocar todas las lineas.
+    return (f'<g class="f f{indice}"><text>' + "".join(partes) + "</text></g>")
+
+
+def hoja_de_estilo(fotogramas):
+    """
+    Los fotogramas se encienden con CSS, no con SMIL, y por dos razones.
+
+    La primera es soporte: SMIL esta deprecado en los navegadores basados en Chromium,
+    mientras que las animaciones CSS de un SVG cargado como <img> funcionan en todas
+    partes (es lo que usan las demos de terminal que se ven en GitHub).
+
+    La segunda es la que importa de verdad: **el primer fotograma se deja visible por
+    defecto**, y la animacion solo lo apaga. Asi, si el visor no anima nada (Quick Look,
+    un lector que sanee el SVG, una vista previa cualquiera), se ve un fotograma fijo en
+    vez de un rectangulo vacio. Con SMIL y visibility="hidden" el demo salia EN BLANCO,
+    que es peor que no tener demo.
+    """
+    total = sum(d for _, d in fotogramas)
+    reglas = [".f{opacity:0}", ".f0{opacity:1}"]   # sin animacion, se ve el primero
+    inicio = 0.0
+    for i, (_, duracion) in enumerate(fotogramas):
+        a, b = inicio / total * 100, (inicio + duracion) / total * 100
+        reglas.append(f".f{i}{{animation:k{i} {total:.2f}s step-end infinite}}")
+        if i == 0:
+            reglas.append(f"@keyframes k0{{0%{{opacity:1}}{b:.2f}%{{opacity:0}}}}")
+        else:
+            reglas.append(f"@keyframes k{i}{{0%{{opacity:0}}{a:.2f}%{{opacity:1}}"
+                          f"{b:.2f}%{{opacity:0}}}}")
+        inicio += duracion
+    # step-end: los cambios son cortes secos. Un terminal no hace fundidos, y con
+    # transicion suave se ven los dos fotogramas superpuestos un instante.
+    return "\n".join(reglas)
+
+
+def construir_svg(fotogramas):
+    total = sum(d for _, d in fotogramas)
+    ancho = int(MARGEN_X * 2 + COLUMNAS * AVANCE)
+    usadas = max(len([l for l in f.split("\n") if SGR_RE.sub("", l).strip()])
+                 for f, _ in fotogramas)
+    alto = int(BARRA + MARGEN_Y * 2 + (usadas + 1.5) * ALTO_LINEA)
+
+    grupos = [fotograma_svg(p.split("\n"), i) for i, (p, _) in enumerate(fotogramas)]
+    estilo = hoja_de_estilo(fotogramas)
+
+    circulos = "".join(
+        f'<circle cx="{18 + i * 18}" cy="{BARRA / 2:.0f}" r="5.5" fill="{c}"/>'
+        for i, c in enumerate(("#ff5f57", "#febc2e", "#28c840")))
+
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{ancho}" height="{alto}" \
+viewBox="0 0 {ancho} {alto}" font-family="{FUENTE}" font-size="{TAM}px">
+  <title>ccl — panel de sesiones de Claude Code</title>
+  <style>
+{estilo}
+  </style>
+  <rect width="{ancho}" height="{alto}" rx="10" fill="{FONDO}"/>
+  <path d="M0 10a10 10 0 0 1 10-10h{ancho - 20}a10 10 0 0 1 10 10v{BARRA - 10}H0z" \
+fill="{BARRA_FONDO}"/>
+  {circulos}
+  <text x="{ancho / 2:.0f}" y="{BARRA / 2 + 4:.0f}" fill="#8b8f93" font-size="11px" \
+text-anchor="middle">ccl</text>
+  <g fill="{TEXTO}" xml:space="preserve">
+{chr(10).join("    " + g for g in grupos)}
+  </g>
+</svg>
+'''
+
+
+def main():
+    destino = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_HERE, "demo.svg")
+    if not hasattr(os, "openpty"):
+        print("make_demo.py necesita un pty: solo funciona en Unix.", file=sys.stderr)
+        return 1
+    fotogramas = grabar()
+    if not any(p.strip() for p, _ in fotogramas):
+        print("no se capturo nada: ¿arranca `python3 ccl`?", file=sys.stderr)
+        return 1
+    svg = construir_svg(fotogramas)
+    with open(destino, "w") as fh:
+        fh.write(svg)
+    print(f"{destino} — {len(fotogramas)} fotogramas, "
+          f"{sum(d for _, d in fotogramas):.1f}s, {len(svg) // 1024} KB")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
