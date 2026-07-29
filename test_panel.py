@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""
+Tests del panel interactivo de ccl, sobre un pty de verdad.
+
+    python3 test_panel.py           # todos
+    python3 test_panel.py -v        # verboso
+
+`test_ccl.py` cubre la logica pura; esto cubre lo que solo se ve corriendo el panel:
+que una tecla mueva el cursor donde debe, que un clic caiga en la fila correcta y que
+la ayuda pagine. Son los caminos que antes solo se podian comprobar a mano.
+
+Como se hace hermetico, y por que cada pieza:
+
+  - `ccl.collect` devuelve filas SINTETICAS y `REFRESH_SECONDS` es enorme. Sin las dos
+    cosas la lista se reordena bajo los pies entre el arranque y la pulsacion, y no se
+    puede afirmar que fila de la terminal corresponde a que sesion — que es justo lo
+    que hay que comprobar del raton.
+  - `ccl.get_iterm_map` devuelve {} : **nadie toca ventanas de nadie**. El salto falla
+    con elegancia y se ve el flujo sin robarle el foco a quien este usando la maquina.
+  - No se ejecuta `claude` ni `osascript` en ningun momento.
+
+El tamaño del pty se fija con TIOCSWINSZ: sin eso el viewport queda diminuto y parece
+que faltan lineas que si estan.
+"""
+
+import fcntl
+import os
+import pty
+import re
+import select
+import struct
+import subprocess
+import sys
+import termios
+import time
+import unittest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CCL = os.path.join(_HERE, "ccl")
+
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+LIMPIAR = "\033[H\033[2J"      # el panel empieza cada repintado limpiando la pantalla
+
+# Sesiones fijas, de mas reciente a mas antigua. El panel las agrupa todas en ESPERANDO
+# (status idle, kind interactive), asi que el layout es predecible:
+#   fila 1  cabecera "N sesiones · ..."
+#   fila 2  "ESPERANDO (4)"
+#   fila 3  alfa      fila 4  su detalle
+#   fila 5  beta      fila 6  su detalle
+#   fila 7  gamma     fila 8  su detalle
+#   fila 9  delta     fila 10 su detalle
+NOMBRES = ["alfa", "beta", "gamma", "delta"]
+FILA_DE = {"alfa": 3, "beta": 5, "gamma": 7, "delta": 9}
+SUB_DE = {n: f + 1 for n, f in FILA_DE.items()}
+CABECERA_GRUPO = 2
+HUECO = 11
+
+ARRANQUE = f'''
+import datetime, importlib.machinery, importlib.util, sys
+cargador = importlib.machinery.SourceFileLoader("ccl_mod", {_CCL!r})
+ccl = importlib.util.module_from_spec(
+    importlib.util.spec_from_loader("ccl_mod", cargador))
+cargador.exec_module(ccl)
+
+ahora = datetime.datetime.now(datetime.timezone.utc)
+
+def fila(num, nombre, horas):
+    marca = (ahora - datetime.timedelta(hours=horas)).isoformat().replace("+00:00", "Z")
+    return {{"num": num, "name": nombre, "account": "", "repo": "repo", "cwd": "/x",
+            "kind": "interactive", "status": "idle", "sessionId": "sid-" + nombre,
+            "pid": num, "tty": "", "iterm": None, "ts": marca, "branch": "main",
+            "model": "sonnet-5", "effort": None, "title": None,
+            "prompt": "prompt de " + nombre, "startedAt": num}}
+
+FIJAS = [fila(i + 1, n, i + 1) for i, n in enumerate({NOMBRES!r})]
+
+ccl.collect = lambda: list(FIJAS)
+ccl.get_iterm_map = lambda: {{}}     # NADIE toca ventanas
+ccl.REFRESH_SECONDS = 9999           # sin refresco: el layout no se mueve bajo los pies
+ccl.REFRESH_IDLE = 9999
+sys.exit(ccl.main())
+'''
+
+
+def press(fila, col=10):
+    """Un clic completo (pulsar y soltar) en modo SGR, sobre esa fila de la terminal."""
+    return (f"\033[<0;{col};{fila}M\033[<0;{col};{fila}m").encode()
+
+
+# Las esperas son de reloj, asi que en una maquina lenta (un runner de CI compartido) se
+# quedan cortas y los tests fallan sin que nada este roto. Se escalan con esta variable
+# en vez de subir el valor base, que ralentizaria a todo el mundo: el CI usa 2.
+FACTOR_ESPERA = float(os.environ.get("CCL_TEST_LENTO", "1"))
+
+
+class Panel:
+    """Arranca el panel en un pty, manda eventos y recoge lo que pinta."""
+
+    FILAS, COLUMNAS = 30, 100
+
+    def __init__(self, entorno=None, arranque=0.9, por_evento=0.55):
+        arranque *= FACTOR_ESPERA
+        self.por_evento = por_evento * FACTOR_ESPERA
+        self.trozos = []
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:                                  # hijo: es el panel
+            os.environ["TERM"] = "xterm-256color"
+            os.environ.update(entorno or {})
+            os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", self.FILAS, self.COLUMNAS, 0, 0))
+        self._drenar(arranque)
+
+    def _drenar(self, segundos):
+        """
+        Lee lo que haya durante un rato ACOTADO.
+
+        Un `while select(...)` sin limite no termina nunca: el panel repinta solo.
+        """
+        fin = time.time() + segundos
+        while time.time() < fin:
+            if select.select([self.fd], [], [], 0.15)[0]:
+                try:
+                    self.trozos.append(os.read(self.fd, 65536).decode("utf-8", "ignore"))
+                except OSError:
+                    return
+
+    def enviar(self, *eventos):
+        for e in eventos:
+            os.write(self.fd, e)
+            self._drenar(self.por_evento)
+        return self
+
+    def cerrar(self):
+        try:
+            os.write(self.fd, b"\x03")      # Ctrl-C: sale por el finally, restaurando todo
+            self._drenar(0.4 * FACTOR_ESPERA)
+        except OSError:
+            pass
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(self.pid, 0)
+        except ChildProcessError:
+            pass
+
+    # ─────────── lo que se pinto, ya interpretado ───────────
+
+    @property
+    def bruto(self):
+        return "".join(self.trozos)
+
+    def pantallas(self):
+        """Cada repintado, en orden, sin codigos de color."""
+        return [ANSI_RE.sub("", p) for p in self.bruto.split(LIMPIAR) if p.strip()]
+
+    def ultima(self):
+        return self.pantallas()[-1] if self.pantallas() else ""
+
+    def cursor(self):
+        """El nombre de la sesion marcada con ▌ en el ultimo repintado."""
+        for linea in self.ultima().split("\n"):
+            if "▌" in linea:
+                for nombre in NOMBRES:
+                    if nombre in linea:
+                        return nombre
+        return None
+
+    def aviso(self):
+        """El mensaje que el panel muestra a la derecha de la cabecera (el 'flash')."""
+        for linea in self.ultima().split("\n"):
+            if "sesiones" in linea:
+                return linea.split("activas")[-1].replace("↕", "").strip()
+        return ""
+
+    def barra(self):
+        """La barra de estado de abajo: dice si hay filtro activo o numero teclado."""
+        for linea in reversed(self.ultima().split("\n")):
+            if linea.strip():
+                return linea.strip()
+        return ""
+
+
+def con_panel(*args, **kwargs):
+    """Context manager: garantiza que el proceso del panel se cierre pase lo que pase."""
+    class _Ctx:
+        def __enter__(self):
+            self.p = Panel(*args, **kwargs)
+            return self.p
+
+        def __exit__(self, *_):
+            self.p.cerrar()
+            return False
+    return _Ctx()
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestArranque(unittest.TestCase):
+    def test_el_layout_es_el_esperado(self):
+        """
+        Si esto falla, el resto de la clase miente: todas las comprobaciones del raton
+        dependen de que la fila N de la terminal sea la sesion que se cree.
+        """
+        with con_panel() as p:
+            lineas = [l.rstrip("\r") for l in p.ultima().split("\n")]
+            self.assertIn("4 sesiones", lineas[0])
+            self.assertIn("ESPERANDO (4)", lineas[CABECERA_GRUPO - 1])
+            for nombre, fila in FILA_DE.items():
+                self.assertIn(nombre, lineas[fila - 1],
+                              f"{nombre} deberia estar en la fila {fila}")
+                self.assertIn("prompt de " + nombre, lineas[SUB_DE[nombre] - 1])
+
+    def test_arranca_con_la_primera_seleccionada(self):
+        with con_panel() as p:
+            self.assertEqual(p.cursor(), "alfa")
+
+    def test_entra_y_sale_de_la_pantalla_alternativa(self):
+        """Si no se restaura, el usuario se queda sin su scrollback al salir."""
+        with con_panel() as p:
+            pass
+        self.assertIn("\033[?1049h", p.bruto)
+        self.assertIn("\033[?1049l", p.bruto)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestTeclado(unittest.TestCase):
+    def test_las_flechas_mueven(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(b"\033[B").cursor(), "beta")
+        with con_panel() as p:
+            self.assertEqual(p.enviar(b"\033[B", b"\033[B").cursor(), "gamma")
+
+    def test_arriba_desde_la_primera_da_la_vuelta(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(b"\033[A").cursor(), "delta")
+
+    def test_pgdn_no_arranca_un_filtro(self):
+        """
+        PgDn es ESC [ 6 ~ : si la '~' se queda sin leer, la lectura siguiente la ve como
+        texto escrito y empieza a filtrar por "~".
+        """
+        with con_panel() as p:
+            p.enviar(b"\033[6~")
+            self.assertNotIn("filtro:", p.barra())
+            self.assertNotIn("~", p.barra())
+
+    def test_escribir_filtra_sin_perder_letras(self):
+        """
+        Las cinco letras llegan en una rafaga. Con el TCSAFLUSH que trae tty.setraw por
+        defecto sobrevivia solo la primera, y el filtro acababa siendo "g".
+        """
+        with con_panel() as p:
+            p.enviar(b"gamma")
+            self.assertIn("gamma", p.barra())
+            self.assertIn("1 coincide", p.barra())
+
+    def test_esc_limpia_el_filtro_y_deja_el_cursor_donde_estaba(self):
+        """
+        Al limpiar el filtro vuelve la lista completa, pero el cursor NO vuelve al
+        principio: sigue al sessionId, no a la posicion. Es lo que se quiere — filtras
+        para encontrar algo, limpias el filtro y sigues sobre ello.
+        """
+        with con_panel() as p:
+            p.enviar(b"beta")
+            self.assertEqual(p.cursor(), "beta")
+            p.enviar(b"\033")
+            self.assertNotIn("filtro:", p.barra())
+            self.assertEqual(p.cursor(), "beta")
+            self.assertIn("delta", p.ultima(), "la lista completa debe estar de vuelta")
+
+    def test_un_numero_prepara_el_salto_sin_ejecutarlo(self):
+        with con_panel() as p:
+            p.enviar(b"3")
+            self.assertIn("gamma", p.barra())
+            self.assertIn("enter confirma", p.barra())
+            self.assertEqual(p.cursor(), "alfa", "teclear un numero no mueve el cursor")
+
+    def test_option_digito_salta_a_la_nesima_esperando(self):
+        """⌥N llega como ESC + digito. Con el mapa de iTerm vacio el salto avisa."""
+        for n, nombre in ((1, "alfa"), (3, "gamma"), (4, "delta")):
+            with con_panel() as p:
+                p.enviar(b"\033" + str(n).encode())
+                self.assertIn(nombre, p.aviso(), f"⌥{n} deberia ir a {nombre}")
+
+    def test_option_digito_fuera_de_rango_avisa(self):
+        with con_panel() as p:
+            p.enviar(b"\0339")
+            self.assertIn("solo hay 4", p.aviso())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestRaton(unittest.TestCase):
+    def test_activa_y_apaga_el_reporte_de_raton(self):
+        """
+        El apagado va ANTES de soltar la pantalla alternativa: si el panel muere con el
+        raton activo, el shell recibe escapes por cada clic.
+        """
+        with con_panel() as p:
+            pass
+        self.assertIn("\033[?1006h", p.bruto)
+        self.assertIn("\033[?1006l", p.bruto)
+        self.assertLess(p.bruto.index("\033[?1006l"), p.bruto.index("\033[?1049l"))
+
+    def test_un_clic_selecciona_esa_fila(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(press(FILA_DE["gamma"])).cursor(), "gamma")
+
+    def test_un_clic_en_la_linea_de_detalle_selecciona_su_sesion(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(press(SUB_DE["beta"])).cursor(), "beta")
+
+    def test_un_clic_en_la_cabecera_no_hace_nada(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(press(CABECERA_GRUPO)).cursor(), "alfa")
+
+    def test_un_clic_en_un_hueco_no_hace_nada(self):
+        with con_panel() as p:
+            self.assertEqual(p.enviar(press(HUECO)).cursor(), "alfa")
+
+    def test_doble_clic_abre(self):
+        """Los cuatro eventos van en una rafaga, como los manda el terminal de verdad."""
+        with con_panel() as p:
+            p.enviar(press(FILA_DE["delta"]) + press(FILA_DE["delta"]))
+            self.assertIn("delta", p.aviso())
+
+    def test_dos_clics_lentos_no_son_un_doble(self):
+        with con_panel() as p:
+            p.enviar(press(FILA_DE["delta"]), press(FILA_DE["delta"]))
+            self.assertEqual(p.aviso(), "", "no deberia haber abierto nada")
+            self.assertEqual(p.cursor(), "delta")
+
+    def test_dos_clics_en_filas_distintas_no_son_un_doble(self):
+        with con_panel() as p:
+            p.enviar(press(FILA_DE["beta"]) + press(FILA_DE["delta"]))
+            self.assertEqual(p.aviso(), "")
+            self.assertEqual(p.cursor(), "delta")
+
+    def test_la_rueda_mueve_la_seleccion(self):
+        with con_panel() as p:
+            p.enviar(b"\033[<65;10;5M", b"\033[<65;10;5M")
+            self.assertEqual(p.cursor(), "gamma")
+
+    def test_la_rueda_arriba_no_da_la_vuelta(self):
+        """A diferencia de las flechas: con la rueda, pasar del borde desorienta."""
+        with con_panel() as p:
+            self.assertEqual(p.enviar(b"\033[<64;10;5M").cursor(), "alfa")
+
+    def test_CCL_MOUSE_0_lo_desactiva_del_todo(self):
+        with con_panel(entorno={"CCL_MOUSE": "0"}) as p:
+            p.enviar(press(FILA_DE["delta"]) + press(FILA_DE["delta"]))
+            self.assertEqual(p.cursor(), "alfa")
+            self.assertEqual(p.aviso(), "")
+        self.assertNotIn("\033[?1006h", p.bruto)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestAyuda(unittest.TestCase):
+    def test_la_abre_y_la_pagina(self):
+        """
+        En 30 filas la ayuda no cabe. Se pinta de arriba abajo, asi que sin paginar lo
+        que sobra se iria por el borde SUPERIOR, sin ningun aviso.
+        """
+        with con_panel() as p:
+            p.enviar(b"?")
+            self.assertIn("atajos", p.ultima())
+            self.assertIn("página 1/", p.ultima())
+
+    def test_el_espacio_avanza_de_pagina(self):
+        with con_panel() as p:
+            p.enviar(b"?")
+            primera = p.ultima()
+            p.enviar(b" ")
+            self.assertNotEqual(p.ultima(), primera)
+            self.assertIn("página 2/", p.ultima())
+
+    def test_entre_todas_las_paginas_se_ve_como_copiar(self):
+        """Con el raton activo la seleccion normal no funciona: hay que explicarlo."""
+        with con_panel() as p:
+            p.enviar(b"?", b" ", b" ")
+            visto = "\n".join(p.pantallas())
+            for pista in ("copiar", "--list", "CCL_MOUSE"):
+                self.assertIn(pista, visto, f"la ayuda no explica {pista!r}")
+
+    def test_ninguna_pagina_parte_una_seccion(self):
+        """La pagina siguiente no debe empezar por una nota sin su tecla ni su titulo."""
+        with con_panel() as p:
+            p.enviar(b"?", b" ")
+            for pantalla in p.pantallas():
+                if "página 2/" not in pantalla:
+                    continue
+                primera = next(l for l in pantalla.split("\n") if l.strip())
+                self.assertFalse(primera.startswith("      "),
+                                 f"la página 2 empieza por una nota huérfana: {primera!r}")
+
+    def test_cualquier_otra_tecla_vuelve_al_panel(self):
+        with con_panel() as p:
+            p.enviar(b"?", b"x")
+            self.assertIn("sesiones", p.ultima())
+            self.assertNotIn("atajos", p.ultima())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestSinPanel(unittest.TestCase):
+    """Los caminos no interactivos se prueban directo, sin pty."""
+
+    def _correr(self, *args):
+        return subprocess.run([sys.executable, "-c", ARRANQUE.replace(
+            "sys.exit(ccl.main())",
+            "sys.argv = ['ccl'] + %r\nsys.exit(ccl.main())" % list(args),
+        )], capture_output=True, text=True, timeout=30)
+
+    def test_list_no_lleva_codigos_de_color(self):
+        """Por tuberia va sin color, para poder pegarlo: `ccl --list | pbcopy`."""
+        r = self._correr("--list")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("\033", r.stdout)
+        for nombre in NOMBRES:
+            self.assertIn(nombre, r.stdout)
+
+    def test_w_fuera_de_rango_avisa_y_no_salta(self):
+        r = self._correr("-w", "99")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("solo hay 4", r.stderr)
+
+    def test_un_numero_que_no_existe_avisa(self):
+        r = self._correr("77")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("77", r.stderr)
+
+    def test_opcion_desconocida_devuelve_2(self):
+        r = self._correr("--sarasa")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("sarasa", r.stderr)
+
+    def test_help_no_necesita_sesiones(self):
+        r = self._correr("--help")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("panel interactivo", r.stdout)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestGeneradorDelDemo(unittest.TestCase):
+    """
+    `make_demo.py` graba el panel y escribe demo.svg. Cada comprobacion de aqui es un
+    fallo que ya ocurrio y que **no se ve** salvo abriendo el SVG: los dos primeros
+    dejaban una imagen en blanco o con el texto pisado, y el SVG seguia siendo valido.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls._tmp = tempfile.TemporaryDirectory()
+        destino = os.path.join(cls._tmp.name, "demo.svg")
+        r = subprocess.run([sys.executable, os.path.join(_HERE, "make_demo.py"), destino],
+                           capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            raise AssertionError(f"make_demo.py fallo: {r.stderr}")
+        with open(destino) as fh:
+            cls.svg = fh.read()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_los_tspan_van_dentro_de_un_text(self):
+        """Un tspan suelto NO se renderiza: el SVG salia con el marco y ni una letra."""
+        self.assertIn("<text>", self.svg)
+        primer_tspan = self.svg.index("<tspan")
+        self.assertLess(self.svg.index("<text>"), primer_tspan,
+                        "hay tspans antes del primer <text>: quedarian sin renderizar")
+
+    def test_cada_trozo_fija_su_ancho(self):
+        """
+        Sin textLength el visor usa el avance de SU fuente, no el que asume el
+        generador, y un trozo largo se monta encima del siguiente.
+        """
+        self.assertEqual(self.svg.count("<tspan"), self.svg.count("textLength="))
+
+    def test_el_primer_fotograma_se_ve_sin_animacion(self):
+        """
+        Si el visor no anima, debe quedar un fotograma fijo y no un rectangulo vacio.
+        Con visibility=hidden + SMIL el demo salia EN BLANCO.
+        """
+        self.assertIn(".f0{opacity:1}", self.svg)
+        self.assertIn("@keyframes k0", self.svg)
+        self.assertNotIn("<animate", self.svg)     # SMIL esta deprecado en Chromium
+
+    def test_los_fotogramas_no_se_solapan(self):
+        """Cada uno se apaga justo cuando arranca el siguiente."""
+        apagados = re.findall(r"@keyframes k(\d+)\{0%\{opacity:0\}([\d.]+)%", self.svg)
+        encendidos = [float(b) for _, b in apagados]
+        self.assertEqual(encendidos, sorted(encendidos), "los inicios no van en orden")
+
+    def test_muestra_el_filtro_y_el_salto(self):
+        """Un demo que solo mueva el cursor no cuenta lo que hace la herramienta."""
+        texto = re.sub(r"<[^>]+>", "", self.svg)
+        self.assertIn("filtro:", texto, "el demo no muestra el filtrado")
+        self.assertIn("esperando:", texto, "el demo no muestra el salto")
+
+    def test_no_expone_datos_reales(self):
+        """Las sesiones son sinteticas: el demo no puede filtrar repos ni prompts."""
+        texto = re.sub(r"<[^>]+>", "", self.svg)
+        self.assertNotIn(os.path.expanduser("~"), texto)
+        self.assertIn("web-app", texto)          # una de las sinteticas
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

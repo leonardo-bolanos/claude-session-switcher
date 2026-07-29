@@ -23,8 +23,17 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Tests
+      - name: Tests de la lógica pura
         run: python3 test_ccl.py -v
+
+      - name: Tests del panel interactivo
+        # Arrancan el panel en un pty con datos sinteticos: no necesitan iTerm ni
+        # `claude`, asi que corren igual en Linux. Las esperas se duplican porque un
+        # runner compartido es mas lento que una maquina de desarrollo y, si no, los
+        # tests fallan sin que nada este roto.
+        env:
+          CCL_TEST_LENTO: "2"
+        run: python3 test_panel.py
 
   macos:
     # Una pasada en macOS: es la unica plataforma soportada de verdad, y aqui se
@@ -34,7 +43,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tests
-        run: python3 test_ccl.py
+        env:
+          CCL_TEST_LENTO: "2"
+        run: |
+          python3 test_ccl.py
+          python3 test_panel.py
 
       - name: El script compila y es ejecutable
         run: |
@@ -43,6 +56,22 @@ jobs:
 
       - name: install.sh tiene sintaxis valida
         run: bash -n install.sh
+
+      - name: demo.svg esta al dia
+        # Si el demo del README no coincide con lo que pinta el panel hoy, la portada
+        # del repo esta mintiendo. Avisa, no falla: el demo es documentacion, no una
+        # regresion. Se compara solo el TEXTO, porque el SVG entero cambia en cada
+        # grabacion (posiciones en coma flotante) aunque el contenido sea identico.
+        run: |
+          python3 make_demo.py /tmp/demo-nuevo.svg
+          python3 - <<'EOF'
+          import re
+          texto = lambda p: re.sub(r"<[^>]+>", "", open(p).read())
+          if texto("demo.svg") == texto("/tmp/demo-nuevo.svg"):
+              print("demo.svg coincide con el panel actual")
+          else:
+              print("::warning::demo.svg quedo desfasado: corre python3 make_demo.py")
+          EOF
 
       - name: Degrada bien sin Claude Code instalado
         run: |
