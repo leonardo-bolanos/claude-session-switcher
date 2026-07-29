@@ -4,6 +4,19 @@ Un solo script: `ccl`, Python sin dependencias externas. Lista las sesiones
 de Claude Code y salta a su ventana de iTerm2. El README explica qué hace y por qué existe;
 esto son las trampas que no se ven leyendo el código.
 
+## Flujo de git
+
+**Se trabaja sobre `master` y se commitea ahí directamente.** Es un proyecto de un solo autor:
+no hay PR que revisar ni nadie a quien no romperle la rama.
+
+Si por lo que sea el trabajo acabó en una rama, el cierre es siempre el mismo: mergear a `master`
+(en fast-forward, el historial va lineal), empujar, y **borrar la rama en local y en remoto**. No
+se dejan ramas colgando.
+
+Antes de empujar, las dos suites en verde: `python3 test_ccl.py` y `python3 test_panel.py`.
+El CI **solo se dispara con push a `master`** (o con un PR), asi que empujar a una rama no prueba
+nada.
+
 ## Trampas verificadas
 
 Cada una costó encontrarla. Si "simplificas" alguna, vuelve el problema.
