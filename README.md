@@ -143,13 +143,19 @@ Un par de detalles de rendimiento que costaron encontrar:
 ## Tests
 
 ```bash
-python3 test_ccl.py         # 60 tests, ~7 ms
+python3 test_ccl.py         # toda la suite
 python3 test_ccl.py -v      # verboso
+python3 test_ccl.py TestFiltro   # una clase concreta
 ```
 
-Solo stdlib, sin dependencias. Cubren la lógica pura —helpers de ancho, numeración estable,
-parseo de la salida de AppleScript, lectura de transcripts, agrupación, filtro, multi-cuenta
-y manejo de errores— sin tocar iTerm ni lanzar `claude`.
+Solo stdlib, sin dependencias. Cubren la lógica pura sin tocar iTerm ni lanzar `claude`:
+helpers de ancho, numeración estable, parseo de la salida de AppleScript, lectura de
+transcripts, agrupación y orden, filtro, multi-cuenta, formato de la tabla, la pantalla de
+ayuda y el manejo de errores.
+
+Uno de ellos es un guardarraíl de diseño: comprueba que **ninguna acción cuelgue de una letra
+suelta**, porque cualquier letra empieza a filtrar. Ya pasó dos veces (`r` impedía buscar
+"revisa"), y ese test lo caza antes de que llegue al panel.
 
 El CI los corre en Linux (Python 3.9/3.11/3.13) y en macOS, donde además comprueba que el
 script degrada con un error claro cuando Claude Code no está instalado.

@@ -649,7 +649,7 @@ HELP = [
         ("esc",        "limpiar el filtro"),
     ]),
     ("otras", [
-        ("^R",         "refrescar ya (el panel se refresca solo cada 4s)"),
+        ("Ctrl-R",     "refrescar ya (el panel se refresca solo cada 4s)"),
         ("?",          "esta ayuda"),
         ("esc / q",    "salir — con filtro activo, esc lo limpia primero"),
     ]),

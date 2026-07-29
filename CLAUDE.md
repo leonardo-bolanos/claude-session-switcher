@@ -57,10 +57,16 @@ nada. Por eso hay dos grupos y no los tres del panel oficial.
 
 ## Cómo probar
 
-`python3 test_ccl.py` cubre toda la lógica pura (46 tests, sin dependencias). Son herméticos:
-parchean `INDEX_FILE` y `HOME` a temporales. **Si tocas `vis`/`pad`/`clip`, `assign_numbers`,
-`get_iterm_map` o `read_transcript`, corre los tests** — esas cuatro son justo las que han
-fallado en silencio antes.
+`python3 test_ccl.py` cubre toda la lógica pura, sin dependencias. Son herméticos: parchean
+`INDEX_FILE`, `HOME` y `config_dirs` a temporales — **si añades un test que llame a
+`get_sessions`, parchea también `config_dirs` y `shutil.which`**, o pasará aquí y fallará en un
+runner limpio, que es exactamente lo que ocurrió la primera vez que corrió el CI.
+
+**Si tocas `vis`/`pad`/`clip`, `assign_numbers`, `get_iterm_map` o `read_transcript`, corre los
+tests**: esas cuatro son justo las que han fallado en silencio antes.
+
+`TestAyuda.test_ninguna_accion_es_una_letra_suelta` es un guardarraíl de diseño, no una
+comprobación de formato: si documentas una acción en una letra, falla.
 
 Lo que los tests NO cubren, porque necesita iTerm o un terminal real: el bucle interactivo,
 el salto de ventana y el refresco en segundo plano.

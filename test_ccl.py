@@ -547,5 +547,93 @@ class TestFiltro(unittest.TestCase):
         self.assertEqual(ccl.strip_accents("sin acentos"), "sin acentos")
 
 
+# ────────────────────────── ayuda y teclas reservadas ──────────────────────────
+
+
+class TestAyuda(unittest.TestCase):
+    def test_estructura(self):
+        self.assertTrue(ccl.HELP)
+        for titulo, filas in ccl.HELP:
+            self.assertTrue(titulo)
+            self.assertTrue(filas)
+            for tecla, desc in filas:
+                self.assertTrue(desc, f"toda fila necesita descripcion: {titulo}/{tecla}")
+
+    def test_render_incluye_todas_las_secciones(self):
+        out = ccl.render_help(110, 40)
+        plano = ccl.ANSI_RE.sub("", out)
+        for titulo, _ in ccl.HELP:
+            self.assertIn(titulo, plano)
+
+    def test_render_documenta_las_teclas_de_accion(self):
+        plano = ccl.ANSI_RE.sub("", ccl.render_help(110, 40))
+        for tecla in ("Ctrl-R", "?", "enter", "esc"):
+            self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
+
+    def test_render_no_desborda_el_ancho(self):
+        cols = 80
+        for linea in ccl.render_help(cols, 40).split("\r\n"):
+            self.assertLessEqual(ccl.vis(linea), cols,
+                                 f"linea mas ancha que la terminal: {linea!r}")
+
+    def test_ninguna_accion_es_una_letra_suelta(self):
+        """
+        Cualquier letra empieza a filtrar, asi que una accion en una letra suelta se
+        come el filtrado de todo lo que empiece por ella. Paso con 'r' (impedia buscar
+        'revisa') y habria pasado con 'h' para la ayuda ('honest-metrics-...').
+
+        Excepcion consciente: 'q' para salir, que en el codigo va guardada por
+        `not query` — con filtro activo es texto.
+        """
+        permitidas = {"q"}
+        for titulo, filas in ccl.HELP:
+            for tecla, _ in filas:
+                for parte in tecla.replace("/", " ").split():
+                    if len(parte) == 1 and parte.isalpha() and parte not in permitidas:
+                        self.fail(f"'{parte}' ({titulo}) es una letra suelta: "
+                                  f"usa una tecla de control o un simbolo")
+
+
+# ────────────────────────── linea principal ──────────────────────────
+
+
+class TestMainLine(unittest.TestCase):
+    def r(self, **kw):
+        base = row(7, "s7")
+        base.update({"name": "mi-sesion", "repo": "mi-repo", "ts": iso(minutes=2)})
+        base.update(kw)
+        return base
+
+    def test_incluye_numero_nombre_repo_y_antiguedad(self):
+        plano = ccl.ANSI_RE.sub("", ccl.main_line(self.r()))
+        self.assertIn("[ 7]", plano)
+        self.assertIn("mi-sesion", plano)
+        self.assertIn("mi-repo", plano)
+        self.assertIn("hace 2m", plano)
+
+    def test_marca_las_que_no_estan_en_iterm(self):
+        con = ccl.ANSI_RE.sub("", ccl.main_line(self.r(iterm=("100", 1))))
+        sin = ccl.ANSI_RE.sub("", ccl.main_line(self.r(iterm=None)))
+        self.assertNotIn("⚠", con)
+        self.assertIn("⚠", sin)
+
+    def test_columna_de_cuenta_solo_con_show_account(self):
+        sin = ccl.ANSI_RE.sub("", ccl.main_line(self.r(account="personal")))
+        con = ccl.ANSI_RE.sub("", ccl.main_line(self.r(account="personal"), True))
+        self.assertNotIn("personal", sin)
+        self.assertIn("personal", con)
+
+    def test_columnas_alineadas_pese_a_nombres_de_distinto_largo(self):
+        corto = ccl.main_line(self.r(name="ab"))
+        largo = ccl.main_line(self.r(name="un-nombre-bastante-mas-largo"))
+        # la antiguedad debe empezar en la misma columna en ambos
+        pos = lambda l: ccl.ANSI_RE.sub("", l).index("hace 2m")
+        self.assertEqual(pos(corto), pos(largo))
+
+    def test_nombre_muy_largo_se_recorta_sin_romper_columnas(self):
+        linea = ccl.main_line(self.r(name="x" * 200))
+        self.assertLess(ccl.vis(linea), 120)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
