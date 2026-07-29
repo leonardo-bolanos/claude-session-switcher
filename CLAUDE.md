@@ -189,6 +189,11 @@ para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
 **Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `cwd`. Si no, no
 se ve hasta el refresco (4 s) y parece que no se guardo.
 
+**La nota va en `NOTE` (negrita + cian), no en `CYAN` a secas.** La linea de detalle es casi toda
+`DIM` y grises, y en cian plano la nota se perdia entre la rama y el modelo — justo lo contrario
+de para lo que sirve. El codigo es `1;36` combinado y no `BOLD(CYAN(x))`: anidado deja dos resets
+pegados.
+
 **El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
 prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece
 que la tecla no hizo nada.

@@ -619,6 +619,19 @@ class TestNotas(unittest.TestCase):
         self.assertLess(plano.index("backend"), plano.index("main"),
                         "la nota va primera: al final se la come el recorte")
 
+    def test_la_nota_va_resaltada(self):
+        """
+        La linea de detalle es casi toda DIM y grises: sin negrita la nota se pierde
+        entre la rama y el modelo, que es justo lo contrario de para lo que sirve.
+        """
+        r = row(1, "a")
+        r.update({"note": "mi nota", "branch": "main", "model": "opus-5"})
+        linea = ccl.detail_line(r)
+        codigos = ccl.ANSI_RE.findall(linea[:linea.index("✎")] or linea)
+        self.assertIn("\033[1;36m", linea, "la nota debe ir en negrita y color")
+        # y el resto de la linea NO debe quedarse en negrita
+        self.assertIn("\033[0m", linea[linea.index("nota"):])
+
     def test_sin_nota_la_linea_no_cambia(self):
         r = row(1, "a")
         r.update({"branch": "main", "model": "opus-5"})

@@ -73,6 +73,10 @@ BLUE = lambda s: c("34", s)
 MAGENTA = lambda s: c("35", s)
 RED = lambda s: c("31", s)
 GREY = lambda s: c("90", s)
+# La nota es lo unico de la linea de detalle que escribio el usuario, y esa linea es casi
+# toda DIM y grises: en cian normal se perdia entre la rama y el modelo. Negrita + cian en
+# un solo codigo, no BOLD(CYAN(x)), que anidado deja dos resets pegados.
+NOTE = lambda s: c("1;36", s)
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 TTY_RE = re.compile(r"(?:/dev/)?tty[a-z]*\d+")
@@ -656,7 +660,7 @@ def detail_line(r, width=None):
     """Tu nota · rama · modelo · effort · ultimo prompt. Cada pieza con su color."""
     # La nota va PRIMERA y en su propio color: es lo unico de la linea que escribiste tu,
     # y puesta al final la habria comido el recorte cuando el prompt es largo.
-    nota = CYAN("✎ " + r["note"]) if r.get("note") else ""
+    nota = NOTE("✎ " + r["note"]) if r.get("note") else ""
     meta = [x for x in (nota,
                         GREY(r["branch"]) if r["branch"] else "",
                         color_model(r["model"]),
