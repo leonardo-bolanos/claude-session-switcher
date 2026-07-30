@@ -73,14 +73,24 @@ jobs:
               print("::warning::demo.svg quedo desfasado: corre python3 make_demo.py")
           EOF
 
-      - name: Degrada bien sin Claude Code instalado
+      - name: Degrada bien sin Claude Code instalado, en los dos idiomas
         run: |
           # En el runner no existe `claude`: debe dar un error claro y salir con 1,
           # no decir "no hay sesiones activas", que mandaria a diagnosticar otra cosa.
-          set +e
-          out=$(./ccl --list 2>&1); code=$?
-          set -e
-          echo "$out"
-          test $code -eq 1 || { echo "esperaba exit 1, dio $code"; exit 1; }
-          echo "$out" | grep -q "no encuentro el comando" \
-            || { echo "el mensaje de error no es el esperado"; exit 1; }
+          #
+          # El idioma se FIJA en cada pasada. Este paso grepeaba el mensaje en español
+          # sin fijarlo, y se puso rojo en cuanto la interfaz paso a ingles por defecto:
+          # el programa hacia lo correcto y el que estaba mal era el CI. De paso, asi
+          # queda comprobado que la traduccion funciona en el binario de verdad y no solo
+          # en los tests.
+          comprobar() {   # $1 = idioma, $2 = trozo del mensaje que debe aparecer
+            set +e
+            out=$(CCL_LANG="$1" ./ccl --list 2>&1); code=$?
+            set -e
+            echo "[$1] $out"
+            test $code -eq 1 || { echo "esperaba exit 1, dio $code"; exit 1; }
+            echo "$out" | grep -q "$2" \
+              || { echo "el mensaje en $1 no es el esperado"; exit 1; }
+          }
+          comprobar en 'find the'
+          comprobar es 'encuentro el comando'

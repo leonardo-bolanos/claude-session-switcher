@@ -283,12 +283,25 @@ Cuatro cosas que se rompieron al hacerlo bilingüe, y que un test fija ahora:
   env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_ccl.py
   env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_panel.py
   ```
-- **Nada debe localizar algo buscando texto de la interfaz.** Mordió tres veces: `color_age`
-  (arriba), el helper `aviso()` de `test_panel.py` —buscaba "sesiones", en inglés devolvía cadena
-  vacía y los asserts sobre el aviso pasaban **sin comprobar nada**— y `make_demo.py`, que
-  filtraba los fotogramas igual y se quedaba sin uno solo. Localiza por **forma**: un hueco de
-  tres espacios, una regex de la cabecera (`\d+ \S+ ·`)… y aplicándola sobre el texto **sin
-  escapes**, porque la cabecera lleva códigos de color entre el número y la palabra.
+- **Nada debe localizar algo buscando texto de la interfaz.** Mordió **cuatro** veces:
+  `color_age` (arriba); el helper `aviso()` de `test_panel.py` —buscaba "sesiones", en inglés
+  devolvía cadena vacía y los asserts sobre el aviso pasaban **sin comprobar nada**—;
+  `make_demo.py`, que filtraba los fotogramas igual y se quedaba sin uno solo; y el propio **CI**,
+  cuyo paso «degrada bien sin Claude Code» grepeaba el error en español y se puso rojo en cuanto
+  la interfaz pasó a inglés — el programa hacía lo correcto y el que estaba mal era el CI.
+
+  Dentro del programa, localiza por **forma**: un hueco de tres espacios, una regex de la cabecera
+  (`\d+ \S+ ·`)… y aplicándola sobre el texto **sin escapes**, porque la cabecera lleva códigos de
+  color entre el número y la palabra. Desde fuera (CI, scripts), **fija `CCL_LANG`** y comprueba
+  ese idioma; el paso del CI lo hace ahora en los dos, así la traducción queda probada en el
+  binario de verdad.
+
+  Para reproducirlo en local hace falta **`HOME` vacío además de un PATH mínimo**: con tu `HOME`,
+  `claude_bin()` encuentra `claude` en `~/.nvm/...` y el escenario «no está instalado» no se da.
+
+  ```bash
+  env -i HOME=/tmp/home-vacio PATH=/usr/bin:/bin ./ccl --list   # debe salir con 1
+  ```
 - `t()` **cae al inglés si falta una clave** en vez de reventar, y hay un test que comprueba que
   las dos tablas tienen exactamente las mismas claves y los mismos huecos `{…}`.
 
