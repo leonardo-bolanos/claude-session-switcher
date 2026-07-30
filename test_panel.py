@@ -467,10 +467,16 @@ class TestSinPanel(unittest.TestCase):
     """Los caminos no interactivos se prueban directo, sin pty."""
 
     def _correr(self, *args):
-        # CCL_TEST_NOTES tambien aqui: aunque estos caminos no escriban notas, si las
-        # LEEN, y sin desviarlo saldrian las notas reales del usuario en la salida.
+        # Este camino construye su entorno a mano, asi que hay que fijar aqui LAS DOS
+        # cosas que `Panel` fija en el fork, y por las mismas razones:
+        #   - CCL_TEST_NOTES: aunque estos caminos no escriban notas, si las LEEN, y sin
+        #     desviarlo saldrian las notas reales del usuario en la salida.
+        #   - CCL_LANG: sin fijarlo hereda el locale de quien ejecute los tests. Pasaba en
+        #     una maquina con LANG=es_ES y fallaba en el CI, que corre sin locale — y aqui
+        #     se escapo justo eso la primera vez.
         entorno = dict(os.environ,
-                       CCL_TEST_NOTES=os.path.join(_NOTAS_TMP, "sin-panel.json"))
+                       CCL_TEST_NOTES=os.path.join(_NOTAS_TMP, "sin-panel.json"),
+                       CCL_LANG="es")
         return subprocess.run([sys.executable, "-c", ARRANQUE.replace(
             "sys.exit(ccl.main())",
             "sys.argv = ['ccl'] + %r\nsys.exit(ccl.main())" % list(args),

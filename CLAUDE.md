@@ -273,6 +273,16 @@ Cuatro cosas que se rompieron al hacerlo bilingüe, y que un test fija ahora:
 - **Los tests heredaban el locale de quien los ejecutaba.** Pasaban con `LANG=es_ES` y fallaban en
   el CI, que corre sin locale. Ahora `test_ccl.py` fija `ccl.LANG = "en"` y `test_panel.py` exporta
   `CCL_LANG=es`; los asserts que dependen de un texto usan `ccl.t(...)` en vez de escribirlo.
+
+  **Ojo: `test_panel.py` arranca subprocesos por DOS caminos** —`Panel` (fork del pty) y
+  `TestSinPanel._correr` (`subprocess.run` con un entorno construido a mano)— y cada uno tiene que
+  fijar `CCL_LANG` y `CCL_TEST_NOTES` por su cuenta. La primera vez se arreglo solo el primero y el
+  CI lo cazo. **Antes de empujar, reproduce el entorno del CI**, que no es el tuyo:
+
+  ```bash
+  env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_ccl.py
+  env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_panel.py
+  ```
 - **Nada debe localizar algo buscando texto de la interfaz.** Mordió tres veces: `color_age`
   (arriba), el helper `aviso()` de `test_panel.py` —buscaba "sesiones", en inglés devolvía cadena
   vacía y los asserts sobre el aviso pasaban **sin comprobar nada**— y `make_demo.py`, que
