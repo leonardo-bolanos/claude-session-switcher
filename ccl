@@ -225,6 +225,7 @@ TEXTOS = {
         "ayuda_titulo": "  ·  shortcuts",
         "ayuda_volver": "any key to go back",
         "ayuda_pagina": "page {i}/{n} · ",
+        "tecla_espacio": "space",
         "ayuda_sigue": " next · any other key goes back",
         "ayuda_vuelve": "any key goes back",
     },
@@ -285,6 +286,7 @@ TEXTOS = {
         "ayuda_titulo": "  ·  atajos",
         "ayuda_volver": "cualquier tecla para volver",
         "ayuda_pagina": "página {i}/{n} · ",
+        "tecla_espacio": "espacio",
         "ayuda_sigue": " sigue · otra tecla vuelve",
         "ayuda_vuelve": "cualquier tecla vuelve",
     },
@@ -411,14 +413,15 @@ def color_age(ts):
     # Se decide con los MINUTOS, no mirando el texto. Antes comparaba contra "hace ..." y
     # con la interfaz en dos idiomas eso dejaba de funcionar en silencio: en ingles no
     # empieza por "hace", asi que todo salia en gris.
-    mins = minutes_since(ts)
-    if mins is None:
-        return GREEN(ago(ts))       # "?": sin dato, no es viejo
-    if mins < 60:
-        return GREEN(ago(ts))
+    # `ago(ts)` una sola vez: se llama por fila y por repintado, y cada llamada vuelve a
+    # parsear la marca. Antes se parseaba tres veces (una en minutes_since, dos dentro de
+    # ago) para pintar una columna.
+    texto, mins = ago(ts), minutes_since(ts)
+    if mins is None or mins < 60:
+        return GREEN(texto)         # sin dato ("?") no es viejo
     if mins < 24 * 60:
-        return YELLOW(ago(ts))
-    return DIM(ago(ts))
+        return YELLOW(texto)
+    return DIM(texto)
 
 
 # ─────────────────────────── recoleccion de datos ───────────────────────────
@@ -673,16 +676,42 @@ def read_transcript(session_id, cfg_dir=None):
     return info
 
 
+def leer_json(ruta, defecto):
+    """
+    El JSON de `ruta`, o `defecto` si falta, esta corrupto o no se puede leer.
+
+    Los dos indices que guarda `ccl` (numeros y notas) son cache o comodidad, nunca datos
+    que no se puedan regenerar: **un archivo roto no puede impedir que el panel arranque**.
+    """
+    try:
+        with open(ruta) as fh:
+            datos = json.load(fh)
+    except Exception:
+        return defecto
+    return datos if isinstance(datos, type(defecto)) else defecto
+
+
+def escribir_json(ruta, datos):
+    """
+    Escribe `datos` en `ruta`, creando el directorio. Si falla, se traga el error.
+
+    Sin persistencia se sigue funcionando: se pierde al salir, pero nada mas. Es el mismo
+    criterio en los dos indices, y por eso vive en un solo sitio.
+    """
+    try:
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w") as fh:
+            json.dump(datos, fh, indent=2, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        pass
+
+
 # ─────────────────────────── numeracion estable ───────────────────────────
 
 
 def assign_numbers(sessions):
     """sessionId -> numero fijo. Recicla los numeros de sesiones muertas."""
-    try:
-        with open(INDEX_FILE) as fh:
-            index = json.load(fh)
-    except Exception:
-        index = {}
+    index = leer_json(INDEX_FILE, {})
 
     live = {s["sessionId"] for s in sessions}
     index = {sid: n for sid, n in index.items() if sid in live}  # purgar muertas
@@ -697,13 +726,7 @@ def assign_numbers(sessions):
             index[sid] = n
             used.add(n)
 
-    try:
-        os.makedirs(os.path.dirname(INDEX_FILE), exist_ok=True)
-        with open(INDEX_FILE, "w") as fh:
-            json.dump(index, fh, indent=2)
-    except Exception:
-        pass  # sin persistencia seguimos funcionando, solo pierde estabilidad
-
+    escribir_json(INDEX_FILE, index)
     return index
 
 
@@ -718,13 +741,9 @@ def load_notes():
     reinicias Claude Code, asi que una nota atada a la sesion se quedaria huerfana justo
     cuando mas la necesitas. El precio es que dos sesiones del mismo repo comparten nota.
     """
-    try:
-        with open(NOTES_FILE) as fh:
-            datos = json.load(fh)
-    except Exception:
-        return {}       # sin notas, o el archivo esta corrupto: no es motivo de error
-    if not isinstance(datos, dict):
-        return {}
+    datos = leer_json(NOTES_FILE, {})
+    # y ademas se filtran los valores: una nota tiene que ser texto. Un JSON valido con
+    # la forma equivocada (una lista, un numero) no puede llegar a la linea de detalle.
     return {k: v for k, v in datos.items() if isinstance(k, str) and isinstance(v, str)}
 
 
@@ -742,12 +761,7 @@ def save_note(cwd, nota):
         notas[cwd] = nota
     else:
         notas.pop(cwd, None)
-    try:
-        os.makedirs(os.path.dirname(NOTES_FILE), exist_ok=True)
-        with open(NOTES_FILE, "w") as fh:
-            json.dump(notas, fh, indent=2, ensure_ascii=False, sort_keys=True)
-    except Exception:
-        pass    # sin persistencia se pierde al salir, pero el panel sigue funcionando
+    escribir_json(NOTES_FILE, notas)
     return nota
 
 
@@ -793,7 +807,8 @@ def ago(iso_ts):
     dt = parse_ts(iso_ts)
     if dt is None:
         return "?"
-    mins = minutes_since(iso_ts)
+    # con el dt ya resuelto, no se vuelve a parsear la cadena
+    mins = (datetime.datetime.now(dt.tzinfo) - dt).total_seconds() / 60
     if mins < 0:
         return t("ahora")       # reloj desincronizado: no mostrar futuro
     if mins < 1:
@@ -885,7 +900,12 @@ def is_waiting(row):
 
 
 def waiting_rows(rows):
-    """Las sesiones esperando, en el MISMO orden en que las pinta el grupo ESPERANDO."""
+    """
+    Las sesiones esperando, ya ordenadas. **Es la unica fuente de verdad**: `grouped` la
+    usa para su grupo, asi que el panel y `-w`/`⌥N` no pueden discrepar ni al filtrar ni
+    al ordenar. Antes eran dos implementaciones paralelas que habia que sincronizar a
+    mano, con un test dedicado a cazar la deriva.
+    """
     return sorted((r for r in rows if is_waiting(r)), key=sort_key, reverse=True)
 
 
@@ -908,7 +928,7 @@ def grouped(rows):
     """[(etiqueta, color, filas-ordenadas)] — grupos vacios se omiten."""
     out = [
         (t("grupo_busy"), GREEN, [r for r in rows if r["status"] == "busy"]),
-        (t("grupo_idle"), YELLOW, [r for r in rows if is_waiting(r)]),
+        (t("grupo_idle"), YELLOW, waiting_rows(rows)),
     ]
     # Grupos de background: solo si existen de verdad
     bg = [r for r in rows if r["kind"] == "background" and r["status"] != "busy"]
@@ -1296,9 +1316,14 @@ def help_pages(cols, term_rows):
     return paginas
 
 
-def render_help(cols, term_rows, pagina=0):
-    """Una pagina de la ayuda. La barra de abajo solo lleva lo imprescindible."""
-    paginas = help_pages(cols, term_rows)
+def render_help(cols, term_rows, pagina=0, paginas=None):
+    """
+    Una pagina de la ayuda. La barra de abajo solo lleva lo imprescindible.
+
+    `paginas` se puede pasar ya calculado para no repaginar en cada pulsacion mientras
+    el usuario hojea.
+    """
+    paginas = paginas if paginas is not None else help_pages(cols, term_rows)
     pagina = max(0, min(pagina, len(paginas) - 1))
     buf = ["\033[H\033[2J"]
     buf.extend(linea + "\r\n" for linea in paginas[pagina])
@@ -1306,7 +1331,7 @@ def render_help(cols, term_rows, pagina=0):
         buf.append(" " + DIM(t("ayuda_volver")) + "\r\n")
     elif pagina + 1 < len(paginas):
         buf.append(" " + DIM(t("ayuda_pagina", i=pagina + 1, n=len(paginas)))
-                   + CYAN("espacio" if LANG == "es" else "space")
+                   + CYAN(t("tecla_espacio"))
                    + DIM(t("ayuda_sigue")) + "\r\n")
     else:
         # en la ultima no hay "siguiente": ofrecer espacio ahi seria mentira, el espacio
@@ -1403,9 +1428,9 @@ def interactive(feed):
                 if k.startswith("alt-"):
                     # tiene que funcionar tambien aqui: es justo el caso "escribi mal
                     # el filtro, llevame a la que me espera"
-                    target, _ = pick_waiting(rows, int(k[4:]))
-                    if target:
-                        focus(target, quiet=True)
+                    nuevo_sel, _ = jump_waiting(rows, int(k[4:]))
+                    if nuevo_sel:
+                        sel_id = nuevo_sel
                 elif k == "back" and query:
                     query, requery, top = query[:-1], True, 0
                 elif len(k) == 1 and k.isprintable():
@@ -1560,12 +1585,15 @@ def interactive(feed):
                 elif query:
                     query, requery, top = query[:-1], True, 0
             elif k == "?" and not query:
-                pagina, total = 0, len(help_pages(cols, term_rows))
+                # las paginas se calculan UNA vez: `render_help` las recibe hechas en vez
+                # de reconstruir las 33 filas en cada pulsacion
+                paginas = help_pages(cols, term_rows)
+                pagina = 0
                 while True:
-                    sys.stdout.write(render_help(cols, term_rows, pagina))
+                    sys.stdout.write(render_help(cols, term_rows, pagina, paginas))
                     sys.stdout.flush()
                     tecla = read_key()
-                    if tecla == " " and pagina + 1 < total:
+                    if tecla == " " and pagina + 1 < len(paginas):
                         pagina += 1
                         continue
                     break               # cualquier otra tecla vuelve al panel
@@ -1600,9 +1628,7 @@ def interactive(feed):
                     dirty = False   # cabecera o hueco: no hay nada que elegir ni repintar
                 elif doble:
                     sel_id = tocada["sessionId"]
-                    ok = focus(tocada, quiet=True)
-                    flash = (f"→ {tocada['name']}" if ok == 0
-                             else t("aviso_sin_iterm", name=tocada["name"]))
+                    flash = try_focus(tocada, f"→ {tocada['name']}")
                     # que un triple clic no cuente como un segundo doble
                     last_click = (0, 0.0)
                 else:
@@ -1612,15 +1638,9 @@ def interactive(feed):
                 # completa), no sobre las filtradas: el sentido de la tecla es "sacame
                 # de aqui hacia la que me espera", y dependiendo del filtro cambiaria
                 # a que sesion va el mismo numero.
-                n = int(k[4:])
-                target, aviso = pick_waiting(rows, n)
-                if aviso:
-                    flash = "⚠ " + aviso
-                else:
-                    sel_id = target["sessionId"]
-                    ok = focus(target, quiet=True)
-                    flash = (t("esperando_ordinal", n=n, name=target["name"]) if ok == 0
-                             else t("aviso_sin_iterm", name=target["name"]))
+                nuevo_sel, flash = jump_waiting(rows, int(k[4:]))
+                if nuevo_sel:
+                    sel_id = nuevo_sel
             elif k.isdigit() and not query:
                 # los digitos son seleccion... salvo si ya estas filtrando, donde
                 # forman parte del texto buscado (p.ej. "v5", "0042")
@@ -1640,9 +1660,7 @@ def interactive(feed):
                     target = lines[cl][2]
                 if target:
                     sel_id = target["sessionId"]
-                    ok = focus(target, quiet=True)
-                    flash = (f"→ {target['name']}" if ok == 0
-                             else t("aviso_sin_iterm", name=target["name"]))
+                    flash = try_focus(target, f"→ {target['name']}")
     finally:
         # apagar el raton ANTES de soltar la pantalla alternativa: si se queda activo,
         # la terminal sigue mandando escapes por cada clic y el shell los ve como texto
@@ -1678,6 +1696,31 @@ def focus(row, quiet=False):
     if not quiet:
         print(f"→ {row['name']} ({row['repo']})")
     return 0
+
+
+def try_focus(row, exito):
+    """
+    Enfoca y devuelve el mensaje que toca. `exito` es el texto si sale bien.
+
+    Existe porque el par "enfocar + decidir el aviso" estaba copiado en cuatro sitios
+    (enter, doble clic, ⌥N, y el ⌥N de la rama sin filas) y ya habia divergido: una de
+    las copias se tragaba el fallo sin avisar.
+    """
+    return exito if focus(row, quiet=True) == 0 else t("aviso_sin_iterm", name=row["name"])
+
+
+def jump_waiting(rows, n):
+    """
+    (sessionId, aviso) para saltar a la n-esima sesion esperando.
+
+    Devuelve tambien el sessionId para que quien llama mueva el cursor: la copia que no
+    lo hacia dejaba el cursor donde estuviera, con el panel enfocando otra ventana.
+    """
+    target, aviso = pick_waiting(rows, n)
+    if aviso:
+        return None, "⚠ " + aviso
+    return target["sessionId"], try_focus(target, t("esperando_ordinal", n=n,
+                                                    name=target["name"]))
 
 
 # ─────────────────────────────── main ───────────────────────────────

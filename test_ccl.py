@@ -1002,23 +1002,35 @@ class TestLecturaDeTeclas(unittest.TestCase):
     exactamente el tipo de cosa que falla en silencio.
     """
 
-    def _pulsar(self, data):
-        """Devuelve lo que read_key() decodifica al recibir `data` por el terminal."""
+    def _pulsar(self, data, n=1, ultimo_timeout=3.0):
+        """
+        Lo que `read_key()` decodifica al recibir `data`. Con `n>1`, la lista de las n
+        lecturas seguidas — que es lo que hace falta para comprobar que nada se pierde
+        en el camino, o que un doble clic llega entero.
+
+        Escribir DESPUES de que read_key entre en modo raw: tty.setraw usa TCSAFLUSH,
+        que descarta la entrada pendiente, asi que lo escrito antes se perderia. Esta
+        plomeria estaba copiada en cuatro sitios; ya se toco una vez y mas vale tenerla
+        en uno.
+
+        `ultimo_timeout` acorta la espera de la ULTIMA lectura, para los tests que
+        comprueban que ya no queda nada por leer sin esperar tres segundos.
+        """
         maestro, esclavo = os.openpty()
-        # Escribir DESPUES de que read_key entre en modo raw: tty.setraw usa TCSAFLUSH,
-        # que descarta la entrada pendiente, asi que lo escrito antes se perderia.
         hilo = threading.Timer(0.05, lambda: os.write(maestro, data))
         stdin_real = ccl.sys.stdin
         try:
             ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
             hilo.start()
-            return ccl.read_key(timeout=3.0)
+            leidas = [ccl.read_key(timeout=3.0 if i < n - 1 else ultimo_timeout)
+                      for i in range(n)]
         finally:
             hilo.cancel()
             ccl.sys.stdin.close()
             ccl.sys.stdin = stdin_real
             os.close(esclavo)
             os.close(maestro)
+        return leidas if n > 1 else leidas[0]
 
     def test_option_digito_llega_como_alt(self):
         self.assertEqual(self._pulsar(b"\x1b1"), "alt-1")
@@ -1034,21 +1046,9 @@ class TestLecturaDeTeclas(unittest.TestCase):
         escrito y PgDn arrancaba un filtro por "~".
         """
         for data, esperado in ((b"\x1b[5~", "pgup"), (b"\x1b[6~", "pgdn")):
-            maestro, esclavo = os.openpty()
-            hilo = threading.Timer(0.05, lambda: os.write(maestro, data))
-            stdin_real = ccl.sys.stdin
-            try:
-                ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
-                hilo.start()
-                self.assertEqual(ccl.read_key(timeout=3.0), esperado)
-                # nada mas que leer: la tilde ya se consumio
-                self.assertIsNone(ccl.read_key(timeout=0.3), f"quedo basura tras {esperado}")
-            finally:
-                hilo.cancel()
-                ccl.sys.stdin.close()
-                ccl.sys.stdin = stdin_real
-                os.close(esclavo)
-                os.close(maestro)
+            tecla, sobra = self._pulsar(data, n=2, ultimo_timeout=0.3)
+            self.assertEqual(tecla, esperado)
+            self.assertIsNone(sobra, f"quedo basura tras {esperado}")
 
     def test_esc_suelto_sigue_siendo_esc(self):
         self.assertEqual(self._pulsar(b"\x1b"), "esc")
@@ -1060,43 +1060,13 @@ class TestLecturaDeTeclas(unittest.TestCase):
         se comia letras al escribir rapido y el doble clic (press,release,press,release
         de golpe) no llegaba nunca a verse como doble.
         """
-        maestro, esclavo = os.openpty()
-        stdin_real = ccl.sys.stdin
-        hilo = threading.Timer(0.05, lambda: os.write(maestro, b"abcde"))
-        try:
-            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
-            hilo.start()
-            leidas = []
-            for _ in range(5):
-                k = ccl.read_key(timeout=1.0)
-                if k is None:
-                    break
-                leidas.append(k)
-        finally:
-            hilo.cancel()
-            ccl.sys.stdin.close()
-            ccl.sys.stdin = stdin_real
-            os.close(esclavo)
-            os.close(maestro)
-        self.assertEqual(leidas, ["a", "b", "c", "d", "e"])
+        self.assertEqual(self._pulsar(b"abcde", n=5), ["a", "b", "c", "d", "e"])
 
     def test_dos_clics_seguidos_llegan_los_dos(self):
         """El doble clic depende de esto: los 4 eventos vienen en una sola rafaga."""
-        maestro, esclavo = os.openpty()
-        stdin_real = ccl.sys.stdin
         rafaga = b"\x1b[<0;5;9M\x1b[<0;5;9m\x1b[<0;5;9M\x1b[<0;5;9m"
-        hilo = threading.Timer(0.05, lambda: os.write(maestro, rafaga))
-        try:
-            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
-            hilo.start()
-            leidas = [ccl.read_key(timeout=1.0) for _ in range(4)]
-        finally:
-            hilo.cancel()
-            ccl.sys.stdin.close()
-            ccl.sys.stdin = stdin_real
-            os.close(esclavo)
-            os.close(maestro)
-        self.assertEqual(leidas, ["click:9", "mouse-release", "click:9", "mouse-release"])
+        self.assertEqual(self._pulsar(rafaga, n=4),
+                         ["click:9", "mouse-release", "click:9", "mouse-release"])
 
     def test_clic_izquierdo_da_la_fila(self):
         """SGR: ESC [ < boton ; columna ; fila M — solo interesa la fila."""

@@ -87,5 +87,21 @@ En orden de lo que parece más factible:
   el panel lo trata como filtro. Se podría mapear también esos símbolos (`¡™£¢∞§¶•ª`) para que
   funcionara sin tocar nada, pero dependen de la distribución del teclado: con teclado español
   no salen los mismos. Antes de hacerlo, comprobarlo en varias distribuciones.
+- **El modo de edición de notas vive suelto dentro de `interactive()`.** Su estado (`editando`)
+  está en cuatro puntos del bucle: entrada, inicialización, reset cuando el filtro deja la lista
+  vacía, pintado del prompt y manejo de teclas. Ya hubo que corregir uno de esos puntos porque
+  divergía. Encaja como un objeto pequeño (`.activo`, `.tecla(k)`, `.pintar()`) sin partir el
+  archivo único. No se hizo porque toca el corazón del bucle y el beneficio es organizativo, no
+  funcional — pero si se le añade una tecla más (cursor con `←`/`→`), hacerlo antes.
+- **El arnés de pty está duplicado** entre `test_panel.py` y `make_demo.py`: fork, `TIOCSWINSZ`,
+  drenado acotado, con el mismo comentario justificativo repetido y ya con deriva (uno sondea a
+  0,15 s y el otro a 0,1 s, sin razón). Cabría en un `pty_harness.py` — son archivos de
+  desarrollo, así que no rompería el «un solo script sin dependencias», que es sobre lo que se
+  distribuye. Son ~30 líneas herméticas y probadas, así que la urgencia es baja.
+- **`test_panel.py` tarda ~2 min** porque son 46 arranques reales del panel, en serie y
+  totalmente independientes (cada uno con su pty, su subproceso y su archivo de notas). Se
+  paralelizarían bien, pero eso pide `pytest-xdist` y el proyecto presume de cero dependencias;
+  habría que decidir si se acepta una dependencia **solo de desarrollo**. **No bajar los tiempos
+  de espera**: están ajustados contra intermitencias y se escalan con `CCL_TEST_LENTO`.
 - **Publicar una release etiquetada.** Un repo sin releases parece abandonado desde fuera, y un
   `git clone` de `master` no dice qué versión estás usando. Basta un tag `v1.0.0` con notas.

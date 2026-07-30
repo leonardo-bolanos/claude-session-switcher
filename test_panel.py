@@ -42,7 +42,6 @@ import unittest
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CCL = os.path.join(_HERE, "ccl")
 
-ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 LIMPIAR = "\033[H\033[2J"      # el panel empieza cada repintado limpiando la pantalla
 
 # Sesiones fijas, de mas reciente a mas antigua. El panel las agrupa todas en ESPERANDO
@@ -112,16 +111,29 @@ def press(fila, col=10):
     return (f"\033[<0;{col};{fila}M\033[<0;{col};{fila}m").encode()
 
 
-def _cargar_make_demo():
-    """El generador del demo como modulo, para probar sus funciones sueltas."""
+def _cargar(nombre, archivo):
+    """
+    Un archivo del repo como modulo, para usar sus funciones desde los tests.
+
+    Los subprocesos del panel llevan su propia copia de este arranque dentro de
+    `ARRANQUE` — ahi tiene que ir en el texto que ejecuta el hijo, no puede importarse.
+    """
     import importlib.machinery
     import importlib.util
-    cargador = importlib.machinery.SourceFileLoader(
-        "make_demo_mod", os.path.join(_HERE, "make_demo.py"))
+    cargador = importlib.machinery.SourceFileLoader(nombre, os.path.join(_HERE, archivo))
     modulo = importlib.util.module_from_spec(
-        importlib.util.spec_from_loader("make_demo_mod", cargador))
+        importlib.util.spec_from_loader(nombre, cargador))
     cargador.exec_module(modulo)
     return modulo
+
+
+def _cargar_make_demo():
+    return _cargar("make_demo_mod", "make_demo.py")
+
+
+# El regex de ANSI sale de `ccl`, no de una copia: `pantallas()` depende de quitar
+# EXACTAMENTE los codigos que el panel emite, y una copia divergiria en silencio.
+ANSI_RE = _cargar("ccl_para_tests", "ccl").ANSI_RE
 
 
 # Las esperas son de reloj, asi que en una maquina lenta (un runner de CI compartido) se
