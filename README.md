@@ -73,6 +73,7 @@ ccl --list       # one-shot static listing (handy in scripts)
 ccl 7            # jump straight to session number 7
 ccl -w           # jump to the session that's been waiting on you longest
 ccl -w2          # same, the second one in the WAITING queue
+ccl --version    # print the version
 ```
 
 ### Panel keys
@@ -93,6 +94,9 @@ ccl -w2          # same, the second one in the WAITING queue
 | `?` | **Help** with every shortcut |
 | `esc` | Clears the filter; with no filter, quits |
 | `q` | Quit (unless you're filtering — then it's just text) |
+
+The interface is in **English by default**, and in Spanish if your locale says so. Force it either
+way with `CCL_LANG=en` / `CCL_LANG=es`.
 
 The panel **refreshes itself** and **does not close when you jump**: you land back on the list
 with a confirmation of where you went.

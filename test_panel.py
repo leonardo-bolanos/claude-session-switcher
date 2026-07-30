@@ -152,6 +152,11 @@ class Panel:
         if self.pid == 0:                                  # hijo: es el panel
             os.environ["TERM"] = "xterm-256color"
             os.environ["CCL_TEST_NOTES"] = self.notas
+            # Idioma FIJO: si no, el panel hereda el locale de quien ejecute los tests y
+            # las cadenas cambian — pasaban con LANG=es_ES y fallaban en el CI, que corre
+            # sin locale. Los asserts de aqui estan en español; el ingles lo cubre
+            # `TestIdiomaDelPanel`.
+            os.environ["CCL_LANG"] = "es"
             os.environ.update(entorno or {})
             os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
@@ -216,11 +221,20 @@ class Panel:
         return None
 
     def aviso(self):
-        """El mensaje que el panel muestra a la derecha de la cabecera (el 'flash')."""
-        for linea in self.ultima().split("\n"):
-            if "sesiones" in linea:
-                return linea.split("activas")[-1].replace("↕", "").strip()
-        return ""
+        """
+        El mensaje a la derecha de la cabecera (el 'flash').
+
+        Se localiza por la FORMA y no por el texto: buscaba la palabra "sesiones" y con
+        la interfaz en ingles ("sessions") devolvia siempre cadena vacia, con lo que los
+        asserts sobre el aviso pasaban sin comprobar nada.
+        """
+        lineas = [l for l in self.ultima().split("\n") if l.strip()]
+        if not lineas:
+            return ""
+        cabecera = lineas[0].replace("↕", "").rstrip()
+        # el flash se pega a la cabecera tras un hueco de tres espacios
+        m = re.search(r"\S\s{3,}(.+)$", cabecera)
+        return m.group(1).strip() if m else ""
 
     def barra(self):
         """La barra de estado de abajo: dice si hay filtro activo o numero teclado."""
@@ -635,8 +649,10 @@ class TestGeneradorDelDemo(unittest.TestCase):
     def test_muestra_el_filtro_y_el_salto(self):
         """Un demo que solo mueva el cursor no cuenta lo que hace la herramienta."""
         texto = re.sub(r"<[^>]+>", "", self.svg)
-        self.assertIn("filtro:", texto, "el demo no muestra el filtrado")
-        self.assertIn("esperando:", texto, "el demo no muestra el salto")
+        # en ingles: el demo se graba con CCL_LANG=en, aunque quien lo genere tenga el
+        # locale en español
+        self.assertIn("filter:", texto, "el demo no muestra el filtrado")
+        self.assertIn("waiting #", texto, "el demo no muestra el salto")
 
     def test_la_nota_sale_con_color_y_no_en_blanco(self):
         """
@@ -644,9 +660,10 @@ class TestGeneradorDelDemo(unittest.TestCase):
         los 16 basicos, asi que se comia el codigo y la nota salia BLANCA — y justo en la
         pieza del README que sirve para ensenar el color.
         """
-        # "✎ bloquea", el texto que escribe el guion de make_demo, y no un ✎ cualquiera:
+        # "✎ blocks", el texto que escribe el guion de make_demo, y no un ✎ cualquiera:
         # el prompt del editor tambien lleva uno y ese va DIM a proposito, sin color.
-        m = re.search(r"<tspan[^>]*>✎ bloquea[^<]*</tspan>", self.svg)
+        # En INGLES porque el demo se graba con CCL_LANG=en: es la portada del README.
+        m = re.search(r"<tspan[^>]*>✎ blocks[^<]*</tspan>", self.svg)
         self.assertIsNotNone(m, "el demo deberia mostrar la nota ya guardada")
         self.assertIn("fill=", m.group(), "la nota sale sin color")
 
@@ -663,6 +680,47 @@ class TestGeneradorDelDemo(unittest.TestCase):
         texto = re.sub(r"<[^>]+>", "", self.svg)
         self.assertNotIn(os.path.expanduser("~"), texto)
         self.assertIn("web-app", texto)          # una de las sinteticas
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestIdiomaDelPanel(unittest.TestCase):
+    """
+    El panel arranca en INGLES por defecto: es lo que vera quien llegue desde el README.
+    El resto de las clases fijan español porque sus asserts estan en español.
+    """
+
+    def test_en_ingles_por_defecto(self):
+        with con_panel(entorno={"CCL_LANG": "en"}) as p:
+            pantalla = p.ultima()
+            self.assertIn("WAITING", pantalla)
+            self.assertIn("sessions", pantalla)
+            self.assertNotIn("ESPERANDO", pantalla)
+            self.assertIn("move", p.barra())
+
+    def test_el_filtro_cuenta_en_ingles(self):
+        with con_panel(entorno={"CCL_LANG": "en"}) as p:
+            p.enviar(b"beta")
+            self.assertIn("filter:", p.barra())
+            self.assertIn("1 match", p.barra())
+
+    def test_la_nota_en_ingles(self):
+        with con_panel(entorno={"CCL_LANG": "en"}) as p:
+            p.enviar(b"\x0e")
+            self.assertIn("note for", p.barra())
+            p.enviar(b"blocks the release", b"\r")
+            self.assertIn("✎ blocks the release", p.ultima())
+            self.assertIn("saved", p.aviso())
+
+    def test_la_ayuda_en_ingles(self):
+        with con_panel(entorno={"CCL_LANG": "en"}) as p:
+            p.enviar(b"?")
+            self.assertIn("shortcuts", p.ultima())
+            self.assertIn("page 1/", p.ultima())
+
+    def test_el_aviso_de_esperando_en_ingles(self):
+        with con_panel(entorno={"CCL_LANG": "en"}) as p:
+            p.enviar(b"\0339")
+            self.assertIn("only 4 waiting", p.aviso())
 
 
 if __name__ == "__main__":

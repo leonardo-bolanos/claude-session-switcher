@@ -16,6 +16,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import tempfile
 import threading
 import unittest
@@ -28,6 +29,13 @@ ccl = importlib.util.module_from_spec(_spec)
 _loader.exec_module(ccl)
 
 ccl._TTY = True  # forzar colores: es lo que hace interesantes los tests de ancho
+
+# El idioma se FIJA: si no, los tests heredan el locale de quien los ejecute y las
+# cadenas cambian — pasaban en una maquina con LANG=es_ES y fallaban en el CI, que corre
+# sin locale. Se fija ingles porque es el defecto del proyecto; el español lo cubre
+# `TestIdioma`, y los asserts que dependen de un texto usan `ccl.t(...)` en vez de
+# escribirlo a mano.
+ccl.LANG = "en"
 
 
 def iso(**delta):
@@ -263,26 +271,50 @@ class TestFormato(unittest.TestCase):
         self.assertEqual(ccl.ago(None), "?")
         self.assertEqual(ccl.ago("no es una fecha"), "?")
 
+    # Los textos se comparan contra `ccl.t(...)` y no escritos a mano: asi los tests
+    # valen en los dos idiomas y no hay que duplicarlos.
+
     def test_ago_reciente(self):
-        self.assertEqual(ccl.ago(iso(seconds=10)), "ahora")
-        self.assertEqual(ccl.ago(iso(minutes=5)), "hace 5m")
+        self.assertEqual(ccl.ago(iso(seconds=10)), ccl.t("ahora"))
+        self.assertEqual(ccl.ago(iso(minutes=5)), ccl.t("hace_min", n=5))
 
     def test_ago_horas(self):
-        self.assertEqual(ccl.ago(iso(hours=3)), "hace 3h")
-        self.assertEqual(ccl.ago(iso(hours=23)), "hace 23h")
+        self.assertEqual(ccl.ago(iso(hours=3)), ccl.t("hace_hora", n=3))
+        self.assertEqual(ccl.ago(iso(hours=23)), ccl.t("hace_hora", n=23))
 
     def test_ago_no_depende_de_la_hora_del_dia(self):
         # el bug que cazo el CI: cruzar medianoche cambiaba "hace 3h" por "ayer 23:00"
         # para el mismo tiempo transcurrido
-        self.assertEqual(ccl.ago(iso(hours=3)), "hace 3h")
+        self.assertEqual(ccl.ago(iso(hours=3)), ccl.t("hace_hora", n=3))
 
     def test_ago_ayer_y_mas_atras(self):
-        self.assertTrue(ccl.ago(iso(hours=30)).startswith("ayer "))
-        self.assertFalse(ccl.ago(iso(days=5)).startswith(("hace", "ayer")))
+        ayer = ccl.t("ayer", hora="").strip()
+        self.assertIn(ayer, ccl.ago(iso(hours=30)))
+        viejo = ccl.ago(iso(days=5))
+        self.assertNotIn(ayer, viejo)
+        self.assertRegex(viejo, r"\d{2}-\w+ \d{2}:\d{2}")   # "24-jul 21:52"
 
     def test_ago_futuro_no_muestra_negativos(self):
         futuro = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
-        self.assertEqual(ccl.ago(futuro), "ahora")
+        self.assertEqual(ccl.ago(futuro), ccl.t("ahora"))
+
+    def test_el_color_de_la_antiguedad_no_depende_del_idioma(self):
+        """
+        `color_age` decidia mirando el TEXTO ("empieza por 'hace '"). Con la interfaz en
+        ingles eso dejaba de casar y TODO salia en gris, sin que nada fallara.
+        """
+        original = ccl.LANG
+        try:
+            colores = {}
+            for idioma in ("en", "es"):
+                ccl.LANG = idioma
+                colores[idioma] = [ccl.ANSI_RE.findall(ccl.color_age(ts))
+                                   for ts in (iso(minutes=5), iso(hours=3), iso(days=5))]
+            self.assertEqual(colores["en"], colores["es"])
+            # y de verdad son tres colores distintos, no todo gris
+            self.assertEqual(len({tuple(c) for c in colores["en"]}), 3)
+        finally:
+            ccl.LANG = original
 
     def test_short_model(self):
         self.assertIsNone(ccl.short_model(None))
@@ -316,17 +348,18 @@ def row(num, sid, status="idle", ts=None, kind="interactive"):
 class TestAgrupacion(unittest.TestCase):
     def test_separa_activas_de_esperando(self):
         g = ccl.grouped([row(1, "a", "busy"), row(2, "b", "idle")])
-        self.assertEqual([lbl for lbl, _, _ in g], ["TRABAJANDO", "ESPERANDO"])
+        self.assertEqual([lbl for lbl, _, _ in g],
+                         [ccl.t("grupo_busy"), ccl.t("grupo_idle")])
 
     def test_omite_grupos_vacios(self):
         g = ccl.grouped([row(1, "a", "idle")])
-        self.assertEqual([lbl for lbl, _, _ in g], ["ESPERANDO"])
+        self.assertEqual([lbl for lbl, _, _ in g], [ccl.t("grupo_idle")])
 
     def test_background_solo_aparece_si_existe(self):
         sin_bg = ccl.grouped([row(1, "a", "idle")])
-        self.assertNotIn("BACKGROUND", [lbl for lbl, _, _ in sin_bg])
+        self.assertNotIn(ccl.t("grupo_bg"), [lbl for lbl, _, _ in sin_bg])
         con_bg = ccl.grouped([row(1, "a", "idle"), row(2, "b", "idle", kind="background")])
-        self.assertIn("BACKGROUND", [lbl for lbl, _, _ in con_bg])
+        self.assertIn(ccl.t("grupo_bg"), [lbl for lbl, _, _ in con_bg])
 
     def test_ordena_por_actividad_mas_reciente(self):
         vieja = row(1, "a", "idle", ts=iso(days=3))
@@ -352,7 +385,8 @@ class TestEsperando(unittest.TestCase):
         rows = [row(1, "vieja", "idle", ts=iso(days=2)),
                 row(2, "media", "idle", ts=iso(hours=3)),
                 row(3, "nueva", "idle", ts=iso(minutes=1))]
-        _, _, del_grupo = next(g for g in ccl.grouped(rows) if g[0] == "ESPERANDO")
+        _, _, del_grupo = next(g for g in ccl.grouped(rows)
+                               if g[0] == ccl.t("grupo_idle"))
         self.assertEqual([r["sessionId"] for r in ccl.waiting_rows(rows)],
                          [r["sessionId"] for r in del_grupo])
 
@@ -375,7 +409,7 @@ class TestEsperando(unittest.TestCase):
     def test_sin_ninguna_esperando_avisa_y_no_elige(self):
         elegida, aviso = ccl.pick_waiting([row(1, "a", "busy", ts=iso(minutes=1))], 1)
         self.assertIsNone(elegida)
-        self.assertIn("ninguna", aviso)
+        self.assertEqual(aviso, ccl.t("ninguna_esperando"))
 
     def test_pedir_mas_de_las_que_hay_avisa_cuantas_son(self):
         elegida, aviso = ccl.pick_waiting([row(1, "a", "idle", ts=iso(minutes=1))], 4)
@@ -395,7 +429,8 @@ class TestParseoDeArgumentos(unittest.TestCase):
     def test_sin_argumentos_es_el_panel(self):
         opts, err = ccl.parse_args([])
         self.assertIsNone(err)
-        self.assertEqual(opts, {"list": False, "num": None, "waiting": None, "help": False})
+        self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
+                                "help": False, "version": False})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -415,6 +450,12 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(opts["waiting"], 2)
         self.assertIsNone(opts["num"])
+
+    def test_version(self):
+        self.assertTrue(ccl.parse_args(["--version"])[0]["version"])
+        self.assertTrue(ccl.parse_args(["-V"])[0]["version"])
+        # y es una version semantica de verdad, no un placeholder
+        self.assertRegex(ccl.__version__, r"^\d+\.\d+\.\d+$")
 
     def test_list_y_help(self):
         self.assertTrue(ccl.parse_args(["--list"])[0]["list"])
@@ -494,7 +535,8 @@ class TestSessionsUnavailable(unittest.TestCase):
         try:
             with self.assertRaises(ccl.SessionsUnavailable) as cm:
                 ccl.get_sessions()
-            self.assertIn("no encuentro el comando", str(cm.exception))
+            # el mensaje entero, en el idioma que toque
+            self.assertIn(ccl.t("sin_comando").split("\n")[0], str(cm.exception))
         finally:
             ccl.config_dirs, ccl.claude_bin = orig_dirs, orig_bin
 
@@ -538,6 +580,107 @@ class TestSessionsUnavailable(unittest.TestCase):
 
 
 # ────────────────────────── multi-cuenta ──────────────────────────
+
+
+class TestIdioma(unittest.TestCase):
+    """
+    La interfaz va en ingles por defecto y en español si el entorno lo pide. Estos tests
+    son el guardarrail contra el "a medias": una traduccion incompleta desconcierta mas
+    que una interfaz entera en un idioma que no es el tuyo.
+    """
+
+    def setUp(self):
+        self.orig_lang = ccl.LANG
+        self.orig_env = {k: os.environ.get(k)
+                         for k in ("CCL_LANG", "LC_ALL", "LC_MESSAGES", "LANG")}
+        for k in self.orig_env:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        ccl.LANG = self.orig_lang
+        for k, v in self.orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_los_dos_idiomas_tienen_las_mismas_claves(self):
+        """Si falta una clave, `t()` cae al ingles y sale una linea descolgada."""
+        self.assertEqual(set(ccl.TEXTOS["en"]), set(ccl.TEXTOS["es"]))
+
+    def test_ninguna_traduccion_esta_vacia(self):
+        for idioma, tabla in ccl.TEXTOS.items():
+            for clave, valor in tabla.items():
+                self.assertTrue(valor.strip(), f"{idioma}/{clave} está vacío")
+
+    def test_los_huecos_coinciden_entre_idiomas(self):
+        """
+        Un `{n}` que exista en un idioma y no en el otro revienta con KeyError en
+        cuanto alguien cambie de locale — o peor, deja el dato fuera del mensaje.
+        """
+        for clave, en in ccl.TEXTOS["en"].items():
+            huecos = lambda s: set(re.findall(r"\{(\w+)\}", s))
+            self.assertEqual(huecos(en), huecos(ccl.TEXTOS["es"][clave]),
+                             f"los huecos de {clave!r} no coinciden")
+
+    def test_las_dos_ayudas_van_en_paralelo(self):
+        """Misma estructura y las MISMAS teclas: lo que cambia es la descripcion."""
+        self.assertEqual(len(ccl.HELP_EN), len(ccl.HELP_ES))
+        for (t_en, filas_en), (t_es, filas_es) in zip(ccl.HELP_EN, ccl.HELP_ES):
+            self.assertTrue(t_en and t_es)
+            self.assertEqual(len(filas_en), len(filas_es),
+                             f"la seccion {t_en!r}/{t_es!r} no tiene las mismas filas")
+            for (k_en, d_en), (k_es, d_es) in zip(filas_en, filas_es):
+                self.assertTrue(d_en and d_es, f"falta descripcion en {t_en!r}")
+                # las teclas son las mismas salvo cuando la propia tecla se nombra en
+                # palabras ("clic"/"click", "rueda"/"wheel")
+                if k_en.isascii() and not k_en.isalpha() and " " not in k_en:
+                    self.assertEqual(k_en, k_es, f"la tecla cambia entre idiomas")
+
+    def test_CCL_LANG_manda_sobre_el_locale(self):
+        os.environ["LANG"] = "es_ES.UTF-8"
+        os.environ["CCL_LANG"] = "en"
+        self.assertEqual(ccl.detect_lang(), "en")
+
+    def test_sigue_el_locale_si_no_hay_CCL_LANG(self):
+        os.environ["LANG"] = "es_MX.UTF-8"
+        self.assertEqual(ccl.detect_lang(), "es")
+        os.environ["LANG"] = "en_US.UTF-8"
+        self.assertEqual(ccl.detect_lang(), "en")
+
+    def test_LC_ALL_gana_a_LANG(self):
+        """Es el orden de POSIX: quien exporta LC_ALL=C espera que mande."""
+        os.environ["LANG"] = "es_ES.UTF-8"
+        os.environ["LC_ALL"] = "C"
+        self.assertEqual(ccl.detect_lang(), "en")
+
+    def test_sin_nada_en_el_entorno_es_ingles(self):
+        self.assertEqual(ccl.detect_lang(), "en")
+
+    def test_un_locale_raro_no_revienta(self):
+        for valor in ("", "POSIX", "zh_CN.UTF-8", "esperanto"):
+            os.environ["LANG"] = valor
+            self.assertIn(ccl.detect_lang(), ("en", "es"))
+
+    def test_una_clave_que_falte_cae_al_ingles_sin_reventar(self):
+        ccl.LANG = "es"
+        original = ccl.TEXTOS["es"].pop("sin_sesiones")
+        try:
+            self.assertEqual(ccl.t("sin_sesiones"), ccl.TEXTOS["en"]["sin_sesiones"])
+        finally:
+            ccl.TEXTOS["es"]["sin_sesiones"] = original
+
+    def test_los_dos_idiomas_rellenan_los_huecos(self):
+        for idioma in ("en", "es"):
+            ccl.LANG = idioma
+            self.assertIn("7", ccl.t("solo_hay_esperando", n=7))
+            self.assertIn("mi-repo", ccl.t("nota_prompt", repo="mi-repo"))
+
+    def test_el_uso_de_help_existe_en_los_dos(self):
+        for texto in (ccl.USO_EN, ccl.USO_ES):
+            self.assertIn("ccl", texto)
+            self.assertIn("-w", texto)
+            self.assertIn("CCL_LANG", texto, "hay que documentar como cambiar de idioma")
 
 
 class TestNotas(unittest.TestCase):
@@ -1010,8 +1153,8 @@ class TestLecturaDeTeclas(unittest.TestCase):
 
 class TestAyuda(unittest.TestCase):
     def test_estructura(self):
-        self.assertTrue(ccl.HELP)
-        for titulo, filas in ccl.HELP:
+        self.assertTrue(ccl.help_secciones())
+        for titulo, filas in ccl.help_secciones():
             self.assertTrue(titulo)
             self.assertTrue(filas)
             for tecla, desc in filas:
@@ -1025,18 +1168,18 @@ class TestAyuda(unittest.TestCase):
 
     def test_render_incluye_todas_las_secciones(self):
         plano = self._texto_completo()
-        for titulo, _ in ccl.HELP:
+        for titulo, _ in ccl.help_secciones():
             self.assertIn(titulo, plano)
 
     def test_render_documenta_las_teclas_de_accion(self):
         plano = self._texto_completo()
-        for tecla in ("Ctrl-R", "?", "enter", "esc"):
+        for tecla in ("Ctrl-R", "Ctrl-N", "?", "enter", "esc"):
             self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
 
     def test_documenta_como_copiar(self):
         """Con el raton activo la seleccion normal no funciona: hay que decir como."""
         plano = self._texto_completo()
-        for pista in ("copiar", "⌥", "--list"):
+        for pista in ("⌘C", "⌥", "--list"):
             self.assertIn(pista, plano, f"falta {pista!r}: no se explica como copiar")
 
     def test_render_no_desborda_el_ancho(self):
@@ -1079,16 +1222,17 @@ class TestAyuda(unittest.TestCase):
         """Decir «espacio sigue» en la ultima es mentira: ahi el espacio vuelve."""
         paginas = ccl.help_pages(110, 24)
         self.assertGreater(len(paginas), 1)
+        sigue = ccl.t("ayuda_sigue").split()[0]      # "sigue" / "next"
         ultima = ccl.ANSI_RE.sub("", ccl.render_help(110, 24, len(paginas) - 1))
-        self.assertNotIn("sigue", ultima)
+        self.assertNotIn(sigue, ultima)
         primera = ccl.ANSI_RE.sub("", ccl.render_help(110, 24, 0))
-        self.assertIn("sigue", primera)
+        self.assertIn(sigue, primera)
 
     def test_una_sola_pagina_no_habla_de_paginas(self):
         plano = ccl.ANSI_RE.sub("", ccl.render_help(110, 200))
-        # "página 1/" y no "página": PgUp/PgDn se documenta como "media página"
-        self.assertNotIn("página 1/", plano)
-        self.assertIn("cualquier tecla", plano)
+        # con el numero: en español "media página" contiene la palabra suelta
+        self.assertNotIn(ccl.t("ayuda_pagina", i=1, n=2), plano)
+        self.assertIn(ccl.t("ayuda_volver"), plano)
 
     def test_no_se_pierde_ninguna_linea_al_paginar(self):
         enteras = ccl.help_lines(110)
@@ -1105,7 +1249,9 @@ class TestAyuda(unittest.TestCase):
         `not query` — con filtro activo es texto.
         """
         permitidas = {"q"}
-        for titulo, filas in ccl.HELP:
+        # en LOS DOS idiomas: una accion en una letra suelta es un fallo de diseño
+        # independientemente de como se llame la tecla en la ayuda
+        for titulo, filas in ccl.HELP_EN + ccl.HELP_ES:
             for tecla, _ in filas:
                 for parte in tecla.replace("/", " ").split():
                     if len(parte) == 1 and parte.isalpha() and parte not in permitidas:
@@ -1128,7 +1274,7 @@ class TestMainLine(unittest.TestCase):
         self.assertIn("[ 7]", plano)
         self.assertIn("mi-sesion", plano)
         self.assertIn("mi-repo", plano)
-        self.assertIn("hace 2m", plano)
+        self.assertIn(ccl.t("hace_min", n=2), plano)
 
     def test_marca_las_que_no_estan_en_iterm(self):
         con = ccl.ANSI_RE.sub("", ccl.main_line(self.r(iterm=("100", 1))))
@@ -1146,7 +1292,7 @@ class TestMainLine(unittest.TestCase):
         corto = ccl.main_line(self.r(name="ab"))
         largo = ccl.main_line(self.r(name="un-nombre-bastante-mas-largo"))
         # la antiguedad debe empezar en la misma columna en ambos
-        pos = lambda l: ccl.ANSI_RE.sub("", l).index("hace 2m")
+        pos = lambda l: ccl.ANSI_RE.sub("", l).index(ccl.t("hace_min", n=2))
         self.assertEqual(pos(corto), pos(largo))
 
     def test_nombre_muy_largo_se_recorta_sin_romper_columnas(self):

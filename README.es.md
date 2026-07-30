@@ -74,6 +74,7 @@ ccl --list       # listado estático de una pasada (útil en scripts)
 ccl 7            # salta directo a la sesión número 7
 ccl -w           # salta a la sesión que llevas más tiempo sin atender
 ccl -w2          # ídem, la segunda de la cola de ESPERANDO
+ccl --version    # imprime la versión
 ```
 
 ### Teclas del panel
@@ -94,6 +95,9 @@ ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 | `?` | **Ayuda** con todos los atajos |
 | `esc` | Limpia el filtro; si no hay filtro, sale |
 | `q` | Salir (si no estás filtrando — con filtro activo es texto) |
+
+La interfaz sigue **tu locale**: en español si tu `LANG` lo dice, y en inglés en caso contrario.
+Se puede forzar con `CCL_LANG=es` / `CCL_LANG=en`.
 
 El panel **se refresca solo** y **no se cierra al saltar**: vuelves a la lista con una
 confirmación de a dónde fuiste.

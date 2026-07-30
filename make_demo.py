@@ -68,7 +68,7 @@ GUION = [
     (b"\033[B",                  0.55),
     (b"\033[B",                  0.75),
     (b"\x0e",                    0.85),  # Ctrl-N: abre la nota
-    ("bloquea el release".encode(), 1.7),
+    (b"blocks the release", 1.7),
     (b"\r",                      2.2),   # guardar: aparece el ✎
     (b"release",                 2.1),   # y se puede buscar por ella
     (b"\033",                    0.9),   # esc limpia el filtro
@@ -79,17 +79,17 @@ GUION = [
 SESIONES = [
     # (numero, nombre, repo, rama, modelo, effort, prompt, minutos, estado)
     (3,  "fix-login-redirect-loop",   "web-app",  "fix/login",  "opus-5",   "high",
-     "el redirect entra en bucle si el token expiró", 1,   "busy"),
+     "the redirect loops when the token has expired", 1,   "busy"),
     (7,  "invoice-pdf-margins",       "billing",  "main",       "sonnet-5", None,
-     "los márgenes se descuadran en A4", 4,   "busy"),
+     "the margins are off on A4", 4,   "busy"),
     (1,  "web-app-checkout-rework",   "web-app",  "main",       "opus-5",   "xhigh",
-     "revisa el flujo de pago y dime qué falta", 12,  "idle"),
+     "review the payment flow and tell me what's missing", 12,  "idle"),
     (5,  "api-rate-limit-headers",    "api",      "develop",    "sonnet-5", None,
-     "añade los headers de rate limit", 47,  "idle"),
+     "add the rate limit headers", 47,  "idle"),
     (2,  "migrate-jobs-to-queue",     "workers",  "main",       "opus-5",   "high",
-     "migra los cron a la cola nueva", 190, "idle"),
+     "migrate the crons to the new queue", 190, "idle"),
     (9,  "docs-api-reference",        "docs",     "main",       "haiku-4-5", None,
-     "genera la referencia desde los tipos", 1400, "idle"),
+     "generate the reference from the types", 1400, "idle"),
 ]
 
 ARRANQUE = f'''
@@ -135,6 +135,9 @@ def grabar(notas):
         os.environ["TERM"] = "xterm-256color"
         os.environ["CCL_MOUSE"] = "0"     # el raton no aporta nada a una grabacion
         os.environ["CCL_DEMO_NOTES"] = notas
+        # El demo va en INGLES aunque quien lo genere tenga el locale en español: es la
+        # portada del README, y el README esta en ingles.
+        os.environ["CCL_LANG"] = "en"
         os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", FILAS, COLUMNAS, 0, 0))
 
@@ -149,8 +152,18 @@ def grabar(notas):
                 except OSError:
                     return
 
+    # La cabecera del panel: "  6 sessions · 2 active" / "  6 sesiones · 2 activas". Se
+    # reconoce por la FORMA (numero, palabra, ·) y no por el texto: filtrar por "sesiones"
+    # dejaba de capturar en cuanto la interfaz se puso en ingles, y el generador terminaba
+    # sin un solo fotograma.
+    CABECERA_RE = re.compile(r"^\s*\d+ \S+ ·", re.M)
+
     def ultima_pantalla():
-        pantallas = [p for p in "".join(trozos).split(LIMPIAR) if "sesiones" in p]
+        # La regex va sobre el texto SIN escapes: la cabecera lleva codigos de color entre
+        # el numero y la palabra ("6\033[0m\033[2m sessions"), asi que sobre el texto en
+        # crudo no casa nada.
+        pantallas = [p for p in "".join(trozos).split(LIMPIAR)
+                     if CABECERA_RE.search(SGR_RE.sub("", p))]
         return pantallas[-1] if pantallas else ""
 
     fotogramas = []

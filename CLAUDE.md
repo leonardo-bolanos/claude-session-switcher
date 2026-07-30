@@ -244,18 +244,46 @@ sentido dejar sin panel al usuario porque una config extra este rota.
 
 ## Estilo e idioma
 
-Código, comentarios, mensajes al usuario, nombres de test y este archivo: **en español**. Los
-comentarios explican **por qué**, no qué hace la línea — casi todos apuntan a una de las trampas
-de arriba.
-
-La excepción es el README, y solo por alcance: quien busca una herramienta para Claude Code busca
-en inglés.
-
-| Archivo | Idioma |
+| Qué | Idioma |
 |---|---|
 | `README.md` | inglés — es la portada del repo |
 | `README.es.md` | español — traducción completa, misma estructura |
-| Todo lo demás (`ccl`, tests, `CLAUDE.md`, `TODO.md`) | español |
+| **La interfaz** (ayuda, errores, barra de estado) | **inglés por defecto, español si el locale lo pide** |
+| Código, comentarios, nombres de test, `CLAUDE.md`, `TODO.md` | español |
+
+La regla de fondo: **lo que ve quien USA la herramienta sigue su idioma; lo que ve quien TOCA el
+código va en español.** Los comentarios explican **por qué**, no qué hace la línea — casi todos
+apuntan a una de las trampas de arriba.
+
+**Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
+mismo orden justamente para que el diff sea comparable.
+
+### La interfaz bilingüe
+
+Todo el texto que ve el usuario sale de `TEXTOS` (dict plano) o de `HELP_EN`/`HELP_ES` (la ayuda,
+que son 33 filas y como claves planas resultaba ilegible). `t("clave", hueco=…)` devuelve el texto
+del idioma activo. `detect_lang()` mira `CCL_LANG`, luego `LC_ALL`, `LC_MESSAGES` y `LANG` — ese
+orden es el de POSIX, y quien exporta `LC_ALL=C` espera que gane.
+
+Cuatro cosas que se rompieron al hacerlo bilingüe, y que un test fija ahora:
+
+- **`color_age` decidía el color mirando el TEXTO** (`empieza por "hace "`). En inglés no empieza
+  por "hace", así que **todo salía en gris** sin que nada fallara. Por eso existe
+  `minutes_since()`: el color se decide con el número.
+- **Los tests heredaban el locale de quien los ejecutaba.** Pasaban con `LANG=es_ES` y fallaban en
+  el CI, que corre sin locale. Ahora `test_ccl.py` fija `ccl.LANG = "en"` y `test_panel.py` exporta
+  `CCL_LANG=es`; los asserts que dependen de un texto usan `ccl.t(...)` en vez de escribirlo.
+- **Nada debe localizar algo buscando texto de la interfaz.** Mordió tres veces: `color_age`
+  (arriba), el helper `aviso()` de `test_panel.py` —buscaba "sesiones", en inglés devolvía cadena
+  vacía y los asserts sobre el aviso pasaban **sin comprobar nada**— y `make_demo.py`, que
+  filtraba los fotogramas igual y se quedaba sin uno solo. Localiza por **forma**: un hueco de
+  tres espacios, una regex de la cabecera (`\d+ \S+ ·`)… y aplicándola sobre el texto **sin
+  escapes**, porque la cabecera lleva códigos de color entre el número y la palabra.
+- `t()` **cae al inglés si falta una clave** en vez de reventar, y hay un test que comprueba que
+  las dos tablas tienen exactamente las mismas claves y los mismos huecos `{…}`.
+
+Si añades texto visible: va a `TEXTOS` en los dos idiomas. El guardarraíl de las letras sueltas
+(`test_ninguna_accion_es_una_letra_suelta`) recorre **las dos** ayudas.
 
 **Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
 mismo orden justamente para que el diff sea comparable. El enlace cruzado va arriba, bajo el
