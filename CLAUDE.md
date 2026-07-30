@@ -187,20 +187,34 @@ siguiente la ve como un `~` escrito, arrancando un filtro por "~" al pulsar PgDn
 
 ## Notas personales (`Ctrl-N`)
 
-**Van por `cwd`, NO por `sessionId`.** Los sessionId cambian cada vez que reinicias Claude Code,
-asi que una nota atada a la sesion se quedaria huerfana justo cuando mas hace falta. El precio,
-aceptado: dos sesiones del mismo repo comparten nota.
+**Van por `sessionId`, con la del `cwd` como respaldo.** La primera version las ataba solo al
+`cwd`, y fue un fallo reportado: escribir "esperando que felipe haga algo" en una sesion la pintaba
+en las otras tres del mismo directorio. Con 16 sesiones en 11 directorios, **el 43% no podia tener
+nota propia** — y las notas que la gente escribe de verdad son de estado ("esperando X"), no
+etiquetas de repo.
 
-**No se purgan las de directorios inexistentes.** Un disco externo desmontado o un repo movido de
-sitio borraria algo que el usuario escribio a mano. Al contrario que `ccl-numbers.json`, que si se
-purga, porque ahi el dato lo genera el programa y se puede regenerar.
+Las dos siguen existiendo porque son dos usos distintos: el estado es de UNA conversacion; la
+etiqueta ("backend de facturacion") describe el repo, vale para todas sus sesiones y **sobrevive a
+reiniciar Claude Code**, que cambia el sessionId. `note_for()` resuelve la precedencia: la propia
+tapa la del repo, y borrar la propia hace reaparecer la del repo — asi se "quita lo mio" sin editar
+el JSON.
+
+**El formato viejo se sigue leyendo.** El archivo era un `{cwd: nota}` plano y ahora es
+`{"por_sesion": …, "por_repo": …}`; un dict plano se interpreta como `por_repo`. Quien ya tenia
+notas escritas no puede perderlas por un cambio de formato, y hay un test que lo fija — mas otro
+que comprueba que el primer guardado no pisa lo migrado.
+
+**No se purga nada**, ni sesiones muertas ni directorios inexistentes. Un disco externo desmontado
+o un repo movido de sitio borraria algo que el usuario escribio a mano. Al contrario que
+`ccl-numbers.json`, que si se purga, porque ahi el dato lo genera el programa y se regenera.
 
 **El modo edicion se queda el teclado, y va PRIMERO en el manejo de teclas.** Si no, en medio de
 una frase la `q` cierra el panel y un digito arranca el selector por numero. Hay dos tests justo
 para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
 
-**Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `cwd`. Si no, no
-se ve hasta el refresco (4 s) y parece que no se guardo.
+**Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `sessionId`. Si no,
+no se ve hasta el refresco (4 s) y parece que no se guardo. Y se recalcula con `note_for()` en vez
+de meter el texto tal cual: asi al borrar la propia reaparece la del repo en el mismo instante.
 
 **La nota se pinta con `NOTE` (negrita + salmon apagado), nunca con un color a secas.** La linea
 de detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo

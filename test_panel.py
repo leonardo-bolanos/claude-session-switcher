@@ -69,10 +69,11 @@ ahora = datetime.datetime.now(datetime.timezone.utc)
 
 def fila(num, nombre, horas):
     marca = (ahora - datetime.timedelta(hours=horas)).isoformat().replace("+00:00", "Z")
-    # cwd DISTINTO por sesion: las notas se guardan por directorio, asi que con un cwd
-    # comun las cuatro compartirian nota y no se podria probar el caso normal
+    # `alfa` y `beta` comparten cwd A PROPOSITO: es el escenario del bug que hizo que la
+    # nota pasara a ser por sesion (escribirla en una la pintaba en las vecinas).
+    # `gamma` y `delta` tienen el suyo, para el caso normal.
     return {{"num": num, "name": nombre, "account": "", "repo": "repo",
-            "cwd": "/x/" + nombre,
+            "cwd": "/x/compartido" if nombre in ("alfa", "beta") else "/x/" + nombre,
             "kind": "interactive", "status": "idle", "sessionId": "sid-" + nombre,
             "pid": num, "tty": "", "iterm": None, "ts": marca, "branch": "main",
             "model": "sonnet-5", "effort": None, "title": None,
@@ -84,10 +85,10 @@ def coleccionar():
     # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
     # filas. Hay que replicar ese paso aqui o la nota no reaparece al reabrir el panel:
     # se veria solo la copia en memoria del panel que la escribio.
-    notas = ccl.load_notes()
+    notas_sesion, notas_repo = ccl.load_notes()
     filas = [dict(f) for f in FIJAS]
     for f in filas:
-        f["note"] = notas.get(f["cwd"], "")
+        f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
     return filas
 
 ccl.collect = coleccionar
@@ -585,6 +586,20 @@ class TestNotas(unittest.TestCase):
             p.enviar(b"\x0e", b"sprint 3", b"\r")
             self.assertIn("✎ sprint 3", p.ultima())
             self.assertNotIn("enter confirma", p.barra())
+
+    def test_la_nota_no_se_pega_a_las_vecinas_del_mismo_repo(self):
+        """
+        El bug reportado: `alfa` y `beta` comparten cwd, y escribir la nota en una la
+        pintaba en la otra. Ahora la nota es de la sesion; la del repo solo hace de
+        respaldo cuando la sesion no tiene la suya.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"solo para alfa", b"\r")
+            pantalla = p.ultima()
+            fila_alfa = pantalla.split("\n")[SUB_DE["alfa"] - 1]
+            fila_beta = pantalla.split("\n")[SUB_DE["beta"] - 1]
+            self.assertIn("✎ solo para alfa", fila_alfa)
+            self.assertNotIn("✎", fila_beta, "la nota se pegó a la sesión vecina")
 
     def test_se_puede_escribir_con_acentos(self):
         """

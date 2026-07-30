@@ -699,44 +699,101 @@ class TestNotas(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_guarda_y_recupera(self):
-        ccl.save_note("/repos/web", "backend de facturación")
-        self.assertEqual(ccl.load_notes(), {"/repos/web": "backend de facturación"})
+        ccl.save_note("sid-1", "backend de facturación")
+        sesion, repo = ccl.load_notes()
+        self.assertEqual(sesion, {"sid-1": "backend de facturación"})
+        self.assertEqual(repo, {})
+
+    def test_una_nota_no_se_pega_a_las_otras_sesiones_del_mismo_repo(self):
+        """
+        EL BUG que hizo cambiar el diseño: con la nota atada al `cwd`, escribir
+        "esperando que felipe haga algo" en una sesion la pintaba en las otras tres del
+        mismo directorio. Con 16 sesiones en 11 directorios, el 43% no podia tener nota
+        propia.
+        """
+        filas = [row(1, "sid-a"), row(2, "sid-b"), row(3, "sid-c")]
+        for f in filas:
+            f["cwd"] = "/repos/support_agent"        # las tres en el MISMO directorio
+        ccl.save_note("sid-b", "esperando que felipe haga algo")
+        sesion, repo = ccl.load_notes()
+        vistas = [ccl.note_for(f, sesion, repo) for f in filas]
+        self.assertEqual(vistas, ["", "esperando que felipe haga algo", ""])
+
+    def test_la_del_repo_es_el_respaldo_de_las_que_no_tienen_propia(self):
+        filas = [row(1, "sid-a"), row(2, "sid-b")]
+        for f in filas:
+            f["cwd"] = "/repos/web"
+        ccl.escribir_json(ccl.NOTES_FILE, {"por_repo": {"/repos/web": "el backend"}})
+        ccl.save_note("sid-b", "yo tengo la mia")
+        sesion, repo = ccl.load_notes()
+        self.assertEqual([ccl.note_for(f, sesion, repo) for f in filas],
+                         ["el backend", "yo tengo la mia"])
+
+    def test_borrar_la_propia_devuelve_la_del_repo(self):
+        """Es la forma de "quitar lo mio" sin tener que editar el JSON a mano."""
+        fila = row(1, "sid-a")
+        fila["cwd"] = "/repos/web"
+        ccl.escribir_json(ccl.NOTES_FILE, {"por_repo": {"/repos/web": "el backend"}})
+        ccl.save_note("sid-a", "temporal")
+        sesion, repo = ccl.load_notes()
+        self.assertEqual(ccl.note_for(fila, sesion, repo), "temporal")
+        ccl.save_note("sid-a", "")
+        sesion, repo = ccl.load_notes()
+        self.assertEqual(ccl.note_for(fila, sesion, repo), "el backend")
+
+    def test_lee_el_formato_viejo_sin_perder_nada(self):
+        """
+        Las notas del formato anterior eran un dict plano {cwd: nota}. Quien ya las tenia
+        escritas no puede perderlas por un cambio de formato: se leen como notas de repo.
+        """
+        ccl.escribir_json(ccl.NOTES_FILE, {"/repos/web": "escrita con el formato viejo"})
+        sesion, repo = ccl.load_notes()
+        self.assertEqual(sesion, {})
+        self.assertEqual(repo, {"/repos/web": "escrita con el formato viejo"})
+
+    def test_guardar_una_de_sesion_no_pisa_las_de_repo(self):
+        """La migracion tiene que sobrevivir al primer guardado, no solo a la lectura."""
+        ccl.escribir_json(ccl.NOTES_FILE, {"/repos/web": "la del repo"})
+        ccl.save_note("sid-a", "la mia")
+        sesion, repo = ccl.load_notes()
+        self.assertEqual(repo, {"/repos/web": "la del repo"})
+        self.assertEqual(sesion, {"sid-a": "la mia"})
 
     def test_crea_el_directorio_si_no_existe(self):
         """NOTES_FILE puede caer en un ~/.claude que aun no exista."""
-        ccl.save_note("/repos/web", "algo")
+        ccl.save_note("sid-1", "algo")
         self.assertTrue(os.path.exists(ccl.NOTES_FILE))
 
     def test_sin_archivo_no_hay_notas_y_no_revienta(self):
-        self.assertEqual(ccl.load_notes(), {})
+        self.assertEqual(ccl.load_notes(), ({}, {}))
 
     def test_una_nota_vacia_la_borra(self):
-        ccl.save_note("/repos/web", "algo")
-        ccl.save_note("/repos/web", "   ")
-        self.assertEqual(ccl.load_notes(), {})
+        ccl.save_note("sid-1", "algo")
+        ccl.save_note("sid-1", "   ")
+        self.assertEqual(ccl.load_notes(), ({}, {}))
 
     def test_borrar_una_que_no_existe_no_revienta(self):
-        self.assertEqual(ccl.save_note("/no/existe", ""), "")
+        self.assertEqual(ccl.save_note("sid-que-no-existe", ""), "")
 
     def test_normaliza_espacios_y_saltos(self):
         """Es una linea en un panel: un salto de linea descuadraria el layout."""
-        self.assertEqual(ccl.save_note("/x", "  hola \n\t mundo  "), "hola mundo")
+        self.assertEqual(ccl.save_note("sid-1", "  hola \n\t mundo  "), "hola mundo")
 
     def test_recorta_las_larguisimas(self):
-        guardada = ccl.save_note("/x", "a" * (ccl.NOTE_MAX + 500))
+        guardada = ccl.save_note("sid-1", "a" * (ccl.NOTE_MAX + 500))
         self.assertEqual(len(guardada), ccl.NOTE_MAX)
-        self.assertEqual(len(ccl.load_notes()["/x"]), ccl.NOTE_MAX)
+        self.assertEqual(len(ccl.load_notes()[0]["sid-1"]), ccl.NOTE_MAX)
 
     def test_no_pierde_las_demas_al_guardar_una(self):
-        ccl.save_note("/a", "uno")
-        ccl.save_note("/b", "dos")
-        self.assertEqual(ccl.load_notes(), {"/a": "uno", "/b": "dos"})
+        ccl.save_note("sid-a", "uno")
+        ccl.save_note("sid-b", "dos")
+        self.assertEqual(ccl.load_notes()[0], {"sid-a": "uno", "sid-b": "dos"})
 
     def test_archivo_corrupto_no_revienta(self):
         os.makedirs(os.path.dirname(ccl.NOTES_FILE), exist_ok=True)
         with open(ccl.NOTES_FILE, "w") as fh:
             fh.write("{esto no es json")
-        self.assertEqual(ccl.load_notes(), {})
+        self.assertEqual(ccl.load_notes(), ({}, {}))
 
     def test_json_valido_pero_con_la_forma_equivocada(self):
         """Una lista, o valores que no son texto: se ignoran en vez de reventar."""
@@ -744,13 +801,14 @@ class TestNotas(unittest.TestCase):
         for basura in ('["a", "b"]', '{"/x": 42, "/y": "vale"}', '"solo un string"'):
             with open(ccl.NOTES_FILE, "w") as fh:
                 fh.write(basura)
-            notas = ccl.load_notes()
-            self.assertIsInstance(notas, dict)
-            self.assertNotIn("/x", notas)
+            sesion, repo = ccl.load_notes()
+            self.assertIsInstance(sesion, dict)
+            self.assertIsInstance(repo, dict)
+            self.assertNotIn("/x", repo)
 
     def test_los_acentos_se_guardan_legibles(self):
         """ensure_ascii=False: el archivo lo puede editar el usuario a mano."""
-        ccl.save_note("/x", "migración")
+        ccl.save_note("sid-1", "migración")
         with open(ccl.NOTES_FILE) as fh:
             self.assertIn("migración", fh.read())
 

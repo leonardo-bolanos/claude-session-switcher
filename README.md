@@ -85,11 +85,11 @@ ccl --version    # print the version
 | `Enter` | Open that session (focuses its iTerm window and tab) |
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
-| `Ctrl-N` | Write **your own note** on this repo |
+| `Ctrl-N` | Write **your own note** on this session |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |
-| any letter | **Filter** by name, repo, branch or account |
+| any letter | **Filter** by name, repo, branch, account or note |
 | `Ctrl-R` | Force a refresh |
 | `?` | **Help** with every shortcut |
 | `esc` | Clears the filter; with no filter, quits |
@@ -159,14 +159,27 @@ of losing tab switching.
 correcting isn't rewriting. **You can also filter by it**, which is half the point: tag a repo
 called `web-app` as "billing" and find it by that word.
 
-Notes are stored **per directory** in `~/.claude/ccl-notes.json`, not per session. That's
-deliberate: session IDs change every time you restart Claude Code, so a note tied to the session
-would go missing exactly when you need it. The trade-off is that two sessions in the same repo
-share a note.
+Notes are **per session**, with the repo's note as a fallback: a session with no note of its own
+shows the one for its directory. Both exist because they're two different uses — *"waiting on
+Felipe"* is the state of one conversation, while *"billing backend"* describes the repo and applies
+to all its sessions (and survives restarting Claude Code, which changes the session ID).
 
-Notes for directories that no longer exist are **not** pruned — an unmounted external drive or a
-moved repo would silently delete something you typed by hand. The file is a few KB even when it
-piles up, and it's plain JSON you can edit yourself.
+It's stored in `~/.claude/ccl-notes.json`:
+
+```json
+{
+  "por_sesion": { "<sessionId>": "waiting on Felipe" },
+  "por_repo":   { "/Users/you/code/api": "billing backend" }
+}
+```
+
+`Ctrl-N` writes the session one; deleting it brings the repo one back. Repo notes are edited in
+that file by hand — plain JSON on purpose. The older flat `{path: note}` format is still read, as
+repo notes, so nothing written before this is lost.
+
+Nothing is pruned — not dead sessions, not directories that no longer exist. An unmounted external
+drive or a moved repo would silently delete something you typed by hand, and the file is a few KB
+even when it piles up.
 
 </details>
 

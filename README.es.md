@@ -86,11 +86,11 @@ ccl --version    # imprime la versión
 | `Enter` | Abrir esa sesión (enfoca su ventana y pestaña de iTerm) |
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
-| `Ctrl-N` | Escribir **tu propia nota** sobre este repo |
+| `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
-| cualquier letra | **Filtrar** por nombre, repo, rama o cuenta |
+| cualquier letra | **Filtrar** por nombre, repo, rama, cuenta o nota |
 | `Ctrl-R` | Forzar refresco |
 | `?` | **Ayuda** con todos los atajos |
 | `esc` | Limpia el filtro; si no hay filtro, sale |
@@ -161,14 +161,27 @@ hubiera, así que corregir no es reescribir. **También se busca por ella al fil
 razón para escribirla: etiquetas como "facturación" un repo que se llama `web-app` y lo encuentras
 por esa palabra.
 
-Las notas se guardan **por directorio** en `~/.claude/ccl-notes.json`, no por sesión. Es a
-propósito: los `sessionId` cambian cada vez que reinicias Claude Code, así que una nota atada a la
-sesión se quedaría huérfana justo cuando más la necesitas. El precio es que dos sesiones del mismo
-repo comparten nota.
+Las notas son **por sesión**, con la del repo como respaldo: una sesión sin nota propia muestra la
+de su directorio. Hacen falta las dos porque son dos usos distintos — *«esperando que Felipe haga
+algo»* es el estado de UNA conversación, mientras que *«backend de facturación»* describe el repo y
+vale para todas sus sesiones (y sobrevive a reiniciar Claude Code, que cambia el `sessionId`).
 
-Las notas de directorios que ya no existen **no** se purgan: un disco externo desmontado o un repo
-movido de sitio borraría en silencio algo que escribiste a mano. El archivo son unos pocos KB
-aunque acumule, y es JSON plano que puedes editar tú.
+Se guarda en `~/.claude/ccl-notes.json`:
+
+```json
+{
+  "por_sesion": { "<sessionId>": "esperando que Felipe haga algo" },
+  "por_repo":   { "/Users/tu/code/api": "backend de facturación" }
+}
+```
+
+`Ctrl-N` escribe la de la sesión; borrarla hace reaparecer la del repo. Las de repo se editan a
+mano en ese archivo — es JSON plano a propósito. El formato anterior (un `{ruta: nota}` plano) se
+sigue leyendo como notas de repo, así que nada de lo escrito antes se pierde.
+
+No se purga nada: ni las sesiones muertas ni los directorios que ya no existen. Un disco externo
+desmontado o un repo movido de sitio borraría en silencio algo que escribiste a mano, y el archivo
+son unos pocos KB aunque acumule.
 
 </details>
 

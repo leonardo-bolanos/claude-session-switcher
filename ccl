@@ -46,7 +46,7 @@ import tty
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")
@@ -78,8 +78,9 @@ panel, Option-1..9 does the same.
 Each session's number is STABLE: it's stored in ~/.claude/ccl-numbers.json and kept across
 runs even as the list reorders. It's recycled when the session dies.
 
-Ctrl-N writes your own note on a repo, stored in ~/.claude/ccl-notes.json. Filtering
-searches it too.
+Ctrl-N writes your own note on a session, stored in ~/.claude/ccl-notes.json. A session
+with no note of its own falls back to its repo's note (`por_repo` in that file). Filtering
+searches notes too.
 
 Requires macOS + iTerm2 (the window jump uses AppleScript) and Python 3.7+.
 
@@ -111,8 +112,9 @@ lo mismo se hace con Option-1..9.
 El numero de cada sesion es ESTABLE: se guarda en ~/.claude/ccl-numbers.json y se
 mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la sesion muere.
 
-Ctrl-N escribe tu propia nota sobre un repo, en ~/.claude/ccl-notes.json. Tambien se
-busca por ella al filtrar.
+Ctrl-N escribe tu propia nota sobre una sesion, en ~/.claude/ccl-notes.json. Una sesion
+sin nota propia muestra la de su repo (`por_repo` en ese archivo). Tambien se busca por
+ellas al filtrar.
 
 Requiere macOS + iTerm2 (el salto de ventana usa AppleScript) y Python 3.7+.
 
@@ -735,33 +737,61 @@ def assign_numbers(sessions):
 
 def load_notes():
     """
-    {cwd: nota} — las notas que has escrito tu, no algo que venga de Claude Code.
+    ({sessionId: nota}, {cwd: nota}) — tus notas, por sesion y por repo.
 
-    Van por **directorio**, no por sessionId: los sessionId cambian cada vez que
-    reinicias Claude Code, asi que una nota atada a la sesion se quedaria huerfana justo
-    cuando mas la necesitas. El precio es que dos sesiones del mismo repo comparten nota.
+    Van por **sesion**, y la del repo es el respaldo: si una sesion no tiene nota propia,
+    se ve la de su directorio. Las dos cosas hacen falta porque son dos usos distintos:
+
+      - "esperando que Felipe haga algo" es el estado de UNA conversacion. Atarlo al repo
+        lo pintaba en las otras tres sesiones del mismo directorio, que es el fallo que
+        hizo cambiar esto: con 16 sesiones en 11 directorios, el 43% no podia tener nota
+        propia.
+      - "backend de facturacion" describe el repo y vale para todas sus sesiones, y encima
+        sobrevive a reiniciar Claude Code (que cambia el sessionId).
+
+    En disco: {"por_sesion": {...}, "por_repo": {...}}. Se acepta tambien el formato viejo
+    —un dict plano {cwd: nota}— y se lee como `por_repo`: quien ya tenia notas escritas no
+    puede perderlas por un cambio de formato.
     """
     datos = leer_json(NOTES_FILE, {})
-    # y ademas se filtran los valores: una nota tiene que ser texto. Un JSON valido con
-    # la forma equivocada (una lista, un numero) no puede llegar a la linea de detalle.
-    return {k: v for k, v in datos.items() if isinstance(k, str) and isinstance(v, str)}
+    if "por_sesion" in datos or "por_repo" in datos:
+        crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
+    else:
+        crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
+
+    def limpio(d):
+        # los valores tambien se filtran: una nota tiene que ser texto. Un JSON valido con
+        # la forma equivocada (una lista, un numero) no puede llegar a la linea de detalle.
+        if not isinstance(d, dict):
+            return {}
+        return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str)}
+
+    return limpio(crudo_sesion), limpio(crudo_repo)
 
 
-def save_note(cwd, nota):
+def note_for(row, notas_sesion, notas_repo):
+    """La nota que le toca a una fila: la suya si tiene, y si no la de su repo."""
+    return notas_sesion.get(row["sessionId"]) or notas_repo.get(row["cwd"], "")
+
+
+def save_note(session_id, nota):
     """
-    Guarda la nota de un directorio, o la borra si queda vacia. Devuelve la nota final.
+    Guarda la nota de una sesion, o la borra si queda vacia. Devuelve la nota final.
 
-    No purga las notas de directorios que ya no existen: un disco externo desmontado, o
-    un repo movido de sitio, borraria notas que el usuario escribio a mano. El archivo
-    es de unos pocos KB aunque acumule.
+    Borrarla hace reaparecer la del repo, si hay: es la forma de "quitar lo mio y volver a
+    lo de siempre" sin tener que editar el JSON.
+
+    No purga nada: ni las sesiones muertas ni los directorios que ya no existen. Un disco
+    externo desmontado o un repo movido de sitio borraria algo escrito a mano, y el archivo
+    son unos pocos KB aunque acumule.
     """
-    notas = load_notes()
+    sesion, repo = load_notes()
     nota = " ".join(str(nota).split())[:NOTE_MAX]   # una linea, sin espacios dobles
     if nota:
-        notas[cwd] = nota
+        sesion[session_id] = nota
     else:
-        notas.pop(cwd, None)
-    escribir_json(NOTES_FILE, notas)
+        sesion.pop(session_id, None)
+    escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo})
     return nota
 
 
@@ -830,7 +860,7 @@ def short_model(m):
 
 def build(sessions, ttys, iterm, numbers):
     rows = []
-    notas = load_notes()      # una lectura por refresco: el archivo es diminuto
+    notas_sesion, notas_repo = load_notes()   # una lectura por refresco: es diminuto
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
@@ -852,9 +882,10 @@ def build(sessions, ttys, iterm, numbers):
             "effort": info.get("effort"),
             "title": info.get("title"),
             "prompt": info.get("prompt"),
-            "note": notas.get(s["cwd"], ""),
+            "note": "",   # se rellena abajo, cuando la fila ya existe
             "startedAt": s.get("startedAt", 0),
         })
+        rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
     return rows
 
 
@@ -1196,10 +1227,11 @@ HELP_EN = [
         ("",           "ccl --list | pbcopy grabs it all at once"),
     ]),
     ("your own note on a session", [
-        ("Ctrl-N",     "write or fix this repo's note"),
+        ("Ctrl-N",     "write or fix THIS session's note"),
         ("enter",      "save · an empty note deletes it · esc cancels"),
-        ("",           "it's per REPO, not per session: it's still there when"),
-        ("",           "you restart Claude Code, and same-repo sessions share it"),
+        ("",           "sessions in the same repo no longer share it"),
+        ("",           "with no note of its own, a session shows its repo's"),
+        ("",           "one (in ~/.claude/ccl-notes.json, under por_repo)"),
         ("",           "filtering searches it too"),
     ]),
     ("filtering", [
@@ -1248,10 +1280,11 @@ HELP_ES = [
         ("",            "ccl --list | pbcopy copia todo de una vez"),
     ]),
     ("tu nota en una sesión", [
-        ("Ctrl-N",     "escribir o corregir la nota de este repo"),
+        ("Ctrl-N",     "escribir o corregir la nota de ESTA sesión"),
         ("enter",      "guardar · una nota vacía la borra · esc cancela"),
-        ("",           "va por REPO, no por sesión: sigue ahí cuando reinicies"),
-        ("",           "Claude Code, y la comparten las sesiones del mismo repo"),
+        ("",           "las sesiones del mismo repo ya no la comparten"),
+        ("",           "sin nota propia, una sesión muestra la de su repo"),
+        ("",           "(en ~/.claude/ccl-notes.json, bajo por_repo)"),
         ("",           "también se busca por ella al filtrar"),
     ]),
     ("filtrar", [
@@ -1545,13 +1578,17 @@ def interactive(feed):
             if editando is not None:
                 objetivo = lines[cl][2]
                 if k == "enter":
-                    nota = save_note(objetivo["cwd"], editando)
-                    # aplicarla ya en memoria: si no, no se ve hasta el refresco (4 s) y
-                    # parece que no se guardo. Todas las filas del mismo repo la comparten.
+                    save_note(objetivo["sessionId"], editando)
+                    # Aplicarla ya en memoria: si no, no se ve hasta el refresco (4 s) y
+                    # parece que no se guardo. Se recalcula con `note_for` en vez de meter
+                    # el texto tal cual, para que al borrar la propia reaparezca la del
+                    # repo en el mismo instante.
+                    notas_sesion, notas_repo = load_notes()
                     for r in rows:
-                        if r["cwd"] == objetivo["cwd"]:
-                            r["note"] = nota
-                    flash = t("nota_guardada") if nota else t("nota_borrada")
+                        if r["sessionId"] == objetivo["sessionId"]:
+                            r["note"] = note_for(r, notas_sesion, notas_repo)
+                            nota = r["note"]
+                    flash = t("nota_guardada") if editando.strip() else t("nota_borrada")
                     editando, requery = None, True
                 elif k == "esc":
                     editando, flash = None, t("nota_sin_cambios")
