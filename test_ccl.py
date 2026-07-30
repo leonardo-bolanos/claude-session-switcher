@@ -880,6 +880,72 @@ class TestNotas(unittest.TestCase):
         self.assertFalse(ccl.matches(r, "frontend"))
 
 
+class TestSaneado(unittest.TestCase):
+    """
+    El panel PINTA campos que vienen de fuera: el ultimo prompt sale del transcript de
+    Claude Code, o sea de lo que se teclea Y SE PEGA ahi. Un `\033[2A` colado ahi mueve el
+    cursor y reescribe la fila de OTRA sesion: en una herramienta cuyo trabajo es "llevame
+    a la sesion correcta", falsear una fila es el peor fallo posible.
+    """
+
+    def test_quita_las_secuencias_de_escape(self):
+        for entrada in ("a\033[2Ab", "a\033]1337;SetUserVar=x=y\007b",
+                        "a\033]0;titulo\033\\b", "a\033b", "a\007b", "a\x00b"):
+            salida = ccl.sin_control(entrada)
+            self.assertEqual(salida, "ab", f"con {entrada!r}")
+
+    def test_se_come_la_carga_del_OSC_entera(self):
+        """
+        El orden de las alternativas del regex importa: si la generica de dos bytes va
+        antes, casa solo `ESC ]` y el payload se queda como texto visible en la fila.
+        """
+        self.assertNotIn("1337", ccl.sin_control("\033]1337;File=algo\007"))
+        self.assertNotIn("SetUserVar", ccl.sin_control("\033]1337;SetUserVar=a=b\007"))
+
+    def test_no_toca_el_texto_normal(self):
+        for entrada in ("hola mundo", "migración 会话 ñ", "listo 🎉",
+                        "feature/ABC-123_v2", "a · b"):
+            self.assertEqual(ccl.sin_control(entrada), entrada)
+
+    def test_los_campos_pintables_se_sanean_al_construir_la_fila(self):
+        """Se hace en `build`, una vez, y no en cada sitio que pinta."""
+        sesiones = [{"sessionId": "s1", "name": "malo\033[2A", "cwd": "/x/repo\007",
+                     "pid": 1, "kind": "interactive", "status": "idle", "startedAt": 0}]
+        orig = ccl.read_transcript
+        ccl.read_transcript = lambda *a, **k: {"branch": "main\033]0;x\007",
+                                               "prompt": "pega\033[2Ado"}
+        try:
+            fila = ccl.build(sesiones, {}, {}, {"s1": 1})[0]
+        finally:
+            ccl.read_transcript = orig
+        for campo in ("name", "repo", "branch", "prompt"):
+            self.assertNotIn("\033", fila[campo] or "", f"{campo} sin sanear")
+
+    def test_una_nota_editada_a_mano_en_el_json_tambien_se_sanea(self):
+        """Por el editor no entran escapes (isprintable los filtra), pero el JSON es tuyo."""
+        tmp = tempfile.mkdtemp()
+        orig = ccl.NOTES_FILE
+        ccl.NOTES_FILE = os.path.join(tmp, "notas.json")
+        try:
+            guardada = ccl.save_note("sid-1", "nota\033[2Amaliciosa")
+            self.assertNotIn("\033", guardada)
+        finally:
+            ccl.NOTES_FILE = orig
+
+    def test_el_fichero_de_notas_no_queda_legible_por_otros(self):
+        """Son datos personales: nombres de gente y en qué estás esperando."""
+        tmp = tempfile.mkdtemp()
+        orig = ccl.NOTES_FILE
+        ccl.NOTES_FILE = os.path.join(tmp, "notas.json")
+        try:
+            ccl.save_note("sid-1", "algo privado")
+            import stat
+            modo = stat.S_IMODE(os.stat(ccl.NOTES_FILE).st_mode)
+            self.assertEqual(modo & 0o077, 0, f"permisos {oct(modo)}: legible por otros")
+        finally:
+            ccl.NOTES_FILE = orig
+
+
 class TestBuscarClaude(unittest.TestCase):
     """
     Un atajo global arranca el proceso con el PATH minimo de launchd, donde `claude` no

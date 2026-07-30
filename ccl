@@ -46,7 +46,7 @@ import tty
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")
@@ -215,6 +215,7 @@ TEXTOS = {
         "nota_sin_cambios": "note unchanged",
         "nota_prompt": "✎ note for {repo}: ",
         "nota_teclas": "  enter saves · empty deletes · esc cancels",
+        "nota_perdida": "✎ that session is gone: note not saved",
         # barra de estado
         "barra_mover": " move  ",
         "barra_abrir": " open  ",
@@ -278,6 +279,7 @@ TEXTOS = {
         "nota_sin_cambios": "nota sin cambios",
         "nota_prompt": "✎ nota de {repo}: ",
         "nota_teclas": "  enter guarda · vacía borra · esc cancela",
+        "nota_perdida": "✎ esa sesión ya no está: nota sin guardar",
         "barra_mover": " mover  ",
         "barra_abrir": " abrir  ",
         "barra_esperando": " esperando  ",
@@ -704,6 +706,10 @@ def escribir_json(ruta, datos):
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
         with open(ruta, "w") as fh:
             json.dump(datos, fh, indent=2, ensure_ascii=False, sort_keys=True)
+        # 0600: las notas son texto personal —nombres de gente, en que estas esperando— y
+        # con el umask habitual (022) el fichero salia legible para el grupo. En una maquina
+        # de un solo usuario no hay exposicion real, pero es gratis no dejarlo abierto.
+        os.chmod(ruta, 0o600)
     except Exception:
         pass
 
@@ -786,7 +792,7 @@ def save_note(session_id, nota):
     son unos pocos KB aunque acumule.
     """
     sesion, repo = load_notes()
-    nota = " ".join(str(nota).split())[:NOTE_MAX]   # una linea, sin espacios dobles
+    nota = " ".join(sin_control(str(nota)).split())[:NOTE_MAX]   # una linea, sin control
     if nota:
         sesion[session_id] = nota
     else:
@@ -796,6 +802,33 @@ def save_note(session_id, nota):
 
 
 # ─────────────────────────────── formato ───────────────────────────────
+
+
+# Todo lo que se pinta y viene de FUERA pasa por aqui: el nombre de la sesion, el repo, la
+# rama, el ultimo prompt, el titulo. El caso que importa es el prompt, que sale del
+# transcript de Claude Code — o sea de lo que se teclea Y SE PEGA ahi.
+#
+# Un `\033[2A` colado en un prompt mueve el cursor dos lineas arriba y el texto siguiente
+# reescribe la fila de OTRA sesion: en una herramienta cuyo trabajo es "llevame a la sesion
+# correcta", falsear una fila es el peor fallo posible. `\n`, `\r` y `\t` ya se quitaban al
+# normalizar espacios, pero las secuencias que empiezan por ESC y el BEL llegaban intactas.
+#
+# Ademas ANSI_RE solo reconoce SGR (`\033[...m`), asi que una secuencia OSC no se contaba en
+# el ancho visible y descuadraba las columnas: 51 columnas calculadas para 101 bytes.
+# El ORDEN de las alternativas importa: la del OSC va primera porque hay que comerse su
+# carga entera. Si va despues, la generica de dos bytes casa solo `ESC ]` y el payload
+# ("1337;SetUserVar=…") se queda como texto visible en la fila.
+CONTROL_RE = re.compile(
+    r"\033\][^\a\033]*(?:\a|\033\\)?"    # OSC … BEL / ST, con su carga
+    r"|\033\[[0-?]*[ -/]*[@-~]"          # CSI (colores, mover el cursor, borrar…)
+    r"|\033[@-Z\\-_]"                    # cualquier otra secuencia de dos bytes
+    r"|[\x00-\x08\x0b-\x1f\x7f]"         # y los controles sueltos (BEL, NUL, DEL…)
+)
+
+
+def sin_control(texto):
+    """Quita caracteres de control y secuencias de escape de un texto que viene de fuera."""
+    return CONTROL_RE.sub("", texto) if isinstance(texto, str) else texto
 
 
 def parse_ts(iso_ts):
@@ -866,9 +899,9 @@ def build(sessions, ttys, iterm, numbers):
         tty = ttys.get(s["pid"], "")
         rows.append({
             "num": numbers[s["sessionId"]],
-            "name": s["name"],
-            "account": s.get("_account", ""),
-            "repo": os.path.basename(s["cwd"]),
+            "name": sin_control(s["name"]),
+            "account": sin_control(s.get("_account", "")),
+            "repo": sin_control(os.path.basename(s["cwd"])),
             "cwd": s["cwd"],
             "kind": s.get("kind", "interactive"),
             "status": s.get("status", "idle"),
@@ -877,11 +910,11 @@ def build(sessions, ttys, iterm, numbers):
             "tty": tty,
             "iterm": iterm.get(tty),
             "ts": info.get("ts"),
-            "branch": info.get("branch"),
+            "branch": sin_control(info.get("branch")),
             "model": short_model(info.get("model")),
             "effort": info.get("effort"),
-            "title": info.get("title"),
-            "prompt": info.get("prompt"),
+            "title": sin_control(info.get("title")),
+            "prompt": sin_control(info.get("prompt")),
             "note": "",   # se rellena abajo, cuando la fila ya existe
             "startedAt": s.get("startedAt", 0),
         })
@@ -1406,7 +1439,15 @@ def interactive(feed):
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = lines[pickable[0]][2]["sessionId"] if pickable else None
     typed, top, flash, query = "", 0, "", ""
-    editando = None   # None = no estas escribiendo una nota; un str = el texto en curso
+    # El editor recuerda a QUE SESION pertenece la nota, no en que fila estaba. `lines[cl]`
+    # se resuelve en cada vuelta del bucle: si la sesion que estabas anotando muere y el
+    # refresco reordena la lista, esa fila pasa a ser OTRA sesion y el Enter guardaba el
+    # texto en la equivocada — el mismo fallo que ya se corrigio para el contagio de notas,
+    # por otro camino.
+    editando = None       # None = no estas escribiendo; un str = el texto en curso
+    editando_sid = None   # la sesion a la que pertenece ese texto
+    editando_repo = ""    # su repo, para el prompt
+    aviso_salto = ""      # el resultado de un ⌥N pulsado con la lista vacia por el filtro
     last_cols = cols0
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
     requery = False  # fuerza reconstruir la vista tras tocar el filtro
@@ -1431,6 +1472,12 @@ def interactive(feed):
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
                 if pickable and not any(lines[i][2]["sessionId"] == sel_id for i in pickable):
                     sel_id = lines[pickable[0]][2]["sessionId"]  # el filtro dejo fuera al cursor
+                # Si la sesion que estabas anotando ya no existe, se cancela la edicion. Sin
+                # esto el texto se quedaba en curso mientras el cursor saltaba a otra fila, y
+                # el Enter lo guardaba en una sesion que no era la tuya.
+                if editando is not None and not any(r["sessionId"] == editando_sid
+                                                    for r in rows):
+                    editando, flash = None, t("nota_perdida")
                 dirty = True
 
             if not pickable:
@@ -1446,6 +1493,8 @@ def interactive(feed):
                            + RED(t("sin_resultados")) + DIM(t("borra_limpia")))
                 else:
                     msg = "  " + DIM(t("sin_sesiones_esc"))
+                if aviso_salto:
+                    msg += "\r\n  " + GREEN(aviso_salto)
                 sys.stdout.write("\033[H\033[2J" + msg + "\r\n")
                 sys.stdout.flush()
                 k = read_key(1.0)
@@ -1460,8 +1509,10 @@ def interactive(feed):
                     return
                 if k.startswith("alt-"):
                     # tiene que funcionar tambien aqui: es justo el caso "escribi mal
-                    # el filtro, llevame a la que me espera"
-                    nuevo_sel, _ = jump_waiting(rows, int(k[4:]))
+                    # el filtro, llevame a la que me espera". Y el aviso se MUESTRA: al
+                    # tirarlo, un "solo hay N esperando" desaparecia y parecia que la
+                    # tecla no habia hecho nada.
+                    nuevo_sel, aviso_salto = jump_waiting(rows, int(k[4:]))
                     if nuevo_sel:
                         sel_id = nuevo_sel
                 elif k == "back" and query:
@@ -1543,7 +1594,7 @@ def interactive(feed):
                 if editando is not None:
                     # el cursor ▏ hace falta: sin el, una nota vacia no se distingue de
                     # "no estoy en modo edicion" y parece que la tecla no hizo nada
-                    hint = (DIM(t("nota_prompt", repo=os.path.basename(sel_row["cwd"])))
+                    hint = (DIM(t("nota_prompt", repo=editando_repo))
                             + CYAN(BOLD(editando)) + CYAN("▏")
                             + DIM(t("nota_teclas")))
                 elif typed:
@@ -1576,18 +1627,16 @@ def interactive(feed):
             # Escribiendo una nota, el teclado es del editor: va PRIMERO, o 'q' saldria
             # del panel y los digitos harian de selector en medio de la frase.
             if editando is not None:
-                objetivo = lines[cl][2]
                 if k == "enter":
-                    save_note(objetivo["sessionId"], editando)
+                    save_note(editando_sid, editando)
                     # Aplicarla ya en memoria: si no, no se ve hasta el refresco (4 s) y
                     # parece que no se guardo. Se recalcula con `note_for` en vez de meter
                     # el texto tal cual, para que al borrar la propia reaparezca la del
                     # repo en el mismo instante.
                     notas_sesion, notas_repo = load_notes()
                     for r in rows:
-                        if r["sessionId"] == objetivo["sessionId"]:
+                        if r["sessionId"] == editando_sid:
                             r["note"] = note_for(r, notas_sesion, notas_repo)
-                            nota = r["note"]
                     flash = t("nota_guardada") if editando.strip() else t("nota_borrada")
                     editando, requery = None, True
                 elif k == "esc":
@@ -1639,7 +1688,10 @@ def interactive(feed):
                 # Ctrl-N, por lo mismo que Ctrl-R: una letra suelta se comeria el filtro.
                 # Arranca con la nota que ya hubiera, para poder corregirla en vez de
                 # tener que reescribirla entera.
-                editando = lines[cl][2].get("note") or ""
+                objetivo = lines[cl][2]
+                editando = objetivo.get("note") or ""
+                editando_sid = objetivo["sessionId"]
+                editando_repo = os.path.basename(objetivo["cwd"])
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra
@@ -1678,6 +1730,10 @@ def interactive(feed):
                 nuevo_sel, flash = jump_waiting(rows, int(k[4:]))
                 if nuevo_sel:
                     sel_id = nuevo_sel
+                # `typed` se limpia igual que en las flechas y el clic: si no, un numero a
+                # medio teclear seguia teniendo prioridad y el Enter siguiente enfocaba ESE
+                # numero en vez de la sesion a la que acabas de saltar.
+                typed = ""
             elif k.isdigit() and not query:
                 # los digitos son seleccion... salvo si ya estas filtrando, donde
                 # forman parte del texto buscado (p.ej. "v5", "0042")

@@ -208,6 +208,16 @@ que comprueba que el primer guardado no pisa lo migrado.
 o un repo movido de sitio borraria algo que el usuario escribio a mano. Al contrario que
 `ccl-numbers.json`, que si se purga, porque ahi el dato lo genera el programa y se regenera.
 
+**El editor se ata a la SESION, no a la fila.** `lines[cl]` se resuelve en cada vuelta del bucle,
+asi que si la sesion que estabas anotando muere y el refresco reordena la lista, esa fila pasa a
+ser otra sesion y el Enter guardaba el texto **en la equivocada** — el mismo fallo del contagio de
+notas, por otro camino. Por eso hay `editando_sid`/`editando_repo`, y si esa sesion desaparece la
+edicion se cancela con aviso (`nota_perdida`) antes de que el Enter pueda guardar en otra.
+
+**Cualquier tecla que mueva el cursor tiene que limpiar `typed`.** `⌥N` no lo hacia: veias el
+cursor saltar a la sesion que espera, pero el numero a medio teclear seguia teniendo prioridad y
+el Enter siguiente enfocaba ESE numero. Lo hacen ya las flechas, PgUp/PgDn, la rueda y el clic.
+
 **El modo edicion se queda el teclado, y va PRIMERO en el manejo de teclas.** Si no, en medio de
 una frase la `q` cierra el panel y un digito arranca el selector por numero. Hay dos tests justo
 para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
@@ -245,6 +255,33 @@ Ojo al probar el panel: `test_panel.py` parchea `collect`, que **se salta `build
 quien pega las notas a las filas. El arnes replica ese paso; sin eso, la nota no reaparece al
 reabrir el panel y parece un fallo de persistencia que no existe. Y `NOTES_FILE` se desvia a un
 temporal: es el unico archivo que el panel escribe de verdad en disco.
+
+## Lo que se pinta viene de fuera: `sin_control()`
+
+El panel pinta el nombre de la sesion, el repo, la rama, el titulo y **el ultimo prompt**, y ese
+ultimo sale del transcript de Claude Code — o sea de lo que se teclea **y se pega** ahi. Todo eso
+pasa por `sin_control()` en `build()`, una vez, y no en cada sitio que pinta.
+
+**El caso que importa no es el color, es `\033[2A`**: mueve el cursor dos lineas arriba y el texto
+siguiente reescribe la fila de OTRA sesion. En una herramienta cuyo trabajo es "llevame a la sesion
+correcta", falsear una fila es el peor fallo posible. `\n`, `\r` y `\t` ya se quitaban al normalizar
+espacios; lo que llegaba intacto eran las secuencias que empiezan por ESC y el BEL.
+
+**El orden de las alternativas del regex importa.** La del OSC va primera porque hay que comerse su
+carga entera: puesta despues, la generica de dos bytes casa solo `ESC ]` y el payload
+(`1337;SetUserVar=…`) se queda como texto visible en la fila.
+
+De paso arregla un descuadre real: `ANSI_RE` solo reconoce SGR (`\033[…m`), asi que una secuencia
+OSC no se contaba en el ancho visible — 51 columnas calculadas para 101 bytes.
+
+**Por el editor de notas no entran escapes** y conviene saber por que, para no "simplificar" el
+filtro: se acepta texto solo con `len(k) == 1 and k.isprintable()`, e `isprintable()` es False para
+ESC, BEL, el RTL-override y los zero-width; ademas `read_key` intercepta ESC antes, como inicio de
+secuencia. `save_note` lo sanea igualmente, porque el JSON se puede editar a mano.
+
+**`ccl-notes.json` se escribe con 0600.** Son datos personales —nombres de gente, en que estas
+esperando— y con el umask habitual (022) salia legible por el grupo. En una maquina de un solo
+usuario no hay exposicion real, pero es gratis no dejarlo abierto.
 
 ## Multi-cuenta
 

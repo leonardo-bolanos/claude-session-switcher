@@ -81,20 +81,30 @@ def fila(num, nombre, horas):
 
 FIJAS = [fila(i + 1, n, i + 1) for i, n in enumerate({NOMBRES!r})]
 
+# Para probar "la sesion que estabas anotando desaparece": si existe el fichero señal,
+# `collect` deja de devolver esa sesion, como si su proceso hubiera muerto.
+_MATAR = os.environ.get("CCL_TEST_MATAR")
+_MUERTA = os.environ.get("CCL_TEST_MUERTA", "alfa")
+
 def coleccionar():
     # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
     # filas. Hay que replicar ese paso aqui o la nota no reaparece al reabrir el panel:
     # se veria solo la copia en memoria del panel que la escribio.
     notas_sesion, notas_repo = ccl.load_notes()
     filas = [dict(f) for f in FIJAS]
+    if _MATAR and os.path.exists(_MATAR):
+        filas = [f for f in filas if f["name"] != _MUERTA]
     for f in filas:
         f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
     return filas
 
 ccl.collect = coleccionar
 ccl.get_iterm_map = lambda: {{}}     # NADIE toca ventanas
-ccl.REFRESH_SECONDS = 9999           # sin refresco: el layout no se mueve bajo los pies
-ccl.REFRESH_IDLE = 9999
+# Sin refresco por defecto, para que el layout no se mueva bajo los pies. Los tests que
+# necesitan un refresco de verdad lo bajan con CCL_TEST_REFRESH.
+_refresco = float(os.environ.get("CCL_TEST_REFRESH", "9999"))
+ccl.REFRESH_SECONDS = _refresco
+ccl.REFRESH_IDLE = _refresco
 # Las notas SI se escriben en disco desde el panel: hay que desviarlas a un temporal o
 # los tests ensuciarian el ~/.claude de quien los ejecute. Se exige la variable en vez de
 # tirar de un valor por defecto: un descuido tiene que fallar ruidosamente aqui, no
@@ -600,6 +610,43 @@ class TestNotas(unittest.TestCase):
             fila_beta = pantalla.split("\n")[SUB_DE["beta"] - 1]
             self.assertIn("✎ solo para alfa", fila_alfa)
             self.assertNotIn("✎", fila_beta, "la nota se pegó a la sesión vecina")
+
+    def test_si_la_sesion_muere_mientras_escribes_no_se_guarda_en_otra(self):
+        """
+        EL FALLO: el editor se ataba a la FILA (`lines[cl]`), que se resuelve en cada
+        vuelta del bucle. Si la sesion que estabas anotando moria y el refresco reordenaba
+        la lista, esa fila pasaba a ser otra sesion y el Enter guardaba tu texto ahi.
+        """
+        señal = os.path.join(_NOTAS_TMP, f"matar-{next(_contador_notas)}")
+        with con_panel(entorno={"CCL_TEST_MATAR": señal, "CCL_TEST_MUERTA": "alfa",
+                                "CCL_TEST_REFRESH": "1"}) as p:
+            p.enviar(b"\x0e", "para alfa y solo alfa".encode())
+            self.assertIn("para alfa", p.barra(), "el editor deberia estar abierto")
+            open(señal, "w").close()          # alfa muere
+            p._drenar(2.5 * FACTOR_ESPERA)    # deja pasar un refresco
+            # el aviso se comprueba AQUI: el Enter de despues ya es un Enter normal
+            # (enfoca la fila seleccionada) y sobreescribe el flash
+            self.assertIn("ya no está", p.aviso(), "deberia avisar de que se perdio")
+            self.assertNotIn("para alfa", p.barra(), "el editor sigue abierto")
+            p.enviar(b"\r")                   # el Enter que antes guardaba en beta
+            self.assertNotIn("para alfa", p.ultima(), "el texto acabó en otra sesión")
+        # y tampoco quedó en el fichero: de hecho no se escribió nada, porque la única
+        # nota en curso era la de la sesión que murió
+        if os.path.exists(p.notas):
+            with open(p.notas) as fh:
+                self.assertNotIn("para alfa", fh.read())
+
+    def test_option_n_limpia_el_numero_a_medio_teclear(self):
+        """
+        EL FALLO: `⌥N` movia el cursor pero no limpiaba `typed`, y el Enter da prioridad
+        al numero teclado. Resultado: veias resaltada una sesion y Enter enfocaba otra.
+        """
+        with con_panel() as p:
+            p.enviar(b"3")                      # prepara el salto por numero
+            self.assertIn("enter confirma", p.barra())
+            p.enviar(b"\0331")                  # ⌥1: salta a la primera esperando
+            self.assertNotIn("enter confirma", p.barra(),
+                             "el número a medio teclear sigue activo tras ⌥N")
 
     def test_se_puede_escribir_con_acentos(self):
         """
