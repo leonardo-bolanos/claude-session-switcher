@@ -1,118 +1,119 @@
 # TODO
 
-Lo que falta, con lo que ya se ha comprobado de cada cosa. Si te animas con alguna, los
-issues y los PR son bienvenidos.
+What's missing, with whatever has already been checked about each item. If you feel like
+taking one on, issues and PRs are welcome.
 
 ---
 
-## Soportar Terminal.app
+## Support Terminal.app
 
-**Estado: viable, verificado.** Es lo siguiente más razonable de hacer.
+**Status: doable, verified.** The most sensible thing to do next.
 
-Hoy el listado funciona en cualquier terminal, pero el salto de ventana solo en iTerm2. Para
-Terminal.app la pieza que hacía falta existe: su diccionario de AppleScript expone `tty` por
-pestaña, y tiene `selected tab`, `index` y `frontmost` para enfocar.
+Listing already works in any terminal; only the window jump is iTerm2-only. For Terminal.app the
+piece that was needed exists: its AppleScript dictionary exposes `tty` per tab, and it has
+`selected tab`, `index` and `frontmost` for focusing.
 
 ```
 $ sdef /System/Applications/Utilities/Terminal.app | grep 'name="tty"'
 <property name="tty" description="The tab's TTY device." code="ttty" type="text" access="r">
 ```
 
-Lo que implica:
+What it involves:
 
-- Un `get_terminal_map()` paralelo a `get_iterm_map()`, y fusionar ambos mapas. El TTY es único
-  por sesión, así que no hay colisión: cada uno aporta las suyas.
-- Guardar en la fila qué aplicación la tiene, para saber a quién mandar el AppleScript de
-  enfoque. Hoy `row["iterm"]` es `(window_id, tab)`; habría que generalizarlo a
-  `(app, window_id, tab)`.
-- Terminal.app direcciona pestañas por `index` dentro de la ventana, igual que iTerm2, así que
-  hereda la misma limitación: el índice se desplaza si cierras una pestaña.
-- Ojo con el rendimiento: la lección de `get_iterm_map()` aplica igual. Consultas masivas, no
-  un bucle por sesión, o son segundos en vez de milisegundos.
+- A `get_terminal_map()` alongside `get_iterm_map()`, and merging both maps. A TTY is unique per
+  session, so there's no collision: each one contributes its own.
+- Storing which application holds each row, to know where to send the focus AppleScript. Today
+  `row["iterm"]` is `(window_id, tab)`; it would have to become `(app, window_id, tab)`.
+- Terminal.app addresses tabs by `index` within the window, same as iTerm2, so it inherits the
+  same limitation: the index shifts if you close a tab.
+- Watch the performance: the `get_iterm_map()` lesson applies here too. Bulk queries, not a loop
+  per session, or it's seconds instead of milliseconds.
 
-## Soportar Windows
+## Support Windows
 
-**Estado: es un port, no un ajuste.**
+**Status: it's a port, not a tweak.**
 
-No es que falte una pieza: falta todo el mecanismo. Conviene saberlo antes de empezar.
+It isn't that one piece is missing: the whole mechanism is. Worth knowing before you start.
 
-| Pieza | En macOS | En Windows |
+| Piece | On macOS | On Windows |
 |---|---|---|
-| Panel interactivo | `termios` + `tty` en modo raw | **no existen**: el script ni siquiera importa |
-| PID → terminal | `ps -o tty=` | no hay TTY; habría que ir por la consola/pseudoconsola |
-| Enfocar la ventana | AppleScript a iTerm2 | Win32 (`SetForegroundWindow`) o el modelo de pestañas de Windows Terminal |
+| Interactive panel | `termios` + `tty` in raw mode | **they don't exist**: the script won't even import |
+| PID → terminal | `ps -o tty=` | there's no TTY; you'd go through the console/pseudoconsole |
+| Focusing the window | AppleScript to iTerm2 | Win32 (`SetForegroundWindow`) or Windows Terminal's tab model |
 
-Por dónde iría:
+How it would go:
 
-- Sustituir `termios`/`tty` por `msvcrt.getwch()` para leer teclas, tras un `sys.platform`.
-  El resto del bucle (viewport, filtro, numeración) es agnóstico y se puede reutilizar tal cual.
-- La lógica pura ya es portable: la suite entera corre en Linux en el CI, así que `vis`/`clip`,
-  `assign_numbers`, `read_transcript` y el filtro no necesitan tocarse.
-- Windows Terminal no expone sus pestañas por una API pública estable. La vía realista es
-  localizar la ventana del proceso por PID con Win32 y llevarla al frente, aceptando que la
-  **pestaña** concreta puede no ser direccionable. Un salto a nivel de ventana ya sería útil.
-- Alternativa más barata que un port completo: que en Windows funcione solo `--list`, y que el
-  panel interactivo avise de que no está soportado en lugar de reventar al importar.
+- Replace `termios`/`tty` with `msvcrt.getwch()` to read keys, behind a `sys.platform` check. The
+  rest of the loop (viewport, filter, numbering) is agnostic and can be reused as-is.
+- The pure logic is already portable: the whole suite runs on Linux in CI, so `vis`/`clip`,
+  `assign_numbers`, `read_transcript` and the filter need no changes.
+- Windows Terminal doesn't expose its tabs through a stable public API. The realistic route is
+  locating the process's window by PID with Win32 and raising it, accepting that the specific
+  **tab** may not be addressable. A window-level jump would already be useful.
+- Cheaper alternative to a full port: make only `--list` work on Windows, and have the
+  interactive panel say it isn't supported instead of blowing up on import.
 
-## Otras terminales
+## Other terminals
 
-En orden de lo que parece más factible:
+In order of how feasible they look:
 
-- **tmux** — **verificado**, y probablemente el más fácil de todos: no necesita AppleScript.
+- **tmux** — **verified**, and probably the easiest of all: it needs no AppleScript.
 
   ```
   $ tmux list-panes -a -F '#{pane_tty} #{session_name}:#{window_index}.#{pane_index}'
-  /dev/ttys082 mi-sesion:0.0
+  /dev/ttys082 my-session:0.0
   ```
 
-  Da el mapeo TTY → destino directo, y `tmux switch-client` + `select-window` + `select-pane`
-  enfoca. Además no sufre el problema del índice de pestaña: el destino es estable.
-- **kitty** *(sin verificar)* — tiene protocolo de control remoto (`kitty @ ls` devuelve ventanas y pestañas con
-  su PID), así que el mapeo sería por PID en vez de por TTY.
-- **WezTerm** *(sin verificar)* — `wezterm cli list --format json` incluye `pane_id` y el PID del proceso.
-- **Ghostty, Alacritty** — sin control remoto que sirva para esto, por lo que se sabe.
+  That gives the TTY → target mapping directly, and `tmux switch-client` + `select-window` +
+  `select-pane` focuses it. It also doesn't suffer the tab-index problem: the target is stable.
+- **kitty** *(unverified)* — has a remote control protocol (`kitty @ ls` returns windows and tabs
+  with their PID), so the mapping would be by PID instead of by TTY.
+- **WezTerm** *(unverified)* — `wezterm cli list --format json` includes `pane_id` and the
+  process PID.
+- **Ghostty, Alacritty** — no remote control that would work for this, as far as is known.
 
-## Cosas menores
+## Smaller things
 
-- **El reloj de la columna de antigüedad solo avanza con el refresco.** En reposo (20 s) puede
-  quedarse desactualizado hasta ese tiempo. Es cosmético; se arreglaría repintando sin
-  recolectar datos.
-- **El índice de pestaña se desplaza** si cierras una pestaña de la misma ventana entre listar y
-  elegir. La ventana de riesgo es de segundos y el peor caso es enfocar la pestaña vecina, pero
-  se podría revalidar el TTY justo antes de enfocar.
-- **Matar o cerrar una sesión desde el panel.** Se descartó a propósito: una tecla que mata un
-  proceso a un pulsación de distancia de las de navegación es una mala idea sin confirmación, y
-  con confirmación deja de ser rápido.
-- **`⌥1..9` necesita configurar iTerm2** (*Left Option key: `Esc+`*). Sin eso, `⌥1` manda `¡` y
-  el panel lo trata como filtro. Se podría mapear también esos símbolos (`¡™£¢∞§¶•ª`) para que
-  funcionara sin tocar nada, pero dependen de la distribución del teclado: con teclado español
-  no salen los mismos. Antes de hacerlo, comprobarlo en varias distribuciones.
-- **El modo de edición de notas vive suelto dentro de `interactive()`.** Su estado (`editando`)
-  está en cuatro puntos del bucle: entrada, inicialización, reset cuando el filtro deja la lista
-  vacía, pintado del prompt y manejo de teclas. Ya hubo que corregir uno de esos puntos porque
-  divergía. Encaja como un objeto pequeño (`.activo`, `.tecla(k)`, `.pintar()`) sin partir el
-  archivo único. No se hizo porque toca el corazón del bucle y el beneficio es organizativo, no
-  funcional — pero si se le añade una tecla más (cursor con `←`/`→`), hacerlo antes.
-- **El arnés de pty está duplicado** entre `test_panel.py` y `make_demo.py`: fork, `TIOCSWINSZ`,
-  drenado acotado, con el mismo comentario justificativo repetido y ya con deriva (uno sondea a
-  0,15 s y el otro a 0,1 s, sin razón). Cabría en un `pty_harness.py` — son archivos de
-  desarrollo, así que no rompería el «un solo script sin dependencias», que es sobre lo que se
-  distribuye. Son ~30 líneas herméticas y probadas, así que la urgencia es baja.
-- **`test_panel.py` tarda ~3 min** porque son ~80 arranques reales del panel, en serie y
-  totalmente independientes (cada uno con su pty, su subproceso y su archivo de notas). Se
-  paralelizarían bien, pero eso pide `pytest-xdist` y el proyecto presume de cero dependencias;
-  habría que decidir si se acepta una dependencia **solo de desarrollo**. **No bajar los tiempos
-  de espera**: están ajustados contra intermitencias y se escalan con `CCL_TEST_LENTO`.
-- **La vista de tabla no se recuerda entre ejecuciones.** `Ctrl-T` cambia la vista de esa sesión
-  del panel y `ccl --table` arranca en tabla, pero quien la prefiera siempre tiene que ponerse un
-  alias. Guardarla en `ccl-notes.json` son cinco líneas; no se hizo porque abre la pregunta de
-  qué manda cuando la bandera y lo guardado dicen cosas distintas, y por una preferencia que un
-  alias resuelve no vale la pena inventarse una precedencia.
-- **Las columnas de la tabla son de ancho fijo.** Un nombre de 40 caracteres se recorta aunque
-  todos los demás sean cortos y sobre sitio. Ajustarlas al contenido real (medir la columna más
-  larga y repartir) se ve mejor, pero hace que la tabla **baile** entre refrescos: al aparecer una
-  sesión con el nombre largo se mueven todas las columnas. Habría que fijar los anchos y solo
-  recalcularlos al cambiar el tamaño de la ventana.
-- **Las pausadas no se purgan nunca**, igual que las notas. Un `sessionId` es un UUID y no vuelve,
-  así que una entrada huérfana no puede pausar a nadie por error; solo acumula bytes. Si algún día
-  se purgan, tiene que ser con la lista de sesiones vivas delante — nunca al guardar.
+- **The age column's clock only moves on refresh.** While idle (20 s) it can be that stale. It's
+  cosmetic; it would be fixed by repainting without collecting data.
+- **The tab index shifts** if you close a tab in the same window between listing and choosing.
+  The risk window is seconds and the worst case is focusing the neighbouring tab, but the TTY
+  could be revalidated right before focusing.
+- **Killing or closing a session from the panel.** Deliberately dropped: a key that kills a
+  process one keystroke away from the navigation keys is a bad idea without confirmation, and
+  with confirmation it stops being fast.
+- **`⌥1..9` needs iTerm2 configured** (*Left Option key: `Esc+`*). Without it, `⌥1` sends `¡` and
+  the panel treats it as filter text. Those symbols (`¡™£¢∞§¶•ª`) could be mapped too so it
+  worked out of the box, but they depend on the keyboard layout: a Spanish keyboard doesn't
+  produce the same ones. Check several layouts before doing it.
+- **The note editor's state lives loose inside `interactive()`.** `editando` is touched at four
+  points of the loop: entering, initialising, resetting when the filter empties the list,
+  painting the prompt and handling keys. One of those already had to be fixed because it had
+  drifted. It fits as a small object (`.activo`, `.tecla(k)`, `.pintar()`) without splitting the
+  single file. It wasn't done because it touches the heart of the loop and the benefit is
+  organisational, not functional — but if one more key gets added to it (cursor with `←`/`→`),
+  do it first.
+- **The pty harness is duplicated** between `test_panel.py` and `make_demo.py`: fork,
+  `TIOCSWINSZ`, bounded draining, with the same justifying comment repeated and already drifting
+  (one polls at 0.15 s and the other at 0.1 s, for no reason). It would fit in a
+  `pty_harness.py` — they're development files, so it wouldn't break the "one script, no
+  dependencies" promise, which is about what gets distributed. It's ~30 hermetic, tested lines,
+  so there's no urgency.
+- **`test_panel.py` takes ~3 min** because it's ~80 real panel launches, serial and completely
+  independent (each with its own pty, subprocess and notes file). They'd parallelise well, but
+  that asks for `pytest-xdist` and the project prides itself on zero dependencies; someone would
+  have to decide whether a **development-only** dependency is acceptable. **Don't lower the
+  waits**: they're tuned against flakiness and they scale with `CCL_TEST_LENTO`.
+- **The table view isn't remembered between runs.** `Ctrl-T` switches the view for that panel
+  session and `ccl --table` starts in the table, but anyone who prefers it has to set up an
+  alias. Storing it in `ccl-notes.json` is five lines; it wasn't done because it opens the
+  question of what wins when the flag and the stored value disagree, and inventing a precedence
+  rule isn't worth it for a preference an alias solves.
+- **The table's columns are fixed-width.** A 40-character name gets clipped even when every other
+  one is short and there's room to spare. Fitting them to the actual content (measure the longest
+  and share out) looks better, but it makes the table **dance** between refreshes: one session
+  with a long name appearing moves every column. The widths would have to be pinned and only
+  recomputed when the window is resized.
+- **Paused sessions are never pruned**, same as notes. A `sessionId` is a UUID and never comes
+  back, so an orphan entry can't pause anyone by mistake; it only piles up bytes. If they're ever
+  pruned, it has to be with the list of live sessions at hand — never on save.

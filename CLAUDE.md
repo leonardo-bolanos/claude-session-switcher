@@ -181,11 +181,20 @@ sentido dejar sin panel al usuario porque una config extra este rota.
 | `README.md` | inglés — es la portada del repo |
 | `README.es.md` | español — traducción completa, misma estructura |
 | **La interfaz** (ayuda, errores, barra de estado) | **inglés por defecto, español si el locale lo pide** |
-| Código, comentarios, nombres de test, `CLAUDE.md`, `TODO.md` | español |
+| `TODO.md` | inglés — el README en inglés lo enlaza tres veces, y es donde se pide contribuir |
+| Código, comentarios, nombres de test, `CLAUDE.md`, los skills | español |
 
 La regla de fondo: **lo que ve quien USA la herramienta sigue su idioma; lo que ve quien TOCA el
-código va en español.** Los comentarios explican **por qué**, no qué hace la línea — casi todos
-apuntan a una de las trampas de arriba.
+código va en español.** `TODO.md` empezo en español por caer del lado del codigo, pero es
+contributor-facing: el README en ingles lo enlaza tres veces (incluido "What's missing") y ahi es
+donde se invita a abrir issues y PR. Quien llega a contribuir se topaba con una pared de español.
+
+Lo publico y en ingles, para no volver a mezclarlo: la descripcion del repo, los dos README (uno
+en cada idioma), `TODO.md`, las notas y titulos de las releases. Los mensajes de commit y las
+anotaciones de tag van en español, como el resto de lo que mira quien toca el codigo.
+
+Los comentarios explican **por qué**, no qué hace la línea — casi todos apuntan a una de las
+trampas de arriba.
 
 **Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
 mismo orden justamente para que el diff sea comparable.

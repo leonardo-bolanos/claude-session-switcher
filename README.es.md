@@ -397,7 +397,7 @@ Sin dependencias, sin paso de grabación manual, y no expone ninguno de tus repo
 ## Qué falta
 
 Terminal.app, Windows, otras terminales y algunos detalles menores, con lo ya investigado de cada
-uno: [TODO.md](TODO.md).
+uno: [TODO.md](TODO.md) (en inglés, como el resto de lo que mira quien vaya a contribuir).
 
 ## Licencia
 
