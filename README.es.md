@@ -334,19 +334,21 @@ Un par de detalles que costaron encontrar:
 
 ```bash
 python3 test_ccl.py         # lógica pura — rápido (~2 s)
-python3 test_panel.py       # el panel de verdad, sobre un pty (~1 min)
+python3 test_panel.py       # el panel de verdad, sobre un pty (~3 min)
 ```
 
 Sin dependencias, y **ninguno de los dos toca iTerm ni lanza `claude`**.
 
 `test_ccl.py` cubre la lógica pura: helpers de ancho, numeración estable, parseo de la salida de
-AppleScript, lectura de transcripts, agrupación y orden, filtro, multi-cuenta, formato de la
-tabla, la pantalla de ayuda, la decodificación de teclas y ratón, y el manejo de errores.
+AppleScript, lectura de transcripts, agrupación y orden, la pausa, el filtro, multi-cuenta, las
+columnas de las dos vistas, el listado estático, la pantalla de ayuda, la decodificación de
+teclas y ratón, y el manejo de errores.
 
 `test_panel.py` arranca **el panel entero en un pty** y comprueba lo que solo se ve corriéndolo:
-que las flechas y la rueda muevan el cursor donde deben, que un clic caiga en la fila correcta,
-que el doble clic abra y dos clics lentos no, que la ayuda pagine y que `--list` salga sin
-colores. Es hermético porque sustituye la lista de sesiones por datos sintéticos y deja el mapa de
+que las flechas y la rueda muevan el cursor donde deben, que un clic caiga en la fila correcta en
+las dos vistas, que el doble clic abra y dos clics lentos no, que el editor de notas se quede el
+teclado —un `Ctrl-P` en medio de la frase no puede pausar nada a tus espaldas—, que la ayuda
+pagine y que `--list` salga sin colores. Es hermético porque sustituye la lista de sesiones por datos sintéticos y deja el mapa de
 iTerm vacío: **el salto falla con elegancia y no le roba el foco a nadie**.
 
 Uno de ellos es un guardarraíl de diseño: comprueba que **ninguna acción cuelgue de una letra

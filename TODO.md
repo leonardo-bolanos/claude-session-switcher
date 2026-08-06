@@ -98,10 +98,21 @@ En orden de lo que parece más factible:
   0,15 s y el otro a 0,1 s, sin razón). Cabría en un `pty_harness.py` — son archivos de
   desarrollo, así que no rompería el «un solo script sin dependencias», que es sobre lo que se
   distribuye. Son ~30 líneas herméticas y probadas, así que la urgencia es baja.
-- **`test_panel.py` tarda ~2 min** porque son 46 arranques reales del panel, en serie y
+- **`test_panel.py` tarda ~3 min** porque son ~80 arranques reales del panel, en serie y
   totalmente independientes (cada uno con su pty, su subproceso y su archivo de notas). Se
   paralelizarían bien, pero eso pide `pytest-xdist` y el proyecto presume de cero dependencias;
   habría que decidir si se acepta una dependencia **solo de desarrollo**. **No bajar los tiempos
   de espera**: están ajustados contra intermitencias y se escalan con `CCL_TEST_LENTO`.
-- **Publicar una release etiquetada.** Un repo sin releases parece abandonado desde fuera, y un
-  `git clone` de `master` no dice qué versión estás usando. Basta un tag `v1.0.0` con notas.
+- **La vista de tabla no se recuerda entre ejecuciones.** `Ctrl-T` cambia la vista de esa sesión
+  del panel y `ccl --table` arranca en tabla, pero quien la prefiera siempre tiene que ponerse un
+  alias. Guardarla en `ccl-notes.json` son cinco líneas; no se hizo porque abre la pregunta de
+  qué manda cuando la bandera y lo guardado dicen cosas distintas, y por una preferencia que un
+  alias resuelve no vale la pena inventarse una precedencia.
+- **Las columnas de la tabla son de ancho fijo.** Un nombre de 40 caracteres se recorta aunque
+  todos los demás sean cortos y sobre sitio. Ajustarlas al contenido real (medir la columna más
+  larga y repartir) se ve mejor, pero hace que la tabla **baile** entre refrescos: al aparecer una
+  sesión con el nombre largo se mueven todas las columnas. Habría que fijar los anchos y solo
+  recalcularlos al cambiar el tamaño de la ventana.
+- **Las pausadas no se purgan nunca**, igual que las notas. Un `sessionId` es un UUID y no vuelve,
+  así que una entrada huérfana no puede pausar a nadie por error; solo acumula bytes. Si algún día
+  se purgan, tiene que ser con la lista de sesiones vivas delante — nunca al guardar.

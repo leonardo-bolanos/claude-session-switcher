@@ -12,11 +12,14 @@ Son herméticos: `assign_numbers` y `read_transcript` escriben/leen en directori
 temporales, nunca en el ~/.claude real del usuario que corra los tests.
 """
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 import unittest
@@ -581,6 +584,41 @@ class TestPausadas(unittest.TestCase):
         self.assertEqual(repo, {"/repos/web": "escrita con el formato viejo"})
         self.assertEqual((sesion, pausadas), ({}, set()))
 
+    def test_un_archivo_corrupto_no_impide_pausar(self):
+        """Mismo criterio que las notas: un archivo roto no puede tumbar el panel."""
+        os.makedirs(os.path.dirname(ccl.NOTES_FILE), exist_ok=True)
+        with open(ccl.NOTES_FILE, "w") as fh:
+            fh.write("{ esto no es json")
+        self.assertTrue(ccl.toggle_paused("sid-a"))
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+
+    def test_el_archivo_no_queda_legible_por_otros(self):
+        """Pausar puede CREAR el fichero: tiene que nacer con los mismos permisos."""
+        ccl.toggle_paused("sid-a")
+        modo = stat.S_IMODE(os.stat(ccl.NOTES_FILE).st_mode)
+        self.assertEqual(modo & 0o077, 0, f"permisos {oct(modo)}: legible por otros")
+
+    def test_una_fila_sin_el_campo_no_revienta(self):
+        """
+        `test_panel.py` y cualquier código que fabrique filas a mano se saltan `build`,
+        que es quien pone `paused`. Por eso se lee con `.get`, y esto lo fija.
+        """
+        cruda = row(1, "a", "idle", ts=iso(minutes=1))
+        del cruda["paused"]
+        self.assertTrue(ccl.waiting_rows([cruda]))
+        self.assertTrue(ccl.grouped([cruda]))
+        self.assertEqual(ccl.estado_de(cruda)[0], ccl.t("grupo_idle"))
+
+    def test_estado_de_coincide_con_el_grupo_que_le_toca(self):
+        """La columna de estado de la tabla y la cabecera de grupo no pueden discrepar."""
+        rows = [row(1, "a", "busy", ts=iso(minutes=1)),
+                row(2, "b", "idle", ts=iso(minutes=2)),
+                row(3, "c", "idle", ts=iso(minutes=3), paused=True),
+                row(4, "d", "idle", ts=iso(minutes=4), kind="background")]
+        for etiqueta, _, items in ccl.grouped(rows):
+            for r in items:
+                self.assertEqual(ccl.estado_de(r)[0], etiqueta, r["sessionId"])
+
     def test_un_archivo_que_solo_tiene_pausadas_no_las_lee_como_notas(self):
         """Sin la clave en la deteccion del formato, {"pausadas": [...]} se leia como el
         formato viejo y la lista acababa de nota de un repo llamado "pausadas"."""
@@ -656,6 +694,68 @@ class TestTabla(unittest.TestCase):
     def test_la_cuenta_solo_ocupa_columna_si_hay_varias(self):
         self.assertNotIn("account", [k for k, _ in ccl._tabla_columnas(120, False)])
         self.assertIn("account", [k for k, _ in ccl._tabla_columnas(120, True)])
+
+    def test_con_varias_cuentas_tampoco_desborda(self):
+        """La cuenta son once columnas mas: corre los umbrales de las prescindibles."""
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r["account"] = "trabajo"
+        for ancho in (80, 100, 120, 160):
+            self.assertLessEqual(ccl.vis(ccl.table_line(r, ancho, True)), ancho,
+                                 f"ancho={ancho}")
+
+    def test_vista_elige_el_constructor(self):
+        """Las dos vistas devuelven los MISMOS roles: es lo que hace que el cursor, el
+        clic y el scroll no se enteren de cuál está puesta."""
+        rows = self.filas()
+        self.assertEqual(ccl.vista(rows, 120, True),
+                         ccl.build_table_display(rows, 120))
+        self.assertEqual(ccl.vista(rows, 120, False), ccl.build_display(rows, 120))
+        for lineas in (ccl.vista(rows, 120, True), ccl.vista(rows, 120, False)):
+            self.assertLessEqual({rol for rol, _, _ in lineas},
+                                 {"head", "main", "sub", "blank"})
+
+    def test_se_construye_mas_estrecha_que_la_ventana(self):
+        """
+        El panel pinta cada fila como `clip(texto, cols - 4)` y las cabeceras NO las
+        recorta: construyendo al ancho entero, el recorte se comía la última columna y
+        la cabecera se salía una posición.
+        """
+        for ancho in (80, 100, 128):
+            for _, texto, _ in ccl.build_table_display(self.filas(), width=ancho):
+                self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
+
+
+class TestListadoEstatico(unittest.TestCase):
+    """`--list`, con y sin `--table`. Es la salida que la gente mete en una tubería."""
+
+    def _render(self, tabla):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ccl.render([row(1, "a", "busy", ts=iso(minutes=1)),
+                        row(2, "b", "idle", ts=iso(minutes=2)),
+                        row(3, "c", "idle", ts=iso(minutes=3), paused=True)], tabla)
+        return ccl.ANSI_RE.sub("", buf.getvalue())
+
+    def test_la_tabla_lleva_cabecera_y_una_linea_por_sesion(self):
+        lineas = [l for l in self._render(True).split("\n") if l.strip()]
+        self.assertIn(ccl.t("col_estado"), lineas[0])
+        self.assertEqual(len(lineas), 4, "cabecera + tres sesiones")
+
+    def test_la_tabla_no_repite_las_cabeceras_de_grupo(self):
+        salida = self._render(True)
+        self.assertNotIn(f"{ccl.t('grupo_idle')} (", salida)
+        # pero el estado sigue estando, ahora en su columna
+        for clave in ("grupo_busy", "grupo_idle", "grupo_pausa"):
+            self.assertIn(ccl.t(clave), salida)
+
+    def test_la_vista_normal_sigue_siendo_de_dos_lineas_por_grupo(self):
+        salida = self._render(False)
+        self.assertIn(f"{ccl.t('grupo_pausa')} (1)", salida)
+
+    def test_las_dos_vistas_enseñan_las_mismas_sesiones(self):
+        for vista in (self._render(True), self._render(False)):
+            for n in ("[ 1]", "[ 2]", "[ 3]"):
+                self.assertIn(n, vista)
 
 
 # ────────────────────── errores al consultar `claude` ──────────────────────
@@ -1109,7 +1209,6 @@ class TestSaneado(unittest.TestCase):
         ccl.NOTES_FILE = os.path.join(tmp, "notas.json")
         try:
             ccl.save_note("sid-1", "algo privado")
-            import stat
             modo = stat.S_IMODE(os.stat(ccl.NOTES_FILE).st_mode)
             self.assertEqual(modo & 0o077, 0, f"permisos {oct(modo)}: legible por otros")
         finally:
@@ -1406,6 +1505,16 @@ class TestLecturaDeTeclas(unittest.TestCase):
         """Un emoji son 4 bytes; nadie lo escribira en un filtro, pero no debe colgarse."""
         self.assertEqual(self._pulsar("🎉".encode()), "🎉")
 
+    def test_las_teclas_de_accion_llegan_con_su_nombre(self):
+        """
+        Ctrl-N, Ctrl-P y Ctrl-T. Van en teclas de control y no en letras porque
+        cualquier letra empieza a filtrar; que `read_key` las traduzca es lo que hace
+        que el bucle del panel no tenga que saber de bytes.
+        """
+        for data, esperado in ((b"\x0e", "note"), (b"\x10", "pause"),
+                               (b"\x14", "table")):
+            self.assertEqual(self._pulsar(data), esperado, repr(data))
+
     def test_ctrl_r_y_digitos(self):
         self.assertEqual(self._pulsar(b"\x12"), "refresh")
         self.assertEqual(self._pulsar(b"3"), "3")
@@ -1437,7 +1546,7 @@ class TestAyuda(unittest.TestCase):
 
     def test_render_documenta_las_teclas_de_accion(self):
         plano = self._texto_completo()
-        for tecla in ("Ctrl-R", "Ctrl-N", "?", "enter", "esc"):
+        for tecla in ("Ctrl-R", "Ctrl-N", "Ctrl-P", "Ctrl-T", "?", "enter", "esc"):
             self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
 
     def test_documenta_como_copiar(self):

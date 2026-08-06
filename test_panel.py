@@ -537,6 +537,19 @@ class TestSinPanel(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("panel interactivo", r.stdout)
 
+    def test_list_table_es_una_linea_por_sesion_y_sin_color(self):
+        """`ccl --list --table | pbcopy`: la tabla tambien tiene que salir pegable."""
+        r = self._correr("--list", "--table")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("\033", r.stdout)
+        lineas = [l for l in r.stdout.split("\n") if l.strip()]
+        self.assertIn("estado", lineas[0], "falta la cabecera de columnas")
+        self.assertEqual(len(lineas), 1 + len(NOMBRES))
+        for nombre in NOMBRES:
+            fila = next(l for l in lineas if nombre in l)
+            self.assertIn("ESPERANDO", fila, "falta la columna de estado")
+            self.assertIn("prompt de " + nombre, fila, "el detalle deberia ir aqui")
+
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestNotas(unittest.TestCase):
@@ -722,6 +735,17 @@ class TestPausadas(unittest.TestCase):
         with con_panel(notas=archivo) as q:
             self.assertIn("PAUSADAS (1)", q.ultima())
 
+    def test_no_pausa_mientras_escribes_la_nota(self):
+        """
+        El editor se queda el teclado, y eso incluye las teclas de accion: un `Ctrl-P`
+        en medio de la frase no puede pausar la sesion a tus espaldas. `\\x10` no es
+        imprimible, asi que el editor lo ignora y ni siquiera ensucia el texto.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"a la mitad", b"\x10", b" de la frase", b"\r")
+            self.assertNotIn("PAUSADAS", p.ultima(), "Ctrl-P pausó estando en el editor")
+            self.assertIn("✎ a la mitad de la frase", p.ultima())
+
     def test_pausar_no_se_lleva_por_delante_la_nota(self):
         """Comparten archivo: con dos escritores, guardar una borraba la otra."""
         archivo = os.path.join(_NOTAS_TMP, "pausa-y-nota.json")
@@ -781,6 +805,45 @@ class TestVistaDeTabla(unittest.TestCase):
         with con_panel(entorno={"CCL_TEST_ARGS": "--table"}) as p:
             self.assertIn("estado", p.ultima())
             self.assertNotIn("ESPERANDO (4)", p.ultima())
+
+    def test_no_cambia_de_vista_mientras_escribes_la_nota(self):
+        """El editor se queda el teclado: `Ctrl-T` no puede cambiar la vista debajo."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"sin cambiar", b"\x14", b" de vista", b"\r")
+            self.assertIn("ESPERANDO (4)", p.ultima(), "Ctrl-T actuó desde el editor")
+            self.assertIn("✎ sin cambiar de vista", p.ultima())
+
+    def test_el_filtro_sigue_funcionando_en_tabla(self):
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            p.enviar(b"gamma")
+            self.assertIn("1 coincide", p.barra())
+            pantalla = p.ultima()
+            self.assertIn("estado", pantalla, "se perdió la cabecera de columnas")
+            self.assertIn("gamma", pantalla)
+            self.assertNotIn("alfa", pantalla)
+
+    def test_un_clic_cae_en_la_fila_correcta(self):
+        """
+        El mapa fila-de-terminal → sesion se construye PINTANDO, no calculando. La tabla
+        tiene otra geometria (cabecera de columnas y una sola linea por sesion), asi que
+        es justo donde un mapa calculado aparte mandaria el clic a la sesion vecina.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            pantalla = p.ultima().split("\n")
+            fila = next(i for i, l in enumerate(pantalla, 1) if "delta" in l)
+            p.enviar(press(fila))
+            self.assertEqual(p.cursor(), "delta")
+
+    def test_un_clic_en_la_cabecera_no_mueve_el_cursor(self):
+        """La cabecera de columnas no es seleccionable: rol 'head', sin fila detrás."""
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            pantalla = p.ultima().split("\n")
+            fila = next(i for i, l in enumerate(pantalla, 1) if "estado" in l)
+            p.enviar(press(fila))
+            self.assertEqual(p.cursor(), "alfa")
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

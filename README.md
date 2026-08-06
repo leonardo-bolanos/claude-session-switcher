@@ -330,19 +330,20 @@ Two things that cost time to find:
 
 ```bash
 python3 test_ccl.py         # pure logic — fast (~2 s)
-python3 test_panel.py       # the real panel, over a pty (~1 min)
+python3 test_panel.py       # the real panel, over a pty (~3 min)
 ```
 
 No dependencies, and **neither of them touches iTerm or runs `claude`**.
 
 `test_ccl.py` covers the pure logic: width helpers, stable numbering, AppleScript output parsing,
-transcript reading, grouping and ordering, filtering, multi-account, table formatting, the help
-screen, key and mouse decoding, and error handling.
+transcript reading, grouping and ordering, pausing, filtering, multi-account, both views' column
+layout, the static listing, the help screen, key and mouse decoding, and error handling.
 
 `test_panel.py` boots **the whole panel in a pty** and checks what you can only see by running
-it: that arrows and wheel move the cursor where they should, that a click lands on the right row,
-that a double click opens and two slow clicks don't, that help paginates, and that `--list` comes
-out without colours. It's hermetic because it swaps the session list for synthetic data and
+it: that arrows and wheel move the cursor where they should, that a click lands on the right row
+in either view, that a double click opens and two slow clicks don't, that the note editor keeps
+the keyboard so `Ctrl-P` in mid-sentence doesn't pause anything behind your back, that help
+paginates, and that `--list` comes out without colours. It's hermetic because it swaps the session list for synthetic data and
 leaves the iTerm map empty: **the jump fails gracefully and steals nobody's focus**.
 
 One test is a design guardrail: it checks that **no action hangs off a bare letter**, because any
