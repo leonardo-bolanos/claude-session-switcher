@@ -7,6 +7,7 @@ Uso:
     ccl --list       solo lista, sin interaccion
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
+    ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -46,7 +47,7 @@ import tty
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")
@@ -69,6 +70,7 @@ Usage:
     ccl --list       listing only, no interaction
     ccl <n>          jump straight to session number <n>
     ccl -w <n>       jump to the <n>th WAITING session (the first one by default)
+    ccl --table      one line per session, in columns (Ctrl-T toggles it live)
     ccl --version    print the version
 
 `-w` is meant to hang off a global shortcut (Hammerspoon, Raycast) and jump to whoever is
@@ -81,6 +83,11 @@ runs even as the list reorders. It's recycled when the session dies.
 Ctrl-N writes your own note on a session, stored in ~/.claude/ccl-notes.json. A session
 with no note of its own falls back to its repo's note (`por_repo` in that file). Filtering
 searches notes too.
+
+Ctrl-P puts a session on PAUSED: it's the one waiting on something that isn't you (a
+colleague's answer, a deploy, a review). Paused sessions get their own group and leave
+WAITING, so `-w` and Option-1..9 skip them. It's a mark of yours, stored in the same
+file (`pausadas`) — Claude Code can't tell the difference on its own.
 
 Requires macOS + iTerm2 (the window jump uses AppleScript) and Python 3.7+.
 
@@ -104,6 +111,8 @@ Uso:
     ccl --list       solo lista, sin interaccion
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
+    ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
+    ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
 quien te espera sin abrir el panel: no necesita TTY y sale al momento. Dentro del panel
@@ -115,6 +124,11 @@ mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la se
 Ctrl-N escribe tu propia nota sobre una sesion, en ~/.claude/ccl-notes.json. Una sesion
 sin nota propia muestra la de su repo (`por_repo` en ese archivo). Tambien se busca por
 ellas al filtrar.
+
+Ctrl-P pone una sesion en PAUSADAS: la que espera algo que no eres tu (que conteste un
+compañero, un despliegue, una revision). Van a su propio grupo y salen de ESPERANDO, asi
+que `-w` y Option-1..9 se las saltan. Es una marca tuya, guardada en el mismo archivo
+(`pausadas`) — Claude Code no puede distinguirlo solo.
 
 Requiere macOS + iTerm2 (el salto de ventana usa AppleScript) y Python 3.7+.
 
@@ -167,7 +181,17 @@ TEXTOS = {
         # grupos del panel
         "grupo_busy": "WORKING",
         "grupo_idle": "WAITING",
+        "grupo_pausa": "PAUSED",
         "grupo_bg": "BACKGROUND",
+        # cabeceras de la vista de tabla
+        "col_estado": "state",
+        "col_sesion": "session",
+        "col_repo": "repo",
+        "col_cuenta": "account",
+        "col_rama": "branch",
+        "col_modelo": "model",
+        "col_visto": "seen",
+        "col_nota": "note / last prompt",
         # antiguedad
         "ahora": "now",
         "hace_min": "{n}m ago",
@@ -216,11 +240,15 @@ TEXTOS = {
         "nota_prompt": "✎ note for {repo}: ",
         "nota_teclas": "  enter saves · empty deletes · esc cancels",
         "nota_perdida": "✎ that session is gone: note not saved",
+        "pausada": "⏸ {name} paused",
+        "reanudada": "▶ {name} waiting again",
         # barra de estado
         "barra_mover": " move  ",
         "barra_abrir": " open  ",
         "barra_esperando": " waiting  ",
         "barra_nota": " note  ",
+        "barra_pausa": " pause  ",
+        "barra_tabla": " table  ",
         "barra_escribe": "type",
         "barra_filtrar": " filter  ",
         "barra_ayuda": " help",
@@ -235,7 +263,16 @@ TEXTOS = {
     "es": {
         "grupo_busy": "TRABAJANDO",
         "grupo_idle": "ESPERANDO",
+        "grupo_pausa": "PAUSADAS",
         "grupo_bg": "BACKGROUND",
+        "col_estado": "estado",
+        "col_sesion": "sesión",
+        "col_repo": "repo",
+        "col_cuenta": "cuenta",
+        "col_rama": "rama",
+        "col_modelo": "modelo",
+        "col_visto": "visto",
+        "col_nota": "nota / último prompt",
         "ahora": "ahora",
         "hace_min": "hace {n}m",
         "hace_hora": "hace {n}h",
@@ -280,10 +317,14 @@ TEXTOS = {
         "nota_prompt": "✎ nota de {repo}: ",
         "nota_teclas": "  enter guarda · vacía borra · esc cancela",
         "nota_perdida": "✎ esa sesión ya no está: nota sin guardar",
+        "pausada": "⏸ {name} en pausa",
+        "reanudada": "▶ {name} vuelve a esperando",
         "barra_mover": " mover  ",
         "barra_abrir": " abrir  ",
         "barra_esperando": " esperando  ",
         "barra_nota": " nota  ",
+        "barra_pausa": " pausa  ",
+        "barra_tabla": " tabla  ",
         "barra_escribe": "escribe",
         "barra_filtrar": " filtrar  ",
         "barra_ayuda": " ayuda",
@@ -741,9 +782,13 @@ def assign_numbers(sessions):
 # ─────────────────────────── notas personales ───────────────────────────
 
 
-def load_notes():
+def load_state():
     """
-    ({sessionId: nota}, {cwd: nota}) — tus notas, por sesion y por repo.
+    ({sessionId: nota}, {cwd: nota}, {sessionId pausados}) — todo lo que marcaste tu.
+
+    Un solo lector para las tres cosas porque comparten archivo, y **un solo escritor**
+    (`guardar_estado`): mientras `save_note` se escribia el JSON entero por su cuenta,
+    cualquier clave nueva —las pausadas— desaparecia al guardar una nota.
 
     Van por **sesion**, y la del repo es el respaldo: si una sesion no tiene nota propia,
     se ve la de su directorio. Las dos cosas hacen falta porque son dos usos distintos:
@@ -755,12 +800,12 @@ def load_notes():
       - "backend de facturacion" describe el repo y vale para todas sus sesiones, y encima
         sobrevive a reiniciar Claude Code (que cambia el sessionId).
 
-    En disco: {"por_sesion": {...}, "por_repo": {...}}. Se acepta tambien el formato viejo
-    —un dict plano {cwd: nota}— y se lee como `por_repo`: quien ya tenia notas escritas no
-    puede perderlas por un cambio de formato.
+    En disco: {"por_sesion": {...}, "por_repo": {...}, "pausadas": [...]}. Se acepta tambien
+    el formato viejo —un dict plano {cwd: nota}— y se lee como `por_repo`: quien ya tenia
+    notas escritas no puede perderlas por un cambio de formato.
     """
     datos = leer_json(NOTES_FILE, {})
-    if "por_sesion" in datos or "por_repo" in datos:
+    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas")):
         crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
     else:
         crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
@@ -772,7 +817,23 @@ def load_notes():
             return {}
         return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, str)}
 
-    return limpio(crudo_sesion), limpio(crudo_repo)
+    crudo_pausa = datos.get("pausadas")
+    pausadas = ({s for s in crudo_pausa if isinstance(s, str)}
+                if isinstance(crudo_pausa, (list, set)) else set())
+    return limpio(crudo_sesion), limpio(crudo_repo), pausadas
+
+
+def load_notes():
+    """Solo las notas. Es lo que quiere casi todo el mundo: pintar la linea de detalle."""
+    sesion, repo, _ = load_state()
+    return sesion, repo
+
+
+def guardar_estado(sesion, repo, pausadas):
+    """El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff
+    del JSON sea legible si alguien lo abre a mano."""
+    escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo,
+                               "pausadas": sorted(pausadas)})
 
 
 def note_for(row, notas_sesion, notas_repo):
@@ -791,14 +852,38 @@ def save_note(session_id, nota):
     externo desmontado o un repo movido de sitio borraria algo escrito a mano, y el archivo
     son unos pocos KB aunque acumule.
     """
-    sesion, repo = load_notes()
+    sesion, repo, pausadas = load_state()
     nota = " ".join(sin_control(str(nota)).split())[:NOTE_MAX]   # una linea, sin control
     if nota:
         sesion[session_id] = nota
     else:
         sesion.pop(session_id, None)
-    escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo})
+    guardar_estado(sesion, repo, pausadas)
     return nota
+
+
+def toggle_paused(session_id):
+    """
+    Marca o desmarca una sesion como pausada. Devuelve si queda pausada.
+
+    Pausada = esperando algo que no eres tu (que conteste alguien, que acabe un
+    despliegue). `claude agents --json` no puede saberlo —solo distingue busy/idle— asi
+    que es una marca tuya y vive con las notas, en el mismo archivo y con los mismos
+    permisos.
+
+    No se purgan las de sesiones muertas, por lo mismo que las notas: un sessionId es un
+    UUID y no se reutiliza, asi que una entrada huerfana no puede pausar a nadie por
+    error, y son unos bytes.
+    """
+    sesion, repo, pausadas = load_state()
+    if session_id in pausadas:
+        pausadas.discard(session_id)
+        queda = False
+    else:
+        pausadas.add(session_id)
+        queda = True
+    guardar_estado(sesion, repo, pausadas)
+    return queda
 
 
 # ─────────────────────────────── formato ───────────────────────────────
@@ -893,7 +978,8 @@ def short_model(m):
 
 def build(sessions, ttys, iterm, numbers):
     rows = []
-    notas_sesion, notas_repo = load_notes()   # una lectura por refresco: es diminuto
+    # una lectura por refresco: es diminuto
+    notas_sesion, notas_repo, pausadas = load_state()
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
@@ -916,6 +1002,7 @@ def build(sessions, ttys, iterm, numbers):
             "title": sin_control(info.get("title")),
             "prompt": sin_control(info.get("prompt")),
             "note": "",   # se rellena abajo, cuando la fila ya existe
+            "paused": s["sessionId"] in pausadas,
             "startedAt": s.get("startedAt", 0),
         })
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
@@ -953,14 +1040,19 @@ def multi_account(rows):
 
 def is_waiting(row):
     """
-    True si la sesion esta esperando algo tuyo: interactiva y no ocupada.
+    True si la sesion esta esperando algo TUYO: interactiva, no ocupada y sin pausar.
 
     OJO con el nombre: `claude agents --json` solo distingue busy/idle, no existe un
     "esperando tu respuesta" real (ver CLAUDE.md). Esto es lo mas cerca que se puede
     estar. Compartido con `grouped` a proposito, para que "la primera esperando" sea
     literalmente la primera que se ve en el panel y no dos criterios que se separan.
+
+    Las pausadas quedan fuera, y ese es el sentido de la pausa: una sesion parada porque
+    espera a otra persona sale idle igual que una que te espera a ti, y colarse en
+    `-w`/⌥N te mandaba justo a la que no puedes desatascar.
     """
-    return row["status"] != "busy" and row["kind"] != "background"
+    return (not row.get("paused") and row["status"] != "busy"
+            and row["kind"] != "background")
 
 
 def waiting_rows(rows):
@@ -989,17 +1081,37 @@ def pick_waiting(rows, n):
 
 
 def grouped(rows):
-    """[(etiqueta, color, filas-ordenadas)] — grupos vacios se omiten."""
+    """
+    [(etiqueta, color, filas-ordenadas)] — grupos vacios se omiten.
+
+    Los grupos son EXCLUYENTES y en este orden: lo que corre, lo que te espera a ti, lo
+    que espera a otro, y el background. Una pausada que vuelve a estar `busy` se pinta en
+    TRABAJANDO: si esta trabajando no espera a nadie, y dejarla abajo la escondia.
+    """
+    pausadas = [r for r in rows if r.get("paused") and r["status"] != "busy"]
     out = [
         (t("grupo_busy"), GREEN, [r for r in rows if r["status"] == "busy"]),
         (t("grupo_idle"), YELLOW, waiting_rows(rows)),
+        (t("grupo_pausa"), BLUE, pausadas),
     ]
     # Grupos de background: solo si existen de verdad
-    bg = [r for r in rows if r["kind"] == "background" and r["status"] != "busy"]
+    bg = [r for r in rows if r["kind"] == "background" and r["status"] != "busy"
+          and not r.get("paused")]
     if bg:
         out.append((t("grupo_bg"), CYAN, bg))
     return [(lbl, col, sorted(items, key=sort_key, reverse=True))
             for lbl, col, items in out if items]
+
+
+def estado_de(row):
+    """(etiqueta, color) del grupo al que pertenece la fila. Para la columna de estado."""
+    if row["status"] == "busy":
+        return t("grupo_busy"), GREEN
+    if row.get("paused"):
+        return t("grupo_pausa"), BLUE
+    if row["kind"] == "background":
+        return t("grupo_bg"), CYAN
+    return t("grupo_idle"), YELLOW
 
 
 def main_line(r, show_account=False):
@@ -1032,11 +1144,90 @@ def detail_line(r, width=None):
     return clip(out, width) if width else out
 
 
-def render(rows):
-    """Listado estatico de dos lineas por sesion (para --list y terminales sin TTY)."""
+# ─────────────────────────── vista de tabla ───────────────────────────
+#
+# La otra forma de mirar lo mismo: una linea por sesion en vez de dos, sin cabeceras de
+# grupo y con el estado en una columna. Con muchas sesiones la vista de dos lineas no cabe
+# en la pantalla y hay que hacer scroll para contarlas; asi entran el doble de un vistazo.
+#
+# El precio es el ancho: no caben todas las columnas en 80. En vez de recortarlas todas
+# hasta hacerlas ilegibles, las prescindibles (rama, modelo) DESAPARECEN por debajo de su
+# umbral, y lo que sobra se lo queda la nota. La cuenta corre los umbrales porque ocupa
+# once columnas que en el caso normal (una sola cuenta) no existen.
+
+
+def _tabla_columnas(width, multi):
+    """[(clave, ancho)] de las columnas fijas que caben en `width`."""
+    extra = 11 if multi else 0
+    cols = [("num", 5), ("estado", 11), ("name", 28)]
+    if multi:
+        cols.append(("account", 11))
+    cols.append(("repo", 14))
+    if width >= 106 + extra:
+        cols.append(("branch", 13))
+    if width >= 120 + extra:
+        cols.append(("model", 9))
+    # 13, no 9: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas. Con
+    # nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
+    cols.append(("ts", 13))
+    return cols
+
+
+def table_head(width=100, show_account=False):
+    """La fila de nombres de columna. Alineada con `table_line` por construccion."""
+    etiquetas = {"num": "#", "estado": t("col_estado"), "name": t("col_sesion"),
+                 "account": t("col_cuenta"), "repo": t("col_repo"),
+                 "branch": t("col_rama"), "model": t("col_modelo"),
+                 "ts": t("col_visto")}
+    fijas = "".join(pad(clip(etiquetas[k], a - 1), a)
+                    for k, a in _tabla_columnas(width, show_account))
+    # el clip final vale para las dos: en una ventana muy estrecha lo que sobra es el
+    # nombre de la ultima columna, no la cabecera envolviendose sobre la primera fila
+    return DIM(clip(fijas + t("col_nota"), width))
+
+
+def table_line(r, width=100, show_account=False):
+    """Una sesion en una sola linea, en columnas."""
+    etiqueta, color = estado_de(r)
+    celda = {
+        "num": CYAN(BOLD(f"[{r['num']:>2}]")),
+        "estado": color(etiqueta),
+        "name": BOLD(r["name"]),
+        "account": GREY(r.get("account") or ""),
+        "repo": MAGENTA(r["repo"]),
+        "branch": GREY(r["branch"] or ""),
+        "model": color_model(r["model"]),
+        "ts": color_age(r["ts"]),
+    }
+    columnas = _tabla_columnas(width, show_account)
+    # `clip` a ancho-1 antes de `pad`: garantiza al menos un espacio entre columnas
+    # aunque el contenido llegue justo, que es lo que las mantiene legibles.
+    fijas = "".join(pad(clip(celda[k], a - 1), a) for k, a in columnas)
+    warn = RED(" ⚠") if not r["iterm"] else ""
+
+    cola = NOTE("✎ " + r["note"]) if r.get("note") else ""
+    prompt = " ".join(str(r["prompt"] or r["title"] or "").split())
+    if prompt:
+        entrecomillado = DIM('"') + prompt + DIM('"')
+        cola = f"{cola}{DIM(' · ')}{entrecomillado}" if cola else entrecomillado
+    # el ⚠ se descuenta ANTES de recortar: si no, la fila de una sesion sin ventana
+    # sobresalia dos columnas justo cuando ya iba al limite
+    resto = max(0, width - sum(a for _, a in columnas) - 2 - vis(warn))
+    return clip(fijas + clip(cola, resto) + warn, width)
+
+
+def render(rows, tabla=False):
+    """Listado estatico (para --list y terminales sin TTY)."""
     width = (os.get_terminal_size().columns if sys.stdout.isatty() else 110)
     multi = multi_account(rows)
     print()
+    if tabla:
+        print("  " + table_head(width - 2, multi))
+        for _, _, items in grouped(rows):
+            for r in items:
+                print("  " + table_line(r, width - 2, multi))
+        print()
+        return
     for label, color, items in grouped(rows):
         print(color(BOLD(f"  {label} ({len(items)})")))
         print()
@@ -1168,6 +1359,10 @@ def read_key(timeout=None):
             return "refresh"
         if ch == "\x0e":            # Ctrl-N: escribir la nota de este repo
             return "note"
+        if ch == "\x10":            # Ctrl-P: pausar / reanudar esta sesion
+            return "pause"
+        if ch == "\x14":            # Ctrl-T: cambiar entre lista y tabla
+            return "table"
         if ch == "\x7f":
             return "back"
         return ch
@@ -1267,6 +1462,19 @@ HELP_EN = [
         ("",           "one (in ~/.claude/ccl-notes.json, under por_repo)"),
         ("",           "filtering searches it too"),
     ]),
+    ("paused: waiting on someone else", [
+        ("Ctrl-P",     "pause THIS session, or bring it back"),
+        ("",           "for the one waiting on a colleague, a deploy, a review"),
+        ("",           "paused ones get their own group and leave WAITING,"),
+        ("",           "so ⌥1-9 and ccl -w skip them"),
+        ("",           "it's your own mark: Claude Code only reports busy/idle"),
+    ]),
+    ("table view", [
+        ("Ctrl-T",     "one line per session, in columns, with a state column"),
+        ("",           "twice as many fit on screen; branch and model drop"),
+        ("",           "off on a narrow window"),
+        ("ccl --table", "start that way (ccl --list --table also works)"),
+    ]),
     ("filtering", [
         ("any letter", "starts filtering by name, repo, branch, account or note"),
         ("",           "ignores case and accents; several terms combine"),
@@ -1319,6 +1527,19 @@ HELP_ES = [
         ("",           "sin nota propia, una sesión muestra la de su repo"),
         ("",           "(en ~/.claude/ccl-notes.json, bajo por_repo)"),
         ("",           "también se busca por ella al filtrar"),
+    ]),
+    ("pausadas: esperan a otro, no a ti", [
+        ("Ctrl-P",     "pausar ESTA sesión, o traerla de vuelta"),
+        ("",           "para la que espera a un compañero, un despliegue, una revisión"),
+        ("",           "las pausadas van a su grupo y salen de ESPERANDO,"),
+        ("",           "así que ⌥1-9 y ccl -w se las saltan"),
+        ("",           "es marca tuya: Claude Code solo dice busy/idle"),
+    ]),
+    ("vista de tabla", [
+        ("Ctrl-T",     "una línea por sesión, en columnas, con columna de estado"),
+        ("",           "caben el doble; la rama y el modelo desaparecen"),
+        ("",           "si la ventana es estrecha"),
+        ("ccl --table", "arrancar así (también vale ccl --list --table)"),
     ]),
     ("filtrar", [
         ("cualquier letra", "empieza a filtrar por nombre, repo, rama, cuenta o nota"),
@@ -1428,14 +1649,39 @@ def build_display(rows, width=100):
     return lines
 
 
-def interactive(feed):
+def build_table_display(rows, width=100):
+    """
+    Lo mismo que `build_display`, en tabla: cabecera de columnas y una linea por sesion.
+
+    Devuelve los MISMOS roles a proposito. Asi el cursor, el clic, el scroll y la
+    cabecera fija siguen funcionando sin enterarse de que vista esta puesta: la unica
+    diferencia entre las dos vistas es la lista de lineas que produce cada una.
+    """
+    # -4: es lo que el panel deja para el margen y la barra del cursor (pinta cada fila
+    # como `clip(texto, cols - 4)`). Construyendo a `width` a secas, el recorte de pintar
+    # se comia la ultima columna y la cabecera, que NO se recorta, se salia una posicion.
+    ancho = max(40, width - 4)
+    multi = multi_account(rows)
+    lines = [("head", table_head(ancho, multi), None)]
+    for _, _, items in grouped(rows):
+        for r in items:
+            lines.append(("main", table_line(r, ancho, multi), r))
+    return lines
+
+
+def vista(rows, width, tabla):
+    """El constructor de lineas que toca segun la vista activa."""
+    return build_table_display(rows, width) if tabla else build_display(rows, width)
+
+
+def interactive(feed, tabla=False):
     """
     Panel vivo: flechas, numero o clic para elegir; Enter o doble clic para saltar.
     NO se cierra al saltar — sigue abierto y refrescandose hasta que pulses esc/q.
     """
     cols0 = os.get_terminal_size().columns if sys.stdout.isatty() else 100
     rows, stamp = feed.snapshot()
-    lines = build_display(rows, cols0)  # query vacia al arrancar
+    lines = vista(rows, cols0, tabla)  # query vacia al arrancar
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = lines[pickable[0]][2]["sessionId"] if pickable else None
     typed, top, flash, query = "", 0, "", ""
@@ -1468,7 +1714,7 @@ def interactive(feed):
             if new_stamp != stamp or now_cols != last_cols or requery:
                 stamp, rows, last_cols, requery = new_stamp, fresh, now_cols, False
                 shown = [r for r in rows if matches(r, query)]
-                lines = build_display(shown, now_cols)
+                lines = vista(shown, now_cols, tabla)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
                 if pickable and not any(lines[i][2]["sessionId"] == sel_id for i in pickable):
                     sel_id = lines[pickable[0]][2]["sessionId"]  # el filtro dejo fuera al cursor
@@ -1586,11 +1832,16 @@ def interactive(feed):
                     else:
                         buf.append("\r\n")
 
-                hint = (DIM("↑↓") + t("barra_mover") + DIM("enter") + t("barra_abrir")
-                        + CYAN("⌥1-9") + DIM(t("barra_esperando"))
-                        + CYAN("^N") + DIM(t("barra_nota"))
-                        + DIM(t("barra_escribe")) + t("barra_filtrar")
-                        + CYAN("?") + DIM(t("barra_ayuda")))
+                # Se recorta al ancho: con seis atajos la barra ya no cabe en una
+                # ventana estrecha, y al envolverse empujaba el panel una linea hacia
+                # arriba en cada repintado.
+                hint = clip(DIM("↑↓") + t("barra_mover") + DIM("enter") + t("barra_abrir")
+                            + CYAN("⌥1-9") + DIM(t("barra_esperando"))
+                            + CYAN("^N") + DIM(t("barra_nota"))
+                            + CYAN("^P") + DIM(t("barra_pausa"))
+                            + CYAN("^T") + DIM(t("barra_tabla"))
+                            + DIM(t("barra_escribe")) + t("barra_filtrar")
+                            + CYAN("?") + DIM(t("barra_ayuda")), cols - 2)
                 if editando is not None:
                     # el cursor ▏ hace falta: sin el, una nota vacia no se distingue de
                     # "no estoy en modo edicion" y parece que la tecla no hizo nada
@@ -1692,6 +1943,21 @@ def interactive(feed):
                 editando = objetivo.get("note") or ""
                 editando_sid = objetivo["sessionId"]
                 editando_repo = os.path.basename(objetivo["cwd"])
+            elif k == "pause":
+                # Ctrl-P: esta sesion espera a otro, no a mi. Se aplica YA en memoria por
+                # lo mismo que la nota: hasta el refresco siguiente (4 s) no se movería de
+                # grupo y parecería que la tecla no hizo nada.
+                objetivo = lines[cl][2]
+                en_pausa = toggle_paused(objetivo["sessionId"])
+                for r in rows:
+                    if r["sessionId"] == objetivo["sessionId"]:
+                        r["paused"] = en_pausa
+                flash = t("pausada" if en_pausa else "reanudada", name=objetivo["name"])
+                requery = True
+            elif k == "table":
+                # Ctrl-T: la misma lista en columnas. El cursor sigue al sessionId, asi
+                # que cambiar de vista no lo mueve de sesion.
+                tabla, requery = not tabla, True
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra
@@ -1839,7 +2105,7 @@ def parse_args(argv):
     tarda mas en importarse que todo lo demas en arrancar.
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
-            "version": False}
+            "version": False, "table": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1849,6 +2115,8 @@ def parse_args(argv):
             opts["help"] = True
         elif a in ("-l", "--list"):
             opts["list"] = True
+        elif a in ("-t", "--table"):
+            opts["table"] = True
         elif a in ("-w", "--waiting"):
             # el numero puede ir suelto ("-w 2") o pegado ("-w2"); sin numero, la primera
             nxt = argv[i + 1] if i + 1 < len(argv) else None
@@ -1910,12 +2178,12 @@ def main():
 
     # Sin TTY (pipe, script) o --list: salida estatica, sin interaccion
     if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
-        render(rows)
+        render(rows, opts["table"])
         return 0
 
     feed = Feed(rows)
     try:
-        interactive(feed)
+        interactive(feed, opts["table"])
     finally:
         feed.stop()
     return 0

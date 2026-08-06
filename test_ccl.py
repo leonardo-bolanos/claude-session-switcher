@@ -338,11 +338,12 @@ class TestFormato(unittest.TestCase):
 # ────────────────────────── agrupacion y orden ──────────────────────────
 
 
-def row(num, sid, status="idle", ts=None, kind="interactive"):
+def row(num, sid, status="idle", ts=None, kind="interactive", paused=False):
     return {"num": num, "name": f"s{num}", "repo": "r", "cwd": "/x", "kind": kind,
             "status": status, "sessionId": sid, "pid": num, "tty": "", "iterm": None,
             "ts": ts, "branch": None, "model": None, "effort": None,
-            "title": None, "prompt": None, "note": "", "startedAt": num}
+            "title": None, "prompt": None, "note": "", "paused": paused,
+            "startedAt": num}
 
 
 class TestAgrupacion(unittest.TestCase):
@@ -430,7 +431,7 @@ class TestParseoDeArgumentos(unittest.TestCase):
         opts, err = ccl.parse_args([])
         self.assertIsNone(err)
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
-                                "help": False, "version": False})
+                                "help": False, "version": False, "table": False})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -456,6 +457,13 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertTrue(ccl.parse_args(["-V"])[0]["version"])
         # y es una version semantica de verdad, no un placeholder
         self.assertRegex(ccl.__version__, r"^\d+\.\d+\.\d+$")
+
+    def test_table(self):
+        self.assertTrue(ccl.parse_args(["--table"])[0]["table"])
+        self.assertTrue(ccl.parse_args(["-t"])[0]["table"])
+        opts, err = ccl.parse_args(["--list", "--table"])
+        self.assertIsNone(err)
+        self.assertTrue(opts["list"] and opts["table"])
 
     def test_list_y_help(self):
         self.assertTrue(ccl.parse_args(["--list"])[0]["list"])
@@ -486,6 +494,168 @@ class TestBuildDisplay(unittest.TestCase):
         lines = ccl.build_display([row(1, "a", "idle")], width=100)
         head = next(l for l in lines if l[0] == "head")
         self.assertIsNone(head[2])
+
+
+# ────────────────────────── pausadas ──────────────────────────
+
+
+class TestPausadas(unittest.TestCase):
+    """
+    Pausada = espera algo que no eres tu. Es una marca del usuario porque
+    `claude agents --json` no la puede dar: solo distingue busy/idle.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = ccl.NOTES_FILE
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "ccl-notes.json")
+
+    def tearDown(self):
+        ccl.NOTES_FILE = self.orig
+        self.tmp.cleanup()
+
+    def test_marca_y_desmarca(self):
+        self.assertTrue(ccl.toggle_paused("sid-a"))
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+        self.assertFalse(ccl.toggle_paused("sid-a"))
+        self.assertEqual(ccl.load_state()[2], set())
+
+    def test_guardar_una_nota_no_borra_las_pausadas(self):
+        """
+        El fallo que obligo a que haya un solo escritor: `save_note` se escribia el JSON
+        entero con dos claves, asi que la primera nota se llevaba por delante la lista.
+        """
+        ccl.toggle_paused("sid-a")
+        ccl.save_note("sid-b", "una nota cualquiera")
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+
+    def test_pausar_no_toca_las_notas(self):
+        ccl.save_note("sid-a", "esperando a Felipe")
+        ccl.toggle_paused("sid-a")
+        sesion, _, pausadas = ccl.load_state()
+        self.assertEqual(sesion["sid-a"], "esperando a Felipe")
+        self.assertEqual(pausadas, {"sid-a"})
+
+    def test_sale_de_esperando_y_no_la_elige_w(self):
+        """El sentido entero de la pausa: `-w`/⌥N no puede mandarte a la que no puedes
+        desatascar."""
+        rows = [row(1, "pausada", "idle", ts=iso(minutes=1), paused=True),
+                row(2, "la-buena", "idle", ts=iso(hours=2))]
+        self.assertEqual([r["sessionId"] for r in ccl.waiting_rows(rows)], ["la-buena"])
+        elegida, _ = ccl.pick_waiting(rows, 1)
+        self.assertEqual(elegida["sessionId"], "la-buena")
+
+    def test_tiene_su_propio_grupo_despues_de_esperando(self):
+        rows = [row(1, "a", "idle", ts=iso(minutes=1)),
+                row(2, "b", "idle", ts=iso(minutes=2), paused=True)]
+        self.assertEqual([lbl for lbl, _, _ in ccl.grouped(rows)],
+                         [ccl.t("grupo_idle"), ccl.t("grupo_pausa")])
+
+    def test_una_pausada_que_vuelve_a_trabajar_se_ve_arriba(self):
+        """Si esta corriendo no espera a nadie: esconderla abajo seria mentir."""
+        g = ccl.grouped([row(1, "a", "busy", ts=iso(minutes=1), paused=True)])
+        self.assertEqual([lbl for lbl, _, _ in g], [ccl.t("grupo_busy")])
+
+    def test_una_de_background_pausada_no_sale_dos_veces(self):
+        rows = [row(1, "bg", "idle", kind="background", paused=True, ts=iso(minutes=1))]
+        etiquetas = [lbl for lbl, _, _ in ccl.grouped(rows)]
+        self.assertEqual(etiquetas, [ccl.t("grupo_pausa")])
+
+    def test_build_marca_las_pausadas_del_archivo(self):
+        ccl.toggle_paused("sid-a")
+        sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1},
+                    {"sessionId": "sid-b", "name": "b", "cwd": "/x", "pid": 2}]
+        filas = ccl.build(sesiones, {}, {}, {"sid-a": 1, "sid-b": 2})
+        self.assertEqual({f["sessionId"]: f["paused"] for f in filas},
+                         {"sid-a": True, "sid-b": False})
+
+    def test_una_lista_de_pausadas_con_basura_no_revienta(self):
+        ccl.escribir_json(ccl.NOTES_FILE, {"por_repo": {}, "pausadas": "no-es-lista"})
+        self.assertEqual(ccl.load_state()[2], set())
+        ccl.escribir_json(ccl.NOTES_FILE, {"pausadas": ["sid-a", 7, None]})
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+
+    def test_el_formato_viejo_sigue_leyendose_y_no_tiene_pausadas(self):
+        ccl.escribir_json(ccl.NOTES_FILE, {"/repos/web": "escrita con el formato viejo"})
+        sesion, repo, pausadas = ccl.load_state()
+        self.assertEqual(repo, {"/repos/web": "escrita con el formato viejo"})
+        self.assertEqual((sesion, pausadas), ({}, set()))
+
+    def test_un_archivo_que_solo_tiene_pausadas_no_las_lee_como_notas(self):
+        """Sin la clave en la deteccion del formato, {"pausadas": [...]} se leia como el
+        formato viejo y la lista acababa de nota de un repo llamado "pausadas"."""
+        ccl.escribir_json(ccl.NOTES_FILE, {"pausadas": ["sid-a"]})
+        sesion, repo, pausadas = ccl.load_state()
+        self.assertEqual((sesion, repo), ({}, {}))
+        self.assertEqual(pausadas, {"sid-a"})
+
+
+# ────────────────────────── vista de tabla ──────────────────────────
+
+
+class TestTabla(unittest.TestCase):
+    def filas(self):
+        return [row(1, "a", "busy", ts=iso(minutes=1)),
+                row(2, "b", "idle", ts=iso(minutes=2)),
+                row(3, "c", "idle", ts=iso(minutes=3), paused=True)]
+
+    def test_una_linea_por_sesion_y_una_cabecera(self):
+        lines = ccl.build_table_display(self.filas(), width=120)
+        self.assertEqual([r for r, _, _ in lines], ["head", "main", "main", "main"])
+        self.assertIsNone(lines[0][2])
+
+    def test_el_orden_es_el_mismo_que_el_de_los_grupos(self):
+        rows = self.filas()
+        esperado = [r["sessionId"] for _, _, items in ccl.grouped(rows) for r in items]
+        lines = ccl.build_table_display(rows, width=120)
+        self.assertEqual([f["sessionId"] for _, _, f in lines if f], esperado)
+
+    def test_cada_fila_dice_su_estado(self):
+        lines = ccl.build_table_display(self.filas(), width=120)
+        plano = {f["sessionId"]: ccl.ANSI_RE.sub("", txt)
+                 for _, txt, f in lines if f}
+        self.assertIn(ccl.t("grupo_busy"), plano["a"])
+        self.assertIn(ccl.t("grupo_idle"), plano["b"])
+        self.assertIn(ccl.t("grupo_pausa"), plano["c"])
+
+    def test_ninguna_linea_desborda_el_ancho(self):
+        """Una fila mas ancha que la ventana se envuelve y descuadra el panel entero."""
+        for ancho in (80, 100, 120, 160):
+            for _, texto, _ in ccl.build_table_display(self.filas(), width=ancho):
+                self.assertLessEqual(ccl.vis(texto), ancho, f"ancho={ancho}: {texto!r}")
+
+    def test_la_marca_de_sin_iterm_tampoco_desborda(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r["prompt"] = "x" * 400
+        self.assertLessEqual(ccl.vis(ccl.table_line(r, width=100)), 100)
+
+    def test_las_columnas_se_alinean_con_la_cabecera(self):
+        """Las dos salen de `_tabla_columnas`: si divergen, la tabla deja de ser tabla."""
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r["name"], r["repo"] = "un-nombre-larguisimo-de-verdad-si", "repo-largo-tambien"
+        anchos = [a for _, a in ccl._tabla_columnas(120, False)]
+        corte = sum(anchos)
+        cabecera = ccl.ANSI_RE.sub("", ccl.table_head(120, False))
+        fila = ccl.ANSI_RE.sub("", ccl.table_line(r, 120, False))
+        # el ultimo campo (nota/prompt) empieza en la misma columna en las dos
+        self.assertEqual(cabecera[:corte].rstrip(), cabecera[:corte].rstrip())
+        self.assertTrue(fila[corte - 1] == " ", "falta el espacio entre columnas")
+        self.assertIn(ccl.t("col_nota"), cabecera[corte:])
+
+    def test_en_una_ventana_estrecha_caen_las_columnas_prescindibles(self):
+        estrecha = [k for k, _ in ccl._tabla_columnas(80, False)]
+        ancha = [k for k, _ in ccl._tabla_columnas(140, False)]
+        self.assertNotIn("branch", estrecha)
+        self.assertNotIn("model", estrecha)
+        self.assertIn("branch", ancha)
+        self.assertIn("model", ancha)
+        # lo imprescindible esta en las dos
+        for k in ("num", "estado", "name", "repo", "ts"):
+            self.assertIn(k, estrecha)
+
+    def test_la_cuenta_solo_ocupa_columna_si_hay_varias(self):
+        self.assertNotIn("account", [k for k, _ in ccl._tabla_columnas(120, False)])
+        self.assertIn("account", [k for k, _ in ccl._tabla_columnas(120, True)])
 
 
 # ────────────────────── errores al consultar `claude` ──────────────────────

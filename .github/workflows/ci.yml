@@ -57,20 +57,25 @@ jobs:
       - name: install.sh tiene sintaxis valida
         run: bash -n install.sh
 
-      - name: demo.svg esta al dia
+      - name: demo.svg y table.svg estan al dia
         # Si el demo del README no coincide con lo que pinta el panel hoy, la portada
         # del repo esta mintiendo. Avisa, no falla: el demo es documentacion, no una
         # regresion. Se compara solo el TEXTO, porque el SVG entero cambia en cada
         # grabacion (posiciones en coma flotante) aunque el contenido sea identico.
         run: |
           python3 make_demo.py /tmp/demo-nuevo.svg
+          python3 make_demo.py --table /tmp/table-nueva.svg
           python3 - <<'EOF'
           import re
           texto = lambda p: re.sub(r"<[^>]+>", "", open(p).read())
-          if texto("demo.svg") == texto("/tmp/demo-nuevo.svg"):
-              print("demo.svg coincide con el panel actual")
-          else:
-              print("::warning::demo.svg quedo desfasado: corre python3 make_demo.py")
+          for viejo, nuevo, comando in (("demo.svg", "/tmp/demo-nuevo.svg",
+                                         "python3 make_demo.py"),
+                                        ("table.svg", "/tmp/table-nueva.svg",
+                                         "python3 make_demo.py --table")):
+              if texto(viejo) == texto(nuevo):
+                  print(f"{viejo} coincide con el panel actual")
+              else:
+                  print(f"::warning::{viejo} quedo desfasado: corre {comando}")
           EOF
 
       - name: Degrada bien sin Claude Code instalado, en los dos idiomas

@@ -2,8 +2,9 @@
 """
 Genera demo.svg: una animacion del panel, grabada del programa de verdad.
 
-    python3 make_demo.py            # escribe demo.svg
+    python3 make_demo.py                  # escribe demo.svg
     python3 make_demo.py salida.svg
+    python3 make_demo.py --table          # escribe table.svg: la vista de tabla, quieta
 
 Sin dependencias, como el resto del proyecto: arranca `ccl` en un pty, le manda un
 guion de pulsaciones, captura lo que pinta y lo convierte en un SVG animado. No hay
@@ -75,6 +76,26 @@ GUION = [
     (b"\0331",                   2.6),   # ⌥1: salta a la primera que espera
 ]
 
+# El otro SVG del README: la vista de tabla, y quieta. Es una imagen fija a proposito —
+# lo que hay que ver son las columnas alineadas y la columna de estado, no un movimiento.
+# El guion deja antes una nota y una pausada para que la captura enseñe los tres estados
+# (WORKING / WAITING / PAUSED) y el color de la nota en la ultima columna.
+GUION_TABLA = [
+    (b"\033[B",                       0),
+    (b"\033[B",                       0),
+    (b"\033[B",                       0),   # hasta `api`, que no comparte cwd con nadie
+    (b"\x0e",                         0),   # Ctrl-N
+    (b"waiting on Ana's schema", 0),
+    (b"\r",                           0),
+    (b"\x10",                         0),   # Ctrl-P: a PAUSED
+    (b"\x14",                         3.0),  # Ctrl-T: y a la tabla. Este es el fotograma
+]
+
+# La tabla necesita mas ancho que el panel de dos lineas: es lo que enseña. A 128 salen
+# todas las columnas —por debajo de 110 desaparece la rama, y de 124 el modelo— y aun
+# quedan treinta columnas para la nota, que es la otra cosa que hay que ver.
+COLUMNAS_TABLA = 128
+
 # Sesiones de mentira, con la pinta de un dia normal de trabajo.
 SESIONES = [
     # (numero, nombre, repo, rama, modelo, effort, prompt, minutos, estado)
@@ -128,8 +149,14 @@ sys.exit(ccl.main())
 # ─────────────────────── grabar ───────────────────────
 
 
-def grabar(notas):
-    """[(lineas, segundos)] — un fotograma por paso del guion."""
+def grabar(notas, guion=GUION, columnas=COLUMNAS):
+    """
+    [(lineas, segundos)] — un fotograma por paso del guion.
+
+    Un paso con duracion 0 se pulsa pero **no se captura**: asi un guion puede dejar el
+    panel en el estado que interesa (una nota escrita, una sesion pausada) y quedarse
+    solo con el fotograma final.
+    """
     pid, fd = pty.fork()
     if pid == 0:
         os.environ["TERM"] = "xterm-256color"
@@ -139,7 +166,7 @@ def grabar(notas):
         # portada del README, y el README esta en ingles.
         os.environ["CCL_LANG"] = "en"
         os.execv(sys.executable, [sys.executable, "-c", ARRANQUE])
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", FILAS, COLUMNAS, 0, 0))
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", FILAS, columnas, 0, 0))
 
     trozos = []
 
@@ -168,11 +195,12 @@ def grabar(notas):
 
     fotogramas = []
     drenar(1.0)                                   # que acabe de pintar el primer cuadro
-    for tecla, duracion in GUION:
+    for tecla, duracion in guion:
         if tecla is not None:
             os.write(fd, tecla)
             drenar(0.45)                          # dejar que repinte
-        fotogramas.append((ultima_pantalla(), duracion))
+        if duracion:
+            fotogramas.append((ultima_pantalla(), duracion))
 
     os.write(fd, b"\x03")
     time.sleep(0.2)
@@ -305,6 +333,10 @@ def hoja_de_estilo(fotogramas):
     """
     total = sum(d for _, d in fotogramas)
     reglas = [".f{opacity:0}", ".f0{opacity:1}"]   # sin animacion, se ve el primero
+    if len(fotogramas) == 1:
+        # Una sola captura es una imagen fija: con la regla de abajo, el unico fotograma
+        # se apagaria al llegar al 100% y la imagen parpadearia a negro.
+        return "\n".join(reglas)
     inicio = 0.0
     for i, (_, duracion) in enumerate(fotogramas):
         a, b = inicio / total * 100, (inicio + duracion) / total * 100
@@ -320,9 +352,9 @@ def hoja_de_estilo(fotogramas):
     return "\n".join(reglas)
 
 
-def construir_svg(fotogramas):
-    total = sum(d for _, d in fotogramas)
-    ancho = int(MARGEN_X * 2 + COLUMNAS * AVANCE)
+def construir_svg(fotogramas, titulo="ccl — panel de sesiones de Claude Code",
+                  columnas=COLUMNAS):
+    ancho = int(MARGEN_X * 2 + columnas * AVANCE)
     usadas = max(len([l for l in f.split("\n") if SGR_RE.sub("", l).strip()])
                  for f, _ in fotogramas)
     alto = int(BARRA + MARGEN_Y * 2 + (usadas + 1.5) * ALTO_LINEA)
@@ -336,7 +368,7 @@ def construir_svg(fotogramas):
 
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{ancho}" height="{alto}" \
 viewBox="0 0 {ancho} {alto}" font-family="{FUENTE}" font-size="{TAM}px">
-  <title>ccl — panel de sesiones de Claude Code</title>
+  <title>{titulo}</title>
   <style>
 {estilo}
   </style>
@@ -354,7 +386,10 @@ text-anchor="middle">ccl</text>
 
 
 def main():
-    destino = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_HERE, "demo.svg")
+    argv = [a for a in sys.argv[1:] if a != "--table"]
+    tabla = "--table" in sys.argv[1:]
+    por_defecto = "table.svg" if tabla else "demo.svg"
+    destino = argv[0] if argv else os.path.join(_HERE, por_defecto)
     if not hasattr(os, "openpty"):
         print("make_demo.py necesita un pty: solo funciona en Unix.", file=sys.stderr)
         return 1
@@ -362,15 +397,19 @@ def main():
     # dejar rastro en la configuracion de quien lo genere.
     import shutil
     import tempfile
+    guion = GUION_TABLA if tabla else GUION
+    columnas = COLUMNAS_TABLA if tabla else COLUMNAS
     tmp = tempfile.mkdtemp(prefix="ccl-demo-")
     try:
-        fotogramas = grabar(os.path.join(tmp, "notas.json"))
+        fotogramas = grabar(os.path.join(tmp, "notas.json"), guion, columnas)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if not any(p.strip() for p, _ in fotogramas):
         print("no se capturo nada: ¿arranca `python3 ccl`?", file=sys.stderr)
         return 1
-    svg = construir_svg(fotogramas)
+    titulo = ("ccl — la vista de tabla" if tabla
+              else "ccl — panel de sesiones de Claude Code")
+    svg = construir_svg(fotogramas, titulo, columnas)
     with open(destino, "w") as fh:
         fh.write(svg)
     print(f"{destino} — {len(fotogramas)} fotogramas, "

@@ -90,12 +90,13 @@ def coleccionar():
     # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
     # filas. Hay que replicar ese paso aqui o la nota no reaparece al reabrir el panel:
     # se veria solo la copia en memoria del panel que la escribio.
-    notas_sesion, notas_repo = ccl.load_notes()
+    notas_sesion, notas_repo, pausadas = ccl.load_state()
     filas = [dict(f) for f in FIJAS]
     if _MATAR and os.path.exists(_MATAR):
         filas = [f for f in filas if f["name"] != _MUERTA]
     for f in filas:
         f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
+        f["paused"] = f["sessionId"] in pausadas
     return filas
 
 ccl.collect = coleccionar
@@ -113,6 +114,9 @@ _notas = os.environ.get("CCL_TEST_NOTES")
 if not _notas:
     raise SystemExit("falta CCL_TEST_NOTES: el test escribiria en el ~/.claude real")
 ccl.NOTES_FILE = _notas
+# El panel se arranca con `python -c`, asi que no hay linea de comandos que parsear:
+# los tests de banderas (--table) la pasan por aqui.
+sys.argv = ["ccl"] + os.environ.get("CCL_TEST_ARGS", "").split()
 sys.exit(ccl.main())
 '''
 
@@ -674,6 +678,112 @@ class TestNotas(unittest.TestCase):
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestPausadas(unittest.TestCase):
+    """
+    Ctrl-P marca la sesion que espera a OTRO. Las cuatro sesiones sinteticas arrancan en
+    ESPERANDO, con `alfa` la primera y seleccionada.
+    """
+
+    def test_ctrl_p_la_baja_al_grupo_de_pausadas(self):
+        with con_panel() as p:
+            p.enviar(b"\x10")
+            pantalla = p.ultima()
+            self.assertIn("PAUSADAS (1)", pantalla)
+            self.assertIn("ESPERANDO (3)", pantalla)
+            self.assertIn("en pausa", p.aviso())
+            # y el grupo va DESPUES de esperando: lo que te espera a ti, primero
+            self.assertLess(pantalla.index("ESPERANDO"), pantalla.index("PAUSADAS"))
+
+    def test_pulsarla_otra_vez_la_devuelve(self):
+        with con_panel() as p:
+            p.enviar(b"\x10")
+            p.enviar(b"\x10")
+            self.assertNotIn("PAUSADAS", p.ultima())
+            self.assertIn("ESPERANDO (4)", p.ultima())
+            self.assertIn("vuelve a esperando", p.aviso())
+
+    def test_option_1_se_salta_la_pausada(self):
+        """
+        El sentido entero de la pausa. `alfa` es la primera esperando; pausada, ⌥1 tiene
+        que llevar a `beta`. Nadie enfoca nada (get_iterm_map devuelve {}), asi que el
+        aviso es el del fallo elegante — pero dice a QUE sesion iba.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x10")      # alfa a pausadas
+            p.enviar(b"\0331")     # ⌥1
+            self.assertIn("beta", p.aviso())
+            self.assertNotIn("alfa", p.aviso())
+
+    def test_la_pausa_sobrevive_a_cerrar_el_panel(self):
+        archivo = os.path.join(_NOTAS_TMP, "pausa-persistente.json")
+        with con_panel(notas=archivo) as p:
+            p.enviar(b"\x10")
+            self.assertIn("PAUSADAS (1)", p.ultima())
+        with con_panel(notas=archivo) as q:
+            self.assertIn("PAUSADAS (1)", q.ultima())
+
+    def test_pausar_no_se_lleva_por_delante_la_nota(self):
+        """Comparten archivo: con dos escritores, guardar una borraba la otra."""
+        archivo = os.path.join(_NOTAS_TMP, "pausa-y-nota.json")
+        with con_panel(notas=archivo) as p:
+            p.enviar(b"\x0e", b"esperando a Felipe", b"\r")
+            p.enviar(b"\x10")
+            self.assertIn("✎ esperando a Felipe", p.ultima())
+        with con_panel(notas=archivo) as q:
+            self.assertIn("PAUSADAS (1)", q.ultima())
+            self.assertIn("✎ esperando a Felipe", q.ultima())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestVistaDeTabla(unittest.TestCase):
+    def test_ctrl_t_pinta_una_linea_por_sesion(self):
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            pantalla = p.ultima()
+            self.assertIn("estado", pantalla, "falta la cabecera de columnas")
+            self.assertNotIn("ESPERANDO (4)", pantalla, "sigue la cabecera de grupo")
+            fila = next(l for l in pantalla.split("\n") if "alfa" in l)
+            self.assertIn("prompt de alfa", fila,
+                          "el detalle deberia ir en la misma linea que la sesion")
+
+    def test_cada_fila_lleva_su_estado(self):
+        with con_panel() as p:
+            p.enviar(b"\x10")      # alfa pausada
+            p.enviar(b"\x14")
+            pantalla = p.ultima()
+            self.assertIn("PAUSADAS", next(l for l in pantalla.split("\n")
+                                           if "alfa" in l))
+            self.assertIn("ESPERANDO", next(l for l in pantalla.split("\n")
+                                            if "beta" in l))
+
+    def test_ctrl_t_vuelve_a_la_vista_de_dos_lineas(self):
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            p.enviar(b"\x14")
+            self.assertIn("ESPERANDO (4)", p.ultima())
+
+    def test_el_cursor_se_queda_en_la_misma_sesion(self):
+        """Sigue al sessionId, no a la fila: cambiar de vista no puede moverlo."""
+        with con_panel() as p:
+            p.enviar(b"\033[B")    # abajo: de alfa a beta
+            p.enviar(b"\x14")
+            self.assertEqual(p.cursor(), "beta")
+
+    def test_la_tabla_no_desborda_el_ancho_de_la_terminal(self):
+        """Una fila mas ancha que la ventana se envuelve y descuadra todo lo de abajo."""
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            for linea in p.ultima().split("\n"):
+                self.assertLessEqual(len(linea.rstrip("\r")), Panel.COLUMNAS,
+                                     f"linea demasiado ancha: {linea!r}")
+
+    def test_arranca_en_tabla_con_la_bandera(self):
+        with con_panel(entorno={"CCL_TEST_ARGS": "--table"}) as p:
+            self.assertIn("estado", p.ultima())
+            self.assertNotIn("ESPERANDO (4)", p.ultima())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestGeneradorDelDemo(unittest.TestCase):
     """
     `make_demo.py` graba el panel y escribe demo.svg. Cada comprobacion de aqui es un
@@ -760,6 +870,53 @@ class TestGeneradorDelDemo(unittest.TestCase):
         texto = re.sub(r"<[^>]+>", "", self.svg)
         self.assertNotIn(os.path.expanduser("~"), texto)
         self.assertIn("web-app", texto)          # una de las sinteticas
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestImagenDeLaTabla(unittest.TestCase):
+    """
+    `make_demo.py --table` escribe la otra imagen del README: la vista de tabla, quieta.
+    Es una captura de un solo fotograma, y eso tiene su propia trampa.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls._tmp = tempfile.TemporaryDirectory()
+        destino = os.path.join(cls._tmp.name, "table.svg")
+        r = subprocess.run([sys.executable, os.path.join(_HERE, "make_demo.py"),
+                            "--table", destino],
+                           capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            raise AssertionError(f"make_demo.py --table fallo: {r.stderr}")
+        with open(destino) as fh:
+            cls.svg = fh.read()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def _texto(self):
+        return re.sub(r"<[^>]+>", "", self.svg)
+
+    def test_enseña_las_columnas_y_los_tres_estados(self):
+        """Si no salen los tres, la imagen no explica para que sirve la columna."""
+        texto = self._texto()
+        for pista in ("state", "session", "branch", "WORKING", "WAITING", "PAUSED"):
+            self.assertIn(pista, texto, f"la imagen no enseña {pista!r}")
+
+    def test_es_un_solo_fotograma_y_no_parpadea(self):
+        """
+        Con un fotograma la regla de animacion lo apagaba al llegar al 100%: la imagen
+        del README se quedaba en negro la mitad del tiempo.
+        """
+        self.assertEqual(self.svg.count('class="f f'), 1)
+        self.assertNotIn("@keyframes", self.svg)
+
+    def test_la_nota_conserva_su_color(self):
+        """El `38;5;174` es lo que se rompio la primera vez que se genero un SVG."""
+        self.assertIn("✎", self._texto())
+        self.assertIn('fill="#d78787"', self.svg)
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

@@ -73,6 +73,7 @@ ccl --list       # one-shot static listing (handy in scripts)
 ccl 7            # jump straight to session number 7
 ccl -w           # jump to the session that's been waiting on you longest
 ccl -w2          # same, the second one in the WAITING queue
+ccl --table      # one line per session, in columns
 ccl --version    # print the version
 ```
 
@@ -86,6 +87,8 @@ ccl --version    # print the version
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
 | `Ctrl-N` | Write **your own note** on this session |
+| `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you |
+| `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |
@@ -180,6 +183,49 @@ repo notes, so nothing written before this is lost.
 Nothing is pruned — not dead sessions, not directories that no longer exist. An unmounted external
 drive or a moved repo would silently delete something you typed by hand, and the file is a few KB
 even when it piles up.
+
+</details>
+
+<details>
+<summary><b>PAUSED: the ones waiting on someone else</b></summary>
+
+A session that's blocked on a colleague's answer, a deploy, or a review looks exactly like one
+that's waiting on *you*: Claude Code only reports `busy` or `idle`. So `Ctrl-P` is **your own
+mark** for it.
+
+Paused sessions get their own group, below WAITING, and — the point of the whole thing — they
+**leave the WAITING queue**: `⌥1`…`⌥9` and `ccl -w` skip them, so the shortcut can't send you to
+the one session you can't unblock. `Ctrl-P` again brings it back.
+
+Pair it with a note saying *what* you're waiting for:
+
+```
+  PAUSED (2)
+
+[ 4] api-invoice-rework        api       2h ago
+     ✎ waiting on Felipe's schema · main · opus-5 · "…"
+```
+
+If a paused session starts working again it shows up under WORKING, not down here: if it's
+running, it isn't waiting on anybody.
+
+It's stored next to the notes, in `~/.claude/ccl-notes.json` under `pausadas`, as a list of
+session IDs. Nothing is pruned there either — a session ID is a UUID and never comes back, so a
+leftover entry can't pause anyone by mistake.
+
+</details>
+
+<details>
+<summary><b>Table view</b></summary>
+
+`Ctrl-T` swaps the two-line-per-session list for one line per session, in columns, with the state
+as a column instead of a group header — roughly twice as many sessions fit on screen:
+
+![the table view](table.svg)
+
+Narrow windows drop the columns you can live without (branch first, then model) instead of
+squeezing every column down to unreadable; whatever's left over goes to the note. `ccl --table`
+starts that way, and `ccl --list --table` prints it without the panel.
 
 </details>
 
@@ -309,11 +355,12 @@ degrades with a clear error when Claude Code isn't installed.
 <summary>Regenerating the demo</summary>
 
 ```bash
-python3 make_demo.py
+python3 make_demo.py            # the animation at the top
+python3 make_demo.py --table    # the still of the table view
 ```
 
-Records the real program in a pty with synthetic sessions and writes `demo.svg`. No dependencies,
-no manual recording step, and it exposes none of your actual repos or prompts.
+Records the real program in a pty with synthetic sessions and writes `demo.svg` / `table.svg`. No
+dependencies, no manual recording step, and it exposes none of your actual repos or prompts.
 
 </details>
 

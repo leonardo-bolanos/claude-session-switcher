@@ -55,6 +55,41 @@ entre `claude agents` y `osascript`; a 4 s fijos serían ~5 % de un núcleo inde
 **El cursor sigue al `sessionId`, no al índice.** La lista se reordena por actividad en cada
 refresco; si el cursor fuera posicional, saltaría solo.
 
+## Pausadas y vista de tabla
+
+**Pausada es una marca del usuario, no un estado que dé Claude Code.** El JSON solo trae
+`busy`/`idle`, asi que una sesion parada esperando a un compañero se ve igual que una que te
+espera a ti. `Ctrl-P` la marca y **`is_waiting()` la excluye**: ahi esta todo el valor, porque
+`-w`/`⌥N` dejan de mandarte a la unica que no puedes desatascar. Como `waiting_rows()` es la
+unica fuente de verdad, el panel y el atajo global no pueden discrepar.
+
+Los grupos de `grouped()` son **excluyentes**: una pausada que vuelve a `busy` se pinta en
+TRABAJANDO (si corre, no espera a nadie) y una de background pausada sale solo en PAUSADAS. Si
+añades un grupo, revisa que ninguna fila pueda caer en dos.
+
+**Un solo escritor de `ccl-notes.json`: `guardar_estado()`.** El archivo ya guarda tres cosas
+(notas por sesion, notas por repo, pausadas) y `save_note` se escribia el JSON entero por su
+cuenta con dos claves — la primera nota borraba todas las pausadas. Por eso `load_state()`
+devuelve las tres y **nadie mas llama a `escribir_json(NOTES_FILE, …)`**. Lo mismo vale para la
+deteccion del formato viejo: mira las tres claves, porque un archivo que solo tuviera `pausadas`
+se leia como el formato plano y la lista acababa de nota de un repo.
+
+**La tabla se construye con `width - 4`.** El panel pinta cada fila como `clip(texto, cols - 4)`
+—margen mas barra del cursor— asi que construyendola al ancho entero el recorte se comia la
+ultima columna. Y la cabecera es peor: las lineas `head` **no se recortan al pintar**, asi que
+una cabecera de exactamente `cols` columnas se salia una posicion y envolvia.
+
+**`table_head` y `table_line` salen de `_tabla_columnas()`.** Es lo unico que las mantiene
+alineadas; dos listas de anchos en paralelo divergen y la tabla deja de ser tabla. Las columnas
+prescindibles (rama, modelo) **desaparecen** bajo su umbral en vez de encogerse: recortar todas
+las columnas a la vez las vuelve ilegibles antes de que sobre sitio.
+
+**La antiguedad ocupa 13, no 9.** Una sesion vieja pone `03-aug 17:52`, doce columnas; con nueve
+se recortaba a `03-aug 1`, que no dice ni el dia entero ni la hora.
+
+**La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
+estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
+
 ## Contratos externos que pueden romperse
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.
@@ -76,185 +111,22 @@ un shell de login no lo lee.
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y
 `waitingFor` que aparecen en la documentación no existen en la salida real, y `--all` no añade
-nada. Por eso hay dos grupos y no los tres del panel oficial.
+nada. Por eso los grupos que salen de los datos son dos —y no los tres del panel oficial—, y por
+eso PAUSADAS lo marca el usuario a mano: no hay de dónde deducirlo.
+## Cuándo cargar cada skill
 
-## Cómo probar
+Las trampas condicionales viven en `.claude/skills/`. Se cargan solas cuando su `description`
+casa con lo que estás haciendo; esta tabla está por los síntomas que una `description` no dice.
 
-`python3 test_ccl.py` cubre toda la lógica pura, sin dependencias. Son herméticos: parchean
-`INDEX_FILE`, `HOME` y `config_dirs` a temporales — **si añades un test que llame a
-`get_sessions`, parchea también `config_dirs` y `shutil.which`**, o pasará aquí y fallará en un
-runner limpio, que es exactamente lo que ocurrió la primera vez que corrió el CI.
+| Trigger / situación | Skill |
+| --- | --- |
+| Escribir o arreglar tests; un test que pasa en local y falla en el CI; tocar `vis`/`pad`/`clip`, `assign_numbers`, `get_iterm_map` o `read_transcript` | `pruebas` |
+| Añadir una tecla o acción al panel; tocar `read_key`, el parseo de secuencias de escape, el ratón o la ayuda paginada | `teclas-y-raton` |
+| Tocar las notas (`Ctrl-N`), las pausadas (`Ctrl-P`), el editor del panel, `ccl-notes.json` o el color de la línea de detalle | `notas` |
+| Añadir texto visible al usuario; tocar traducciones; regenerar `demo.svg` o `table.svg`; editar los README | `i18n-y-demo` |
 
-**Si tocas `vis`/`pad`/`clip`, `assign_numbers`, `get_iterm_map` o `read_transcript`, corre los
-tests**: esas cuatro son justo las que han fallado en silencio antes.
-
-`TestLecturaDeTeclas` si prueba `read_key` con un pty de verdad, porque es la unica forma de ver
-como se descomponen las secuencias de escape. Dos detalles que lo hacian fallar:
-**hay que escribir los bytes DESPUES de que `read_key` entre en modo raw** (`tty.setraw` usa
-`TCSAFLUSH`, que descarta la entrada pendiente, asi que lo escrito antes se pierde) — de ahi el
-`threading.Timer` — y `sys.stdin` se parchea sobre el modulo (`ccl.sys.stdin`), no sobre el del
-test.
-
-`pick_waiting` es puro y se prueba directo. **No lo pruebes llamando a `focus`**: robaria el
-foco a quien este usando la maquina. El salto lo hace quien llama, justamente para esto.
-
-**Para probar el panel entero, parchea `collect` con filas sinteticas y `REFRESH_SECONDS` alto.**
-Sin eso la lista se reordena entre ejecuciones y con el refresco de fondo, y no puedes afirmar
-que fila de la terminal corresponde a que sesion — que es justo lo que hay que verificar del
-clic. Con datos fijos el layout es exacto: fila 1 cabecera, 2 grupo, 3 primera sesion, 4 su
-detalle, 5 la segunda… Y `get_iterm_map()` devolviendo `{}` para no tocar ventanas de nadie.
-
-`TestAyuda.test_ninguna_accion_es_una_letra_suelta` es un guardarraíl de diseño, no una
-comprobación de formato: si documentas una acción en una letra, falla.
-
-`python3 test_panel.py` arranca **el panel entero en un pty** y cubre lo que antes solo se podia
-comprobar a mano: flechas, rueda, clic, doble clic, `⌥N`, la paginacion de la ayuda y los caminos
-sin panel. Tarda ~1 min (32 arranques reales del programa), asi que va aparte de la suite rapida.
-Las esperas se escalan con `CCL_TEST_LENTO` — el CI usa 2, porque un runner compartido es mas
-lento y si no falla sin que nada este roto.
-
-Lo que sigue SIN cubrir, porque necesita iTerm de verdad: el salto de ventana (`focus` con un
-mapa real) y el refresco en segundo plano contra `claude agents`.
-
-El modo interactivo necesita un TTY: no se puede probar con un pipe. Usa `pty.fork()` y **fija
-el tamaño con `TIOCSWINSZ`** — sin eso el viewport queda diminuto y parece que faltan líneas
-que sí están.
-
-Al drenar la salida del pty, acota el tiempo. Un `while select(...)` sin límite no termina
-nunca si el panel repinta.
-
-**No pruebes `Enter` a ciegas: le roba el foco a quien esté usando la máquina.** Para verificar
-que el panel no se cierra al saltar, usa una copia con `get_iterm_map()` devolviendo `{}`; el
-salto falla con elegancia y se comprueba el flujo sin tocar ninguna ventana.
-
-Los caminos no interactivos (`--list`, `ccl <n>`, salida por pipe) sí se prueban directo.
-
-## Las teclas que NO pueden ser letras
-
-Cualquier letra empieza a filtrar, asi que ninguna accion puede colgar de una letra suelta:
-se comeria el filtrado de todo lo que empiece por ella. Paso con `r` (refrescar), que impedia
-buscar por "revisa" o "report", y por eso ahora es `Ctrl-R`. Lo mismo descarta `h` para la
-ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es el estandar en TUIs.
-
-Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
-
-**`Cmd` no existe para un programa de terminal.** iTerm2 se queda `⌘1..9` para cambiar de
-pestaña y no lo pasa por el TTY: no hay forma de leerlo desde `ccl`. Por eso el salto a la
-N-esima ESPERANDO es `⌥1..9`, que con «Left Option key: Esc+» llega como `ESC` + digito. Esa
-misma secuencia es la que enviaria un `⌘N` mapeado a *Send Escape Sequence*, asi que el codigo
-sirve para ambos caminos sin ramas extra. Si alguien pide "que sea Cmd", la respuesta es un
-atajo global (Hammerspoon → `ccl -w<n>`), no una tecla del panel.
-
-**`⌥1..9` cuenta sobre `rows`, no sobre las filtradas.** A proposito: la tecla significa
-"sacame de aqui, a la que me espera", y contando sobre lo filtrado el mismo numero llevaria a
-sesiones distintas segun lo que tuvieras escrito.
-
-**`tty.setraw()` descarta la entrada pendiente, y eso comia teclas.** Usa `TCSAFLUSH` por
-defecto, que tira lo recibido y no leido; como `read_key` entra en modo raw en CADA lectura, todo
-lo que llegara mientras el panel repintaba se perdia. Medido con un pty: **de 5 teclas seguidas
-sobrevivia 1**. Se notaba al escribir rapido en el filtro, y hacia imposible el doble clic
-(sus cuatro eventos llegan en una sola rafaga). Va con `termios.TCSANOW` — si alguien lo
-"simplifica" a `tty.setraw(fd)`, vuelve.
-
-**El terminal NO reporta dobles clics**, solo clics sueltos: el doble se sintetiza por tiempo y
-fila (`DOUBLE_CLICK`). Y el **release hay que descartarlo**, o cada clic simple contaria dos veces
-y pareceria doble.
-
-**El mapa fila-de-terminal → sesion se construye pintando, no calculando.** Va dentro del bucle
-de repintado (`screen[y] = i`) porque cualquier cosa que se añada arriba —la cabecera de grupo
-fija, un aviso— desplaza todo; un calculo aparte se desincroniza en silencio y el clic acaba
-enfocando la sesion vecina, que es el peor fallo posible: parece que funciona.
-
-**Con el raton activo, el terminal deja de gestionar la seleccion de texto.** Por eso existe
-`CCL_MOUSE=0`, y por eso el apagado (`MOUSE_OFF`) va **antes** de soltar la pantalla alternativa:
-si el panel muere con el raton activo, el shell recibe escapes por cada clic. Para copiar hay tres
-vias y conviene no confundirlas: `⌥`+arrastrar (iTerm2 no reporta el evento si ese modificador
-esta pulsado — verificado en el binario de iTerm2 3.6.11, que lo registra como *"Not reporting
-mouse event because you pressed option"*), `CCL_MOUSE=0`, o `ccl --list`. La ultima es la mejor
-para copiar de verdad: el panel usa pantalla alternativa, asi que **al salir se restaura lo que
-habia y se lleva la lista**.
-
-**La ayuda se pagina porque ya no cabe.** Se pinta de arriba abajo, asi que sin paginar lo que
-sobra se va por el borde SUPERIOR: se pierde el principio y **no hay ningun aviso** de que faltaba
-algo. Si añades secciones, `TestAyuda` comprueba que ninguna pagina desborde la altura y que al
-partir no se pierda ninguna linea. Los tests que buscan un texto en la ayuda tienen que recorrer
-**todas** las paginas (`_texto_completo`), no solo `render_help(...)`.
-
-**Al parsear una secuencia de escape hay que leer byte a byte.** Antes hacia `os.read(fd, 2)`
-de golpe, lo que impedia distinguir `ESC`+digito (sin corchete) de `ESC[`. De paso: `PgUp`/`PgDn`
-son `ESC [ 5 ~` y `ESC [ 6 ~` — hay que **consumir la tilde**, o queda en el buffer y la lectura
-siguiente la ve como un `~` escrito, arrancando un filtro por "~" al pulsar PgDn.
-
-## Notas personales (`Ctrl-N`)
-
-**Van por `sessionId`, con la del `cwd` como respaldo.** La primera version las ataba solo al
-`cwd`, y fue un fallo reportado: escribir "esperando que felipe haga algo" en una sesion la pintaba
-en las otras tres del mismo directorio. Con 16 sesiones en 11 directorios, **el 43% no podia tener
-nota propia** — y las notas que la gente escribe de verdad son de estado ("esperando X"), no
-etiquetas de repo.
-
-Las dos siguen existiendo porque son dos usos distintos: el estado es de UNA conversacion; la
-etiqueta ("backend de facturacion") describe el repo, vale para todas sus sesiones y **sobrevive a
-reiniciar Claude Code**, que cambia el sessionId. `note_for()` resuelve la precedencia: la propia
-tapa la del repo, y borrar la propia hace reaparecer la del repo — asi se "quita lo mio" sin editar
-el JSON.
-
-**El formato viejo se sigue leyendo.** El archivo era un `{cwd: nota}` plano y ahora es
-`{"por_sesion": …, "por_repo": …}`; un dict plano se interpreta como `por_repo`. Quien ya tenia
-notas escritas no puede perderlas por un cambio de formato, y hay un test que lo fija — mas otro
-que comprueba que el primer guardado no pisa lo migrado.
-
-**No se purga nada**, ni sesiones muertas ni directorios inexistentes. Un disco externo desmontado
-o un repo movido de sitio borraria algo que el usuario escribio a mano. Al contrario que
-`ccl-numbers.json`, que si se purga, porque ahi el dato lo genera el programa y se regenera.
-
-**El editor se ata a la SESION, no a la fila.** `lines[cl]` se resuelve en cada vuelta del bucle,
-asi que si la sesion que estabas anotando muere y el refresco reordena la lista, esa fila pasa a
-ser otra sesion y el Enter guardaba el texto **en la equivocada** — el mismo fallo del contagio de
-notas, por otro camino. Por eso hay `editando_sid`/`editando_repo`, y si esa sesion desaparece la
-edicion se cancela con aviso (`nota_perdida`) antes de que el Enter pueda guardar en otra.
-
-**Cualquier tecla que mueva el cursor tiene que limpiar `typed`.** `⌥N` no lo hacia: veias el
-cursor saltar a la sesion que espera, pero el numero a medio teclear seguia teniendo prioridad y
-el Enter siguiente enfocaba ESE numero. Lo hacen ya las flechas, PgUp/PgDn, la rueda y el clic.
-
-**El modo edicion se queda el teclado, y va PRIMERO en el manejo de teclas.** Si no, en medio de
-una frase la `q` cierra el panel y un digito arranca el selector por numero. Hay dos tests justo
-para eso (`test_la_q_no_cierra_el_panel_mientras_escribes`).
-
-**Al guardar hay que aplicar la nota en memoria a mano**, recorriendo `rows` por `sessionId`. Si no,
-no se ve hasta el refresco (4 s) y parece que no se guardo. Y se recalcula con `note_for()` en vez
-de meter el texto tal cual: asi al borrar la propia reaparece la del repo en el mismo instante.
-
-**La nota se pinta con `NOTE` (negrita + salmon apagado), nunca con un color a secas.** La linea
-de detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo
-— justo lo contrario de para lo que sirve.
-
-**Es el unico sitio del script que se sale de los 16 colores ANSI**, y no por capricho: los
-disponibles estaban todos cogidos —magenta el repo, verde/azul/gris los modelos, amarillo el
-effort, gris la rama, cian el numero y la UI— y de rojo solo hay `31`, que aqui significa error y
-`⚠`. Una nota no es una alarma, hace falta un rojo desaturado, y eso solo existe en la paleta de
-256: `1;38;5;174` (#d78787). Un terminal sin 256 colores ignora el codigo y pinta el texto normal:
-se pierde el enfasis, no se rompe nada.
-
-Ese `38;5;N` **rompio el generador del demo**, que solo entendia los 16 basicos: se comia el
-codigo y la nota salia BLANCA en `demo.svg`, justo en la pieza que sirve para ensenar el color.
-Por eso `make_demo.py` tiene `color_256()` con el cubo 6x6x6 de xterm, y hay un test que
-comprueba que la nota del demo lleva `fill=`.
-
-El codigo va combinado (`1;38;5;174`) y no `BOLD(...)`: anidado deja dos resets pegados. Los tests
-comprueban **`NOTE`** y no el codigo concreto —el color ya se cambio dos veces—, mas uno que
-verifica que ningun otro elemento de la fila usa el mismo color, que es como se colo el magenta
-duplicado con el repo.
-
-**El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
-prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece
-que la tecla no hizo nada.
-
-Ojo al probar el panel: `test_panel.py` parchea `collect`, que **se salta `build`**, y es build
-quien pega las notas a las filas. El arnes replica ese paso; sin eso, la nota no reaparece al
-reabrir el panel y parece un fallo de persistencia que no existe. Y `NOTES_FILE` se desvia a un
-temporal: es el unico archivo que el panel escribe de verdad en disco.
+Un guardarraíl que no depende de cargar nada: **ninguna acción del panel puede colgar de una letra
+suelta**, porque se comería el filtrado. Hay un test que lo fija (`test_ninguna_accion_es_una_letra_suelta`).
 
 ## Lo que se pinta viene de fuera: `sin_control()`
 
@@ -308,73 +180,3 @@ apuntan a una de las trampas de arriba.
 
 **Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
 mismo orden justamente para que el diff sea comparable.
-
-### La interfaz bilingüe
-
-Todo el texto que ve el usuario sale de `TEXTOS` (dict plano) o de `HELP_EN`/`HELP_ES` (la ayuda,
-que son 33 filas y como claves planas resultaba ilegible). `t("clave", hueco=…)` devuelve el texto
-del idioma activo. `detect_lang()` mira `CCL_LANG`, luego `LC_ALL`, `LC_MESSAGES` y `LANG` — ese
-orden es el de POSIX, y quien exporta `LC_ALL=C` espera que gane.
-
-Cuatro cosas que se rompieron al hacerlo bilingüe, y que un test fija ahora:
-
-- **`color_age` decidía el color mirando el TEXTO** (`empieza por "hace "`). En inglés no empieza
-  por "hace", así que **todo salía en gris** sin que nada fallara. Por eso existe
-  `minutes_since()`: el color se decide con el número.
-- **Los tests heredaban el locale de quien los ejecutaba.** Pasaban con `LANG=es_ES` y fallaban en
-  el CI, que corre sin locale. Ahora `test_ccl.py` fija `ccl.LANG = "en"` y `test_panel.py` exporta
-  `CCL_LANG=es`; los asserts que dependen de un texto usan `ccl.t(...)` en vez de escribirlo.
-
-  **Ojo: `test_panel.py` arranca subprocesos por DOS caminos** —`Panel` (fork del pty) y
-  `TestSinPanel._correr` (`subprocess.run` con un entorno construido a mano)— y cada uno tiene que
-  fijar `CCL_LANG` y `CCL_TEST_NOTES` por su cuenta. La primera vez se arreglo solo el primero y el
-  CI lo cazo. **Antes de empujar, reproduce el entorno del CI**, que no es el tuyo:
-
-  ```bash
-  env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_ccl.py
-  env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_panel.py
-  ```
-- **Nada debe localizar algo buscando texto de la interfaz.** Mordió **cuatro** veces:
-  `color_age` (arriba); el helper `aviso()` de `test_panel.py` —buscaba "sesiones", en inglés
-  devolvía cadena vacía y los asserts sobre el aviso pasaban **sin comprobar nada**—;
-  `make_demo.py`, que filtraba los fotogramas igual y se quedaba sin uno solo; y el propio **CI**,
-  cuyo paso «degrada bien sin Claude Code» grepeaba el error en español y se puso rojo en cuanto
-  la interfaz pasó a inglés — el programa hacía lo correcto y el que estaba mal era el CI.
-
-  Dentro del programa, localiza por **forma**: un hueco de tres espacios, una regex de la cabecera
-  (`\d+ \S+ ·`)… y aplicándola sobre el texto **sin escapes**, porque la cabecera lleva códigos de
-  color entre el número y la palabra. Desde fuera (CI, scripts), **fija `CCL_LANG`** y comprueba
-  ese idioma; el paso del CI lo hace ahora en los dos, así la traducción queda probada en el
-  binario de verdad.
-
-  Para reproducirlo en local hace falta **`HOME` vacío además de un PATH mínimo**: con tu `HOME`,
-  `claude_bin()` encuentra `claude` en `~/.nvm/...` y el escenario «no está instalado» no se da.
-
-  ```bash
-  env -i HOME=/tmp/home-vacio PATH=/usr/bin:/bin ./ccl --list   # debe salir con 1
-  ```
-- `t()` **cae al inglés si falta una clave** en vez de reventar, y hay un test que comprueba que
-  las dos tablas tienen exactamente las mismas claves y los mismos huecos `{…}`.
-
-Si añades texto visible: va a `TEXTOS` en los dos idiomas. El guardarraíl de las letras sueltas
-(`test_ninguna_accion_es_una_letra_suelta`) recorre **las dos** ayudas.
-
-**Los dos README van en paralelo: si tocas uno, toca el otro.** Tienen las mismas secciones en el
-mismo orden justamente para que el diff sea comparable. El enlace cruzado va arriba, bajo el
-titular.
-
-Lo largo va en bloques `<details>` plegados: lo que un recien llegado necesita (que es, demo,
-instalar, teclas) tiene que caber en la primera pantalla, y los detalles internos —el PATH de
-launchd, la configuracion de iTerm2, el rendimiento del AppleScript— hundian eso.
-
-`demo.svg` **se genera, no se edita**: `python3 make_demo.py` graba el programa de verdad en un
-pty. Dos cosas que se rompieron al escribirlo y que no hay que "simplificar":
-
-- **Los `<tspan>` van dentro de un `<text>`.** Sueltos no se renderizan: el SVG sale con el marco
-  pintado y ni una letra.
-- **Cada trozo lleva `textLength`.** Sin eso el visor usa el avance real de SU fuente, que no es
-  el que asume el generador, y un trozo largo se monta encima del siguiente — se veia la comilla
-  de cierre pisando la ultima letra del prompt.
-- La animacion es **CSS, no SMIL**, y el primer fotograma queda visible por defecto: asi un visor
-  que no anime (Quick Look, una vista previa cualquiera) muestra un fotograma fijo en vez de un
-  rectangulo vacio.

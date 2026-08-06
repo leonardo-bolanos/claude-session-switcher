@@ -74,6 +74,7 @@ ccl --list       # listado estático de una pasada (útil en scripts)
 ccl 7            # salta directo a la sesión número 7
 ccl -w           # salta a la sesión que llevas más tiempo sin atender
 ccl -w2          # ídem, la segunda de la cola de ESPERANDO
+ccl --table      # una línea por sesión, en columnas
 ccl --version    # imprime la versión
 ```
 
@@ -87,6 +88,8 @@ ccl --version    # imprime la versión
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión |
+| `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti |
+| `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
@@ -182,6 +185,50 @@ sigue leyendo como notas de repo, así que nada de lo escrito antes se pierde.
 No se purga nada: ni las sesiones muertas ni los directorios que ya no existen. Un disco externo
 desmontado o un repo movido de sitio borraría en silencio algo que escribiste a mano, y el archivo
 son unos pocos KB aunque acumule.
+
+</details>
+
+<details>
+<summary><b>PAUSADAS: las que esperan a otro, no a ti</b></summary>
+
+Una sesión parada porque espera la respuesta de un compañero, un despliegue o una revisión se ve
+exactamente igual que una que te espera a *ti*: Claude Code solo dice `busy` o `idle`. Así que
+`Ctrl-P` es **una marca tuya**.
+
+Las pausadas van a su propio grupo, debajo de ESPERANDO, y —esto es lo que importa— **salen de la
+cola de ESPERANDO**: `⌥1`…`⌥9` y `ccl -w` se las saltan, así que el atajo no puede mandarte justo
+a la única que no puedes desatascar. `Ctrl-P` otra vez la devuelve.
+
+Combínalo con una nota que diga *qué* estás esperando:
+
+```
+  PAUSADAS (2)
+
+[ 4] api-invoice-rework        api       hace 2h
+     ✎ esperando el esquema de Felipe · main · opus-5 · "…"
+```
+
+Si una pausada vuelve a trabajar aparece en TRABAJANDO, no aquí abajo: si está corriendo, no
+espera a nadie.
+
+Se guarda junto a las notas, en `~/.claude/ccl-notes.json` bajo `pausadas`, como una lista de
+sessionId. Tampoco se purga nada: un sessionId es un UUID y no vuelve, así que una entrada
+huérfana no puede pausar a nadie por error.
+
+</details>
+
+<details>
+<summary><b>Vista de tabla</b></summary>
+
+`Ctrl-T` cambia la lista de dos líneas por sesión por una sola línea por sesión, en columnas, con
+el estado como columna en vez de como cabecera de grupo — caben más o menos el doble de sesiones
+en pantalla:
+
+![la vista de tabla](table.svg)
+
+En una ventana estrecha desaparecen las columnas prescindibles (primero la rama, luego el modelo)
+en vez de recortarlas todas hasta hacerlas ilegibles; lo que sobra se lo queda la nota.
+`ccl --table` arranca así, y `ccl --list --table` lo imprime sin panel.
 
 </details>
 
@@ -313,11 +360,12 @@ el script degrada con un error claro cuando Claude Code no está instalado.
 <summary>Regenerar el demo</summary>
 
 ```bash
-python3 make_demo.py
+python3 make_demo.py            # la animación de arriba
+python3 make_demo.py --table    # la imagen fija de la vista de tabla
 ```
 
-Graba el programa de verdad en un pty con sesiones sintéticas y escribe `demo.svg`. Sin
-dependencias, sin paso de grabación manual, y no expone ninguno de tus repos ni prompts reales.
+Graba el programa de verdad en un pty con sesiones sintéticas y escribe `demo.svg` / `table.svg`.
+Sin dependencias, sin paso de grabación manual, y no expone ninguno de tus repos ni prompts reales.
 
 </details>
 
