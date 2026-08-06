@@ -444,6 +444,56 @@ class TestRaton(unittest.TestCase):
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestFondoDelCursor(unittest.TestCase):
+    """La banda de la fila seleccionada, sobre el panel de verdad y con sus escapes."""
+
+    FONDO = "\033[48;5;238m"
+
+    def _crudo_de_la_ultima(self, p):
+        """El último repintado SIN quitarle los códigos: aquí interesan justamente."""
+        return p.bruto.split(LIMPIAR)[-1]
+
+    def test_la_fila_del_cursor_lleva_fondo_y_las_demas_no(self):
+        with con_panel() as p:
+            pantalla = self._crudo_de_la_ultima(p)
+            lineas = pantalla.split("\n")
+            con_fondo = [l for l in lineas if self.FONDO in l]
+            # la principal de alfa y su línea de detalle: la banda cubre las dos
+            self.assertEqual(len(con_fondo), 2, "la banda debería cubrir main y sub")
+            for l in con_fondo:
+                self.assertIn("alfa", l)
+
+    def test_la_banda_se_mueve_con_el_cursor(self):
+        with con_panel() as p:
+            p.enviar(b"\033[B")          # abajo: de alfa a beta
+            for l in self._crudo_de_la_ultima(p).split("\n"):
+                if self.FONDO in l:
+                    self.assertIn("beta", l)
+                    self.assertNotIn("alfa", l)
+
+    def test_no_desborda_el_ancho_de_la_terminal(self):
+        """El relleno de la banda es lo que más fácil se pasa de largo y envuelve."""
+        with con_panel() as p:
+            for linea in p.ultima().split("\n"):
+                self.assertLessEqual(len(linea.rstrip("\r")), Panel.COLUMNAS,
+                                     f"línea demasiado ancha: {linea!r}")
+
+    def test_tambien_en_la_vista_de_tabla(self):
+        with con_panel() as p:
+            p.enviar(b"\x14")
+            con_fondo = [l for l in self._crudo_de_la_ultima(p).split("\n")
+                         if self.FONDO in l]
+            self.assertEqual(len(con_fondo), 1, "en tabla la fila es una sola línea")
+            self.assertIn("alfa", con_fondo[0])
+
+    def test_se_puede_apagar_con_la_variable(self):
+        with con_panel(entorno={"CCL_CURSOR_BG": "0"}) as p:
+            self.assertNotIn(self.FONDO, self._crudo_de_la_ultima(p))
+            # y sigue sabiéndose cuál está elegida: la barra ▌ no depende del fondo
+            self.assertEqual(p.cursor(), "alfa")
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestAyuda(unittest.TestCase):
     def test_la_abre_y_la_pagina(self):
         """

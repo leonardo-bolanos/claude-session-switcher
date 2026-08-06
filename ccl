@@ -413,6 +413,32 @@ GREY = lambda s: c("90", s)
 # Negrita y color en un solo codigo, no BOLD(...): anidado deja dos resets pegados.
 NOTE = lambda s: c("1;38;5;174", s)
 
+# Fondo de la fila seleccionada. 238 es un gris oscuro que resalta sin gritar sobre un tema
+# oscuro; en uno claro se ve una banda oscura con texto oscuro, asi que es configurable y se
+# apaga con CCL_CURSOR_BG=0. Es el segundo y ultimo sitio que sale de los 16 colores ANSI.
+CURSOR_BG = os.environ.get("CCL_CURSOR_BG", "238")
+
+
+def con_fondo(texto, ancho):
+    """
+    `texto` sobre el fondo del cursor, relleno hasta `ancho` columnas.
+
+    Dos cosas que hacen falta y no se ven venir:
+
+    **Cada `\033[0m` de dentro apaga tambien el fondo.** El texto ya viene coloreado, y `c()`
+    cierra cada trozo con un reset: sin rearmar el fondo detras de cada uno, la banda se
+    corta en el primer color y quedan tres centimetros de fondo y el resto sin nada.
+
+    **Hay que rellenar hasta el ancho.** Un fondo solo llega hasta donde llega el texto, asi
+    que sin el relleno la banda acaba en mitad de la fila y parece un error de pintado. El
+    relleno va con `pad()`, que cuenta columnas VISIBLES: con `ljust()` los escapes contarian
+    como caracteres y cada fila quedaria de un largo distinto.
+    """
+    if not CURSOR_BG or CURSOR_BG == "0" or not _TTY:
+        return texto
+    abrir = f"\033[48;5;{CURSOR_BG}m"
+    return abrir + pad(texto, ancho).replace("\033[0m", "\033[0m" + abrir) + "\033[0m"
+
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 TTY_RE = re.compile(r"(?:/dev/)?tty[a-z]*\d+")
 
@@ -1890,10 +1916,12 @@ def interactive(feed, tabla=False):
                     # la fila resaltada abarca sus DOS lineas (principal + detalle)
                     on_cur = row is not None and row is sel_row and role in ("main", "sub")
                     if on_cur:
+                        # La barra ▌ se queda ademas del fondo: es lo unico que marca la
+                        # fila en un terminal sin 256 colores, y con CCL_CURSOR_BG=0.
                         bar = CYAN("▌")
                         body_txt = clip(text, cols - 4)
                         pref = " " if role == "main" else "   "
-                        buf.append(f"{bar}{pref}{body_txt}\r\n")
+                        buf.append(bar + con_fondo(pref + body_txt, cols - 2) + "\r\n")
                     elif role == "main":
                         buf.append(" " + clip(text, cols - 4) + "\r\n")
                     elif role == "sub":

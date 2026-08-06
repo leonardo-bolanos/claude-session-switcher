@@ -96,6 +96,13 @@ siempre, y por eso paso en local y fallo en el CI, cuyo runner de macOS es mas l
 siempre. `_sin_tecla_status()` lo desactiva mientras dura el panel y `_restaurar_tty()` lo
 devuelve. Si añades una tecla, mira antes si el terminal ya la usa (`stty -a`).
 
+**El fondo de la fila del cursor hay que REARMARLO tras cada reset.** El texto ya viene
+coloreado y `c()` cierra cada trozo con `\033[0m`, que apaga tambien el fondo: sin rearmarlo, la
+banda se corta en el primer color y el resto de la fila queda pelada — parece un fallo de pintado,
+no un resalte. Y hay que **rellenar hasta el ancho** con `pad()`, porque un fondo solo llega hasta
+donde llega el texto. Todo eso vive en `con_fondo()`, y el `▌` se queda ademas de la banda: es lo
+unico que marca la fila en un terminal sin 256 colores o con `CCL_CURSOR_BG=0`.
+
 **La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
 estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
 

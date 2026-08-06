@@ -356,6 +356,11 @@ a session dies its number is freed and recycled.
 | Model | blue Opus · green Sonnet · grey Haiku · magenta Fable |
 | `effort` | yellow only on `xhigh` / `max` |
 | red ⚠ | The session isn't in an iTerm window |
+| selected row | cyan `▌` bar plus a dark grey band across the whole row |
+
+The band is a 256-colour background, which reads well on a dark theme and badly on a light one.
+`CCL_CURSOR_BG=236 ccl` picks another colour (an xterm-256 index), and `CCL_CURSOR_BG=0 ccl`
+turns it off — the `▌` bar stays either way, so the selection is never ambiguous.
 
 </details>
 

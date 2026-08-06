@@ -1,6 +1,6 @@
 ---
 name: notas
-description: Las notas personales de ccl (Ctrl-N) y las sesiones pausadas (Ctrl-P), que comparten archivo y escritor. Decisiones de diseño de las dos. Van por sessionId con la del cwd como respaldo, y por qué (atarlas solo al cwd contagiaba la nota a las otras sesiones del mismo directorio). Cubre note_for() y la precedencia, la lectura del formato viejo, por qué no se purga nada, por qué el editor se ata a la sesión y no a la fila, la limpieza de typed al mover el cursor, el modo edición tomando el teclado primero, el color NOTE (1;38;5;174) como única salida de los 16 colores ANSI y su efecto en make_demo.py. Usar al tocar notas, el editor del panel, ccl-notes.json o el color de la línea de detalle.
+description: Las notas personales de ccl (Ctrl-N) y las sesiones pausadas (Ctrl-P), que comparten archivo y escritor. Decisiones de diseño de las dos. Van por sessionId con la del cwd como respaldo, y por qué (atarlas solo al cwd contagiaba la nota a las otras sesiones del mismo directorio). Cubre note_for() y la precedencia, la lectura del formato viejo, por qué no se purga nada, por qué el editor se ata a la sesión y no a la fila, la limpieza de typed al mover el cursor, el modo edición tomando el teclado primero, el color NOTE (1;38;5;174) y el fondo de la fila del cursor (con_fondo, CURSOR_BG) como las dos únicas salidas de los 16 colores ANSI, con la trampa de rearmar el fondo tras cada reset, y su efecto en make_demo.py. Usar al tocar notas, el editor del panel, ccl-notes.json o el color de la línea de detalle.
 ---
 
 ## Notas personales (`Ctrl-N`)
@@ -48,7 +48,7 @@ de meter el texto tal cual: asi al borrar la propia reaparece la del repo en el 
 de detalle es casi toda `DIM` y grises, y sin resaltar la nota se perdia entre la rama y el modelo
 — justo lo contrario de para lo que sirve.
 
-**Es el unico sitio del script que se sale de los 16 colores ANSI**, y no por capricho: los
+**Es uno de los dos unicos sitios que se salen de los 16 colores ANSI** (el otro es el fondo del cursor, mas abajo), y no por capricho: los
 disponibles estaban todos cogidos —magenta el repo, verde/azul/gris los modelos, amarillo el
 effort, gris la rama, cian el numero y la UI— y de rojo solo hay `31`, que aqui significa error y
 `⚠`. Una nota no es una alarma, hace falta un rojo desaturado, y eso solo existe en la paleta de
@@ -64,6 +64,12 @@ El codigo va combinado (`1;38;5;174`) y no `BOLD(...)`: anidado deja dos resets 
 comprueban **`NOTE`** y no el codigo concreto —el color ya se cambio dos veces—, mas uno que
 verifica que ningun otro elemento de la fila usa el mismo color, que es como se colo el magenta
 duplicado con el repo.
+
+El otro sitio con color de 256 es el **fondo de la fila del cursor** (`con_fondo`, `CURSOR_BG`,
+238 por defecto). No choca con la nota —uno es fondo y la otra texto— pero si alguien cambia
+cualquiera de los dos, que compruebe el otro: una nota salmon sobre un fondo salmon desaparece.
+Y ahi la trampa es distinta: **cada reset del texto apaga el fondo**, asi que hay que rearmarlo
+detras de cada `\033[0m` y rellenar hasta el ancho con `pad()`.
 
 **El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
 prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece

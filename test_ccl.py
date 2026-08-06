@@ -741,6 +741,70 @@ class TestTabla(unittest.TestCase):
                 self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
 
 
+class TestFondoDelCursor(unittest.TestCase):
+    """
+    La banda de la fila seleccionada. Las dos trampas son de pintado y no se ven leyendo
+    el código: los resets de dentro apagan el fondo, y sin relleno la banda no llega al
+    borde.
+    """
+
+    def _fila(self):
+        return ccl.CYAN(ccl.BOLD("[ 1]")) + " " + ccl.BOLD("sesion") + " " + ccl.MAGENTA("r")
+
+    def test_rearma_el_fondo_tras_cada_reset(self):
+        """
+        EL FALLO que evita: `c()` cierra cada trozo con `\\033[0m`, que apaga TAMBIÉN el
+        fondo. Sin rearmarlo, la banda se corta en el primer color y el resto de la fila
+        queda sin fondo — se ve como un error de pintado, no como un resalte.
+        """
+        salida = ccl.con_fondo(self._fila(), 40)
+        abrir = f"\033[48;5;{ccl.CURSOR_BG}m"
+        # tantas aperturas como resets haya delante, mas la primera
+        self.assertEqual(salida.count(abrir), salida.count("\033[0m"))
+        for trozo in salida.split("\033[0m")[:-1]:
+            self.assertTrue(trozo.endswith(abrir) or abrir in trozo,
+                            "hay un reset sin rearmar el fondo detrás")
+
+    def test_rellena_hasta_el_ancho(self):
+        """Un fondo llega hasta donde llega el texto: sin relleno, la banda se corta."""
+        for ancho in (20, 40, 100):
+            self.assertEqual(ccl.vis(ccl.con_fondo(self._fila(), ancho)), ancho)
+
+    def test_no_recorta_si_el_texto_ya_es_mas_largo(self):
+        """`pad` no recorta; de eso se encarga `clip` antes, con el ancho de la ventana."""
+        largo = ccl.BOLD("x" * 50)
+        self.assertEqual(ccl.vis(ccl.con_fondo(largo, 10)), 50)
+
+    def test_se_puede_apagar(self):
+        """En un tema claro la banda oscura deja el texto ilegible: tiene que poder irse."""
+        original = ccl.CURSOR_BG
+        try:
+            for apagado in ("0", ""):
+                ccl.CURSOR_BG = apagado
+                self.assertEqual(ccl.con_fondo(self._fila(), 40), self._fila())
+        finally:
+            ccl.CURSOR_BG = original
+
+    def test_sin_terminal_no_pinta_nada(self):
+        """Por tubería no hay colores: un `[48;5;238m` saldría como texto literal."""
+        original = ccl._TTY
+        try:
+            ccl._TTY = False
+            self.assertEqual(ccl.con_fondo("texto plano", 40), "texto plano")
+        finally:
+            ccl._TTY = original
+
+    def test_el_color_no_choca_con_los_demas(self):
+        """238 es fondo; NOTE (174) es texto. Si coincidieran, la nota desaparecería."""
+        self.assertNotEqual(ccl.CURSOR_BG, "174")
+
+    def test_un_texto_sin_color_tambien_queda_con_fondo(self):
+        salida = ccl.con_fondo("sin color", 20)
+        self.assertTrue(salida.startswith(f"\033[48;5;{ccl.CURSOR_BG}m"))
+        self.assertTrue(salida.endswith("\033[0m"))
+        self.assertEqual(ccl.vis(salida), 20)
+
+
 class TestVigilante(unittest.TestCase):
     """
     `--notify`. Toda la decision es pura: `Vigilante` no manda ninguna notificacion, asi
