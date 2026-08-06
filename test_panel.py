@@ -1002,6 +1002,23 @@ class TestGeneradorDelDemo(unittest.TestCase):
         self.assertIsNotNone(m, "el demo deberia mostrar la nota ya guardada")
         self.assertIn("fill=", m.group(), "la nota sale sin color")
 
+    def test_la_banda_de_la_fila_elegida_se_ve(self):
+        """
+        El mismo fallo que tuvo la nota, un año despues y en el otro sentido: el generador
+        solo entendia colores de PRIMER PLANO, asi que se comia el `48;5;238` del fondo y
+        el demo salia sin banda — enseñando una interfaz que ya no existe.
+
+        Un SVG no tiene "fondo del texto": hay que pintar un `<rect>` debajo, y los rects
+        van ANTES del `<text>` o taparian las letras.
+        """
+        self.assertIn('fill="#444444"', self.svg, "el demo no enseña la banda del cursor")
+        primer_rect = self.svg.index('fill="#444444"')
+        self.assertLess(self.svg.index("<text>"), primer_rect + 10_000)
+        for grupo in re.findall(r'<g class="f f\d+">(.*?)</g>', self.svg, re.S):
+            if 'fill="#444444"' in grupo:
+                self.assertLess(grupo.index('<rect'), grupo.index('<text>'),
+                                "los rects van detrás del texto: lo taparían")
+
     def test_la_paleta_de_256_se_convierte_bien(self):
         """La aritmetica del cubo 6x6x6 de xterm es facil de equivocar."""
         md = _cargar_make_demo()

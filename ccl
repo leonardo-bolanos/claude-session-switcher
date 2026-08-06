@@ -416,7 +416,20 @@ NOTE = lambda s: c("1;38;5;174", s)
 # Fondo de la fila seleccionada. 238 es un gris oscuro que resalta sin gritar sobre un tema
 # oscuro; en uno claro se ve una banda oscura con texto oscuro, asi que es configurable y se
 # apaga con CCL_CURSOR_BG=0. Es el segundo y ultimo sitio que sale de los 16 colores ANSI.
-CURSOR_BG = os.environ.get("CCL_CURSOR_BG", "238")
+def _indice_256(valor, por_defecto):
+    """
+    Un indice valido de la paleta de 256, o `por_defecto`.
+
+    Se valida porque el valor acaba DENTRO de un escape: un `CCL_CURSOR_BG=azul` emitiria
+    `\033[48;5;azulm`, que `ANSI_RE` no reconoce —solo casa digitos y `;`— asi que `vis()`
+    contaria esos caracteres como visibles y **descuadraria todas las columnas**, ademas de
+    escupir basura en pantalla. Un valor mal escrito apaga la banda en vez de romper el
+    panel: la barra ▌ sigue marcando la fila, asi que no se pierde nada.
+    """
+    return valor if valor.isdigit() and 0 <= int(valor) <= 255 else por_defecto
+
+
+CURSOR_BG = _indice_256(os.environ.get("CCL_CURSOR_BG", "238"), "")
 
 
 def con_fondo(texto, ancho):
@@ -2434,18 +2447,22 @@ def main():
         print(f"ccl: {e}", file=sys.stderr)
         return 1
 
-    if not rows:
-        print(t("sin_sesiones"))
-        return 0
-
     if opts["notify"] is not None:
-        # se avisa por pantalla de que arranco: un demonio que no dice nada al empezar es
-        # indistinguible de uno que se colgo, y el primer aviso puede tardar horas
+        # ANTES del "no hay sesiones": el vigilante arranca al iniciar sesion, cuando lo
+        # normal es que aun no haya ninguna abierta. Saliendo ahi, el caso de uso principal
+        # —ponerlo en launchd y olvidarlo— no funcionaba nunca, y encima en silencio.
+        #
+        # Se avisa por pantalla de que arranco: un demonio que no dice nada al empezar es
+        # indistinguible de uno que se colgo, y el primer aviso puede tardar horas.
         print(t("notify_arrancado", n=len(rows)))
         try:
             return watch(opts["notify"])
         except KeyboardInterrupt:
             return 0
+
+    if not rows:
+        print(t("sin_sesiones"))
+        return 0
 
     if opts["waiting"] is not None:
         row, aviso = pick_waiting(rows, opts["waiting"])

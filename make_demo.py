@@ -242,18 +242,18 @@ def color_256(indice):
 
 
 def trozos_con_color(linea):
-    """[(texto, color, tenue, negrita)] a partir de una linea con codigos SGR."""
+    """[(texto, color, tenue, negrita, fondo)] a partir de una linea con codigos SGR."""
     salida, pos = [], 0
-    color, tenue, negrita = None, False, False
+    color, tenue, negrita, fondo = None, False, False, None
     for m in SGR_RE.finditer(linea):
         if m.start() > pos:
-            salida.append((linea[pos:m.start()], color, tenue, negrita))
+            salida.append((linea[pos:m.start()], color, tenue, negrita, fondo))
         codigos = (m.group(1) or "0").split(";")
         i = 0
         while i < len(codigos):
             codigo = codigos[i]
             if codigo in ("", "0"):
-                color, tenue, negrita = None, False, False
+                color, tenue, negrita, fondo = None, False, False, None
             elif codigo == "1":
                 negrita = True
             elif codigo == "2":
@@ -265,12 +265,23 @@ def trozos_con_color(linea):
                 except (IndexError, ValueError):
                     pass
                 i += 2
+            elif codigo == "48" and codigos[i + 1:i + 2] == ["5"]:
+                # 48;5;N : FONDO de la paleta de 256, la banda de la fila seleccionada.
+                # Sin esta rama el generador se comia el codigo y el demo salia sin banda
+                # — el mismo fallo que ya tuvo con el `38;5;N` de la nota, un año despues.
+                try:
+                    fondo = color_256(int(codigos[i + 2]))
+                except (IndexError, ValueError):
+                    pass
+                i += 2
+            elif codigo == "49":
+                fondo = None
             elif codigo in COLORES:
                 color = COLORES[codigo]
             i += 1
         pos = m.end()
     if pos < len(linea):
-        salida.append((linea[pos:], color, tenue, negrita))
+        salida.append((linea[pos:], color, tenue, negrita, fondo))
     return salida
 
 
@@ -280,13 +291,13 @@ def escapar(s):
 
 def fotograma_svg(lineas, indice):
     """Un fotograma como grupo. Quien lo enciende y apaga es el CSS de construir_svg."""
-    partes = []
+    partes, rects = [], []
     for n, linea in enumerate(lineas):
         if not SGR_RE.sub("", linea).strip():
             continue
         y = BARRA + MARGEN_Y + (n + 1) * ALTO_LINEA
         tspans, columna = [], 0
-        for texto, color, tenue, negrita in trozos_con_color(linea.rstrip("\r")):
+        for texto, color, tenue, negrita, fondo in trozos_con_color(linea.rstrip("\r")):
             if not texto:
                 continue
             estilo = []
@@ -297,6 +308,14 @@ def fotograma_svg(lineas, indice):
             if negrita:
                 estilo.append('font-weight="600"')
             x = MARGEN_X + columna * AVANCE
+            if fondo:
+                # Un SVG no tiene "color de fondo" del texto: hay que pintar un rectangulo
+                # DEBAJO. Van todos en su propia lista y se emiten antes del <text>, o
+                # taparian las letras que ya estuvieran puestas.
+                rects.append(
+                    f'<rect x="{x:.1f}" y="{y - TAM:.1f}" '
+                    f'width="{len(texto) * AVANCE:.1f}" height="{ALTO_LINEA:.1f}" '
+                    f'fill="{fondo}"/>')
             # textLength fuerza el ancho exacto del trozo. Sin esto el texto se pinta
             # con el avance REAL de la fuente que elija el visor, que no es el que yo
             # asumo: un trozo largo (el ultimo prompt, ~45 caracteres) acumulaba la
@@ -314,7 +333,8 @@ def fotograma_svg(lineas, indice):
     # Los tspan van DENTRO de un <text>: un tspan suelto no se renderiza, y el SVG sale
     # con el marco pintado y ni una letra. Cada tspan lleva su x/y absolutos, asi que un
     # unico <text> por fotograma basta para colocar todas las lineas.
-    return (f'<g class="f f{indice}"><text>' + "".join(partes) + "</text></g>")
+    return (f'<g class="f f{indice}">' + "".join(rects)
+            + "<text>" + "".join(partes) + "</text></g>")
 
 
 def hoja_de_estilo(fotogramas):

@@ -798,6 +798,17 @@ class TestFondoDelCursor(unittest.TestCase):
         """238 es fondo; NOTE (174) es texto. Si coincidieran, la nota desaparecería."""
         self.assertNotEqual(ccl.CURSOR_BG, "174")
 
+    def test_un_indice_invalido_apaga_la_banda_en_vez_de_romper_nada(self):
+        """
+        El valor acaba DENTRO de un escape. Un `CCL_CURSOR_BG=azul` emitiría
+        `\033[48;5;azulm`, que `ANSI_RE` no reconoce: `vis()` contaría esos caracteres
+        como visibles y descuadraría TODAS las columnas, además de escupir basura.
+        """
+        for malo in ("azul", "999", "-1", "", "12x", "1;2"):
+            self.assertEqual(ccl._indice_256(malo, ""), "", f"{malo!r} debería apagarla")
+        for bueno in ("0", "12", "238", "255"):
+            self.assertEqual(ccl._indice_256(bueno, ""), bueno)
+
     def test_un_texto_sin_color_tambien_queda_con_fondo(self):
         salida = ccl.con_fondo("sin color", 20)
         self.assertTrue(salida.startswith(f"\033[48;5;{ccl.CURSOR_BG}m"))
@@ -940,6 +951,24 @@ class TestBucleDeVigilancia(unittest.TestCase):
         ccl.collect = collect_con_fallo
         ccl.watch(intervalo=0, vueltas=2)
         self.assertEqual(len(self.avisos), 1, "no avisó tras recuperarse del fallo")
+
+    def test_arranca_aunque_no_haya_ninguna_sesion_todavia(self):
+        """
+        EL FALLO: `main()` cortaba con "no hay sesiones" ANTES de mirar `--notify`. Y el
+        caso de uso principal es arrancarlo al iniciar sesión, cuando lo normal es que aún
+        no haya abierta ninguna: el vigilante salía al instante y en silencio.
+        """
+        vueltas = []
+
+        def collect_vacio_y_luego_una():
+            vueltas.append(1)
+            if len(vueltas) == 1:
+                return []                      # al arrancar no hay nada
+            return [row(1, "sid-a", "idle", ts=iso(minutes=1))]
+
+        ccl.collect = collect_vacio_y_luego_una
+        ccl.watch(intervalo=0, vueltas=1)
+        self.assertEqual(len(self.avisos), 1, "no avisó de la sesión que apareció después")
 
     def test_si_claude_no_esta_al_arrancar_falla_en_vez_de_callarse(self):
         """
