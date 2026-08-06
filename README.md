@@ -53,6 +53,22 @@ that source, with an interface, plus the jump to the right window.
 
 ## Install
 
+It's one file with no dependencies. Download it and make it executable:
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL -o ~/.local/bin/ccl https://raw.githubusercontent.com/leonardo-bolanos/claude-session-switcher/master/ccl
+chmod +x ~/.local/bin/ccl
+```
+
+Then make sure `~/.local/bin` is on your `PATH`. No clone, no installer, nothing else to install.
+
+Deliberately **not** a `curl | sh`: this way you can read the file before you give it permission
+to run. It's ~2,000 lines of Python and every subprocess it launches is in plain sight.
+
+<details>
+<summary>From a clone — to contribute, or to keep it current with <code>git pull</code></summary>
+
 ```bash
 git clone https://github.com/leonardo-bolanos/claude-session-switcher.git
 cd claude-session-switcher
@@ -60,10 +76,7 @@ cd claude-session-switcher
 ```
 
 The installer symlinks `~/.local/bin/ccl` and prints the shell function to add to your `.zshrc`
-or `.bashrc`. **It does not touch your shell config on its own.**
-
-<details>
-<summary>By hand</summary>
+or `.bashrc`. **It does not touch your shell config on its own.** By hand it's one line:
 
 ```bash
 ln -sf "$PWD/ccl" ~/.local/bin/ccl        # make sure ~/.local/bin is on your PATH
