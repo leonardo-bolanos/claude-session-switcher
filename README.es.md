@@ -80,6 +80,7 @@ ccl 7            # salta directo a la sesión número 7
 ccl -w           # salta a la sesión que llevas más tiempo sin atender
 ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 ccl --table      # una línea por sesión, en columnas
+ccl --notify     # vigila en segundo plano y avisa cuando una pasa a esperarte
 ccl --version    # imprime la versión
 ```
 
@@ -161,6 +162,47 @@ escrito.
 texto de filtro. `⌘1..9` no puede usarse: iTerm2 se lo queda para cambiar de pestaña y nunca
 llega a `ccl` — si lo prefieres, mapea `⌘N` → *Send Escape Sequence* `N` y funcionará igual, a
 costa de perder el cambio de pestaña.
+
+</details>
+
+<details>
+<summary><b>Que te avisen, en vez de mirar</b> — notificaciones en segundo plano</summary>
+
+`ccl --notify` no pinta nada. Se queda de fondo y manda una notificación de macOS cuando una
+sesión **pasa** a esperarte:
+
+```bash
+ccl --notify        # cada 15s
+ccl --notify 60     # o más lento
+```
+
+Avisa del **flanco, no del estado**: de las que acaban de pasar de trabajar a esperar. Dos
+consecuencias que importan más de lo que parecen:
+
+- **La primera foto solo se memoriza.** Arrancar el vigilante con doce sesiones ociosas manda
+  cero avisos — la forma más rápida de que alguien apague las notificaciones para siempre es
+  soltarle doce de golpe.
+- **Las pausadas no avisan nunca.** Ya dijiste que esa espera a otro.
+
+Más de tres a la vez se juntan en un solo aviso resumido, por lo mismo.
+
+Combínalo con `-w` en un atajo global y no abres el panel nunca: te avisa, y `⌃⌘1` te lleva. Para
+arrancarlo al iniciar sesión, en `~/Library/LaunchAgents/com.ccl.notify.plist`:
+
+```xml
+<key>ProgramArguments</key>
+<array>
+  <string>/Users/tu-usuario/.local/bin/ccl</string>
+  <string>--notify</string>
+</array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+```
+
+Una verruga que conviene saber: los avisos salen por `osascript`, así que macOS se los atribuye a
+**Script Editor** — ese es el icono que verás, y es a Script Editor a quien hay que permitirle
+notificar en Ajustes del Sistema → Notificaciones. Hacerlo mejor exige empaquetar una app
+firmada, que es mucha maquinaria para una línea de AppleScript.
 
 </details>
 

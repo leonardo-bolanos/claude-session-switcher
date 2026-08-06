@@ -99,6 +99,33 @@ devuelve. Si añades una tecla, mira antes si el terminal ya la usa (`stty -a`).
 **La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
 estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
 
+## Avisos (`--notify`)
+
+**El texto va por `argv`, nunca interpolado en el AppleScript.** Es el unico sitio del programa
+donde texto de FUERA —el nombre de la sesion, tu nota, el ultimo prompt— entra en un script que
+se ejecuta. Interpolarlo convierte una comilla en un error de sintaxis, y algo peor que una
+comilla en ejecucion de AppleScript arbitrario. Con `on run argv` el texto es un dato y no puede
+volverse codigo. `sin_control()` no vale aqui: protege el dibujado, no a `osascript`. Hay un test
+que intenta colar un `do shell script` y comprueba que acaba en `argv` y no en el script.
+
+**Se avisa del FLANCO, no del estado.** `Vigilante.nuevas()` compara con la foto anterior y
+devuelve solo las que acaban de ponerse a esperar; si mirara el estado, repetiria los mismos doce
+avisos cada quince segundos.
+
+**La primera foto solo se memoriza.** Arrancar con doce sesiones ociosas soltaba doce
+notificaciones de golpe, que es la forma mas rapida de que alguien apague los avisos para
+siempre. Por lo mismo, mas de `NOTIFY_MAX` (3) en una tanda se resumen en uno.
+
+**El primer `collect()` va FUERA del try.** Si `claude` no esta hay que fallar ya y con un mensaje
+claro: un demonio silencioso que nunca avisara es indistinguible de uno que funciona. A partir de
+ahi los fallos se ignoran, como en el `Feed` del panel.
+
+**`WATCH_SECONDS` son 15, no los 4 del panel.** El panel refresca rapido porque lo estas mirando;
+esto vive todo el dia y cada vuelta cuesta ~0,2 s de CPU entre `claude agents` y `osascript`.
+
+**No hay forma corta (`-n`).** Se confundiria con `-w`, y mandar a un demonio a quien queria
+saltar a una sesion es un mal error: se queda mirando una terminal que no hace nada.
+
 ## Contratos externos que pueden romperse
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.
