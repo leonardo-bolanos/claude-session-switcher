@@ -1300,6 +1300,46 @@ def _read_mouse_x10(fd):
     return _mouse_event(boton & 0x43, fila)
 
 
+def _sin_tecla_status():
+    """
+    Desactiva Ctrl-T como caracter STATUS del terminal mientras dura el panel.
+
+    En macOS y los BSD, Ctrl-T es `VSTATUS`: la disciplina de linea lo intercepta, imprime
+    su `load: 0.60  cmd: python…` y manda SIGINFO. Nunca llega al programa.
+
+    Y no basta con el modo raw, porque `read_key` entra en raw en CADA lectura y lo
+    restaura al salir: entre lectura y lectura el tty esta en modo normal, y una tecla que
+    caiga en esa ventana se la come el kernel — encima escribiendo su linea sobre el panel.
+    Es una carrera, no un fallo determinista: en una maquina rapida se acierta casi
+    siempre. La cazo el runner de macOS del CI, que es mas lento y por eso caia siempre.
+
+    Devuelve los atributos previos para restaurarlos al salir, o None si no habia nada que
+    tocar (Linux no tiene VSTATUS, y la salida puede no ser un terminal).
+    """
+    if not hasattr(termios, "VSTATUS") or not sys.stdin.isatty():
+        return None
+    try:
+        previos = termios.tcgetattr(sys.stdin.fileno())
+        nuevos = termios.tcgetattr(sys.stdin.fileno())
+        nuevos[6] = list(nuevos[6])
+        # 0xff es _POSIX_VDISABLE en BSD/macOS: el valor que apaga un caracter especial.
+        nuevos[6][termios.VSTATUS] = b"\xff"
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, nuevos)
+        return previos
+    except (termios.error, ValueError):
+        return None   # sin poder tocarlo se sigue: se pierde Ctrl-T, no el panel
+
+
+def _restaurar_tty(attrs):
+    """Deshace `_sin_tecla_status`. Con None no hay nada que hacer."""
+    if attrs is None:
+        return
+    try:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, attrs)
+    except (termios.error, ValueError):
+        pass
+
+
 def read_key(timeout=None):
     """
     Una pulsacion en modo raw. Devuelve 'up','down','enter','esc','q','refresh',
@@ -1704,6 +1744,7 @@ def interactive(feed, tabla=False):
     # programa y pierdes la seleccion de texto normal dentro del panel (con ⌥ pulsado
     # se puede seleccionar igual, pero a quien le moleste le sobra con CCL_MOUSE=0).
     mouse = os.environ.get("CCL_MOUSE", "1") != "0"
+    attrs_previos = _sin_tecla_status()
     sys.stdout.write("\033[?1049h\033[?25l")  # pantalla alternativa, sin cursor
     if mouse:
         sys.stdout.write(MOUSE_ON)
@@ -2027,6 +2068,7 @@ def interactive(feed, tabla=False):
             sys.stdout.write(MOUSE_OFF)
         sys.stdout.write("\033[?25h\033[?1049l")  # restaurar cursor y pantalla
         sys.stdout.flush()
+        _restaurar_tty(attrs_previos)
 
 
 # ─────────────────────────────── enfoque ───────────────────────────────

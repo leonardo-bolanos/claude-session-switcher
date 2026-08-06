@@ -16,6 +16,15 @@ Las ocupadas hasta ahora: `Ctrl-R` refrescar, `Ctrl-N` nota, `Ctrl-P` pausar, `C
 (`test_ninguna_accion_es_una_letra_suelta`), asi que documentar la tecla y añadirla es el mismo
 gesto: una accion sin fila en `HELP_EN`/`HELP_ES` no la vigila nadie.
 
+**Antes de elegir una tecla de control, mira si el terminal ya la usa** (`stty -a`). `Ctrl-T` es
+`VSTATUS` en macOS/BSD: la disciplina de linea lo intercepta, escribe su `load: 0.60  cmd: python…`
+encima del panel y manda SIGINFO, y la tecla no llega nunca. El modo raw NO basta, porque
+`read_key` entra en raw en cada lectura y lo restaura al salir: entre lectura y lectura el tty
+esta en modo normal. Por eso `interactive()` desactiva `VSTATUS` mientras dura el panel
+(`_sin_tecla_status`) y lo restaura al salir. Y ojo con como se prueba: es una carrera, asi que un
+test que dependa del momento exacto sale intermitente — se comprueba el AJUSTE leyendo los
+atributos desde el maestro del pty, que ve los del esclavo.
+
 **La barra de estado se recorta al ancho.** Cada atajo nuevo la alarga; sin `clip` se envolvia en
 ventanas estrechas y empujaba el panel una linea hacia arriba en cada repintado. Si añades uno
 mas, mira si vale la pena en la barra o basta con la ayuda.

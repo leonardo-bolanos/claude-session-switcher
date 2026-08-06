@@ -87,6 +87,15 @@ las columnas a la vez las vuelve ilegibles antes de que sobre sitio.
 **La antiguedad ocupa 13, no 9.** Una sesion vieja pone `03-aug 17:52`, doce columnas; con nueve
 se recortaba a `03-aug 1`, que no dice ni el dia entero ni la hora.
 
+**`Ctrl-T` hay que quitarselo al terminal, no basta con el modo raw.** En macOS y los BSD es
+`VSTATUS`: la disciplina de linea lo intercepta, imprime su `load: 0.60  cmd: python…` **encima
+del panel** y manda SIGINFO. Nunca llega al programa. Y `read_key` entra en raw en CADA lectura y
+lo restaura al salir, asi que entre lectura y lectura el tty esta en modo normal — una tecla que
+caiga en esa ventana se la come el kernel. Es una CARRERA: en una maquina rapida se acierta casi
+siempre, y por eso paso en local y fallo en el CI, cuyo runner de macOS es mas lento y caia
+siempre. `_sin_tecla_status()` lo desactiva mientras dura el panel y `_restaurar_tty()` lo
+devuelve. Si añades una tecla, mira antes si el terminal ya la usa (`stty -a`).
+
 **La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
 estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
 

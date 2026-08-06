@@ -806,6 +806,38 @@ class TestVistaDeTabla(unittest.TestCase):
             self.assertIn("estado", p.ultima())
             self.assertNotIn("ESPERANDO (4)", p.ultima())
 
+    @unittest.skipUnless(hasattr(termios, "VSTATUS"), "VSTATUS solo existe en BSD/macOS")
+    def test_ctrl_t_no_se_lo_queda_el_terminal(self):
+        """
+        EL FALLO, que cazo el runner de macOS del CI: Ctrl-T es el caracter STATUS del
+        terminal en BSD. `read_key` entra en modo raw en CADA lectura y lo restaura al
+        salir, asi que entre lectura y lectura el tty esta en modo normal y la disciplina
+        de linea se comia la tecla — imprimiendo ademas su "load: 0.60 cmd: python…"
+        encima del panel. Es una carrera: en una maquina rapida casi siempre se acierta.
+
+        Se comprueba el AJUSTE y no la carrera: el maestro del pty ve los atributos del
+        esclavo, y un test que dependiera del momento exacto seria intermitente.
+        """
+        with con_panel() as p:
+            cc = termios.tcgetattr(p.fd)[6]
+            self.assertEqual(cc[termios.VSTATUS], b"\xff",
+                             "el panel deberia desactivar Ctrl-T como tecla de status")
+            p.enviar(b"\x14")
+            self.assertNotIn("load:", p.bruto, "el kernel contesto al Ctrl-T")
+
+    def test_el_terminal_se_queda_como_estaba_al_salir(self):
+        """Lo que toca el panel lo devuelve: nadie hereda un tty a medio configurar."""
+        p = Panel()
+        antes = termios.tcgetattr(p.fd)[6][:]
+        p.enviar(b"q")
+        p._drenar(0.5 * FACTOR_ESPERA)
+        despues = termios.tcgetattr(p.fd)[6][:]
+        p.cerrar()
+        self.assertEqual(antes[termios.VINTR], despues[termios.VINTR])
+        if hasattr(termios, "VSTATUS"):
+            self.assertNotEqual(despues[termios.VSTATUS], b"\xff",
+                                "el panel dejo Ctrl-T desactivado al salir")
+
     def test_no_cambia_de_vista_mientras_escribes_la_nota(self):
         """El editor se queda el teclado: `Ctrl-T` no puede cambiar la vista debajo."""
         with con_panel() as p:
