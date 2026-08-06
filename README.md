@@ -32,11 +32,17 @@ Claude Code has no built-in way to see all your interactive sessions:
 | Alternative | Why it doesn't work |
 |---|---|
 | `claude agents` (official panel) | Only shows **background** agents. Your terminal sessions aren't there |
-| Desktop app | Only sees sessions opened from the app itself |
+| Desktop app, parallel sessions | Real, and good — but it only sees the sessions **it** opened, in its own panes |
+| Session managers (cmux, Clave, Claude Squad…) | They own the sessions: you start them inside their terminal, app or worktrees |
 | Mobile dashboard | Requested in issue [#35607](https://github.com/anthropics/claude-code/issues/35607), **closed as "not planned"** |
 
-The only source that sees all of them is `claude agents --json`, which has no interface.
-`ccl` is that source, with an interface, plus the jump to the right window.
+The pattern is the same everywhere: to be seen, a session has to have been started *by* the thing
+that shows it. `ccl` goes the other way — it finds the sessions **you** already started, wherever
+you started them, and moves your focus to the real iTerm2 window. It doesn't ask you to move
+house.
+
+The only source that sees all of them is `claude agents --json`, which has no interface. `ccl` is
+that source, with an interface, plus the jump to the right window.
 
 ## Requirements
 
