@@ -123,6 +123,24 @@ ahi los fallos se ignoran, como en el `Feed` del panel.
 **`WATCH_SECONDS` son 15, no los 4 del panel.** El panel refresca rapido porque lo estas mirando;
 esto vive todo el dia y cada vuelta cuesta ~0,2 s de CPU entre `claude agents` y `osascript`.
 
+**Ningun subproceso hereda el terminal: todos van con `stdin=subprocess.DEVNULL`.**
+`capture_output=True` redirige la salida pero **no stdin**, asi que el hijo se queda con el tty en
+el fd 0 y puede reconfigurarlo. `claude` es una TUI de Node y pone stdin en modo raw; si muere a
+mitad por una señal no lo deshace, y te deja la terminal **sin Ctrl-C ni Ctrl-Z**. Con `--notify`
+eso es peor que en el panel, porque lanza hijos cada quince segundos durante todo el dia y no hay
+nadie mirando. Hay un test que cuenta las llamadas a `subprocess.run` en el fuente y exige que
+todas lo lleven: una nueva sin `stdin` reabre el agujero, y el sintoma aparece muy lejos de la
+causa.
+
+**`--notify` atiende SIGINT y SIGTERM con su propio manejador**, en vez de dejar que salte
+`KeyboardInterrupt`. La excepcion puede caer dentro del `ThreadPoolExecutor` de `collect()`, y
+entonces la salida espera a que terminen `claude` y `osascript`: hasta quince segundos en los que
+el Ctrl-C **parece no hacer nada**. SIGTERM ademas es lo que mandan `kill` y launchd.
+
+**Y duerme a rodajas (`_dormir`).** Desde PEP 475, `time.sleep()` REANUDA lo que le queda cuando
+la interrumpe una señal cuyo manejador no lanza excepcion. De una sola vez, un `--notify 60`
+tardaria un minuto en reaccionar — por fuera, identico a estar colgado.
+
 **No hay forma corta (`-n`).** Se confundiria con `-w`, y mandar a un demonio a quien queria
 saltar a una sesion es un mal error: se queda mirando una terminal que no hace nada.
 

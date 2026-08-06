@@ -19,9 +19,11 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -886,6 +888,134 @@ class TestBucleDeVigilancia(unittest.TestCase):
         ccl.collect = collect_roto
         with self.assertRaises(ccl.SessionsUnavailable):
             ccl.watch(intervalo=0, vueltas=1)
+
+
+class TestSalirDelVigilante(unittest.TestCase):
+    """
+    Se puede parar. Suena obvio; no lo fue: `ccl --notify` se quedó sin morir con Ctrl-C
+    en una terminal de verdad, y no hay nada peor en un proceso de fondo que uno del que
+    no te puedes bajar.
+    """
+
+    def setUp(self):
+        self.originales = (ccl.collect, ccl.notificar, ccl.time.sleep)
+        ccl.notificar = lambda *a: True
+        ccl.time.sleep = lambda _: None
+
+    def tearDown(self):
+        ccl.collect, ccl.notificar, ccl.time.sleep = self.originales
+
+    def test_una_señal_corta_el_bucle(self):
+        """SIGINT en mitad de una vuelta: la siguiente ya no ocurre."""
+        vueltas = []
+
+        def collect_que_avisa():
+            vueltas.append(1)
+            if len(vueltas) == 2:
+                os.kill(os.getpid(), signal.SIGINT)
+            return [row(1, "sid-a", "idle", ts=iso(minutes=1))]
+
+        ccl.collect = collect_que_avisa
+        self.assertEqual(ccl.watch(intervalo=0, vueltas=50), 0)
+        self.assertLessEqual(len(vueltas), 3, "siguió dando vueltas tras la señal")
+
+    def test_sigterm_tambien(self):
+        """Es lo que manda `kill`, y lo que usará launchd al cerrar sesión."""
+        vueltas = []
+
+        def collect_que_avisa():
+            vueltas.append(1)
+            if len(vueltas) == 2:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return []
+
+        ccl.collect = collect_que_avisa
+        self.assertEqual(ccl.watch(intervalo=0, vueltas=50), 0)
+        self.assertLessEqual(len(vueltas), 3)
+
+    def test_deja_los_manejadores_como_estaban(self):
+        """Los instala para sí, no para siempre: `watch()` también se importa."""
+        antes = signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
+        ccl.collect = lambda: []
+        ccl.watch(intervalo=0, vueltas=1)
+        self.assertEqual((signal.getsignal(signal.SIGINT),
+                          signal.getsignal(signal.SIGTERM)), antes)
+
+    def test_dormir_se_corta_en_cuanto_hay_bandera(self):
+        """
+        Desde PEP 475 `time.sleep()` REANUDA lo que le queda si la señal no lanza
+        excepción. De una sola vez, un `--notify 60` tardaría un minuto en reaccionar al
+        Ctrl-C, que por fuera es idéntico a estar colgado. Por eso duerme a rodajas.
+        """
+        ccl.time.sleep = self.originales[2]      # aquí el sleep tiene que ser el de verdad
+        parar = []
+        import threading
+        threading.Timer(0.2, lambda: parar.append(True)).start()
+        t0 = time.monotonic()
+        ccl._dormir(30, parar)
+        self.assertLess(time.monotonic() - t0, 3, "no miró la bandera mientras dormía")
+
+
+class TestSubprocesosSinTerminal(unittest.TestCase):
+    """
+    **Ningún hijo puede ver el terminal.** `capture_output=True` redirige la salida pero
+    NO stdin: el hijo hereda el tty y puede reconfigurarlo. `claude` es una TUI de Node y
+    pone stdin en modo raw; si muere a mitad por una señal, no lo deshace y te quedas con
+    la terminal en raw — sin Ctrl-C ni Ctrl-Z, que es justo lo que pasó. Con `DEVNULL` en
+    fd 0 no hay nada que tocar.
+    """
+
+    def _capturar(self, fn):
+        llamadas = []
+        original = ccl.subprocess.run
+
+        def falso(cmd, **kw):
+            llamadas.append(kw)
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+
+        ccl.subprocess.run = falso
+        try:
+            fn()
+        except Exception:
+            pass
+        finally:
+            ccl.subprocess.run = original
+        return llamadas
+
+    def test_ninguna_llamada_hereda_el_stdin(self):
+        casos = {
+            "get_ttys": lambda: ccl.get_ttys([1, 2]),
+            "get_iterm_map": ccl.get_iterm_map,
+            "notificar": lambda: ccl.notificar("a", "b", "c"),
+            "focus": lambda: ccl.focus({"iterm": ("1", 2), "num": 1, "name": "x",
+                                        "tty": "", "cwd": "/x"}, quiet=True),
+        }
+        for nombre, fn in casos.items():
+            for kw in self._capturar(fn):
+                self.assertEqual(kw.get("stdin"), ccl.subprocess.DEVNULL,
+                                 f"{nombre} deja que el hijo vea el terminal")
+
+    def test_tambien_al_consultar_a_claude(self):
+        tmp = tempfile.mkdtemp()
+        os.makedirs(os.path.join(tmp, "projects"), exist_ok=True)
+        for kw in self._capturar(lambda: ccl._sessions_from(tmp)):
+            self.assertEqual(kw.get("stdin"), ccl.subprocess.DEVNULL,
+                             "`claude` es una TUI: no puede heredar el terminal")
+
+    def test_no_queda_ninguna_suelta_en_el_codigo(self):
+        """
+        Guardarraíl sobre el fuente: una llamada nueva sin `stdin` vuelve a abrir el
+        agujero, y el sintoma —una terminal que se queda sin Ctrl-C -- aparece lejos.
+        """
+        with open(os.path.join(_HERE, "ccl")) as fh:
+            fuente = fh.read()
+        llamadas = fuente.count("subprocess.run(")
+        con_devnull = fuente.count("stdin=subprocess.DEVNULL")
+        self.assertEqual(llamadas, con_devnull,
+                         f"{llamadas} llamadas a subprocess.run y solo "
+                         f"{con_devnull} con stdin=DEVNULL")
 
 
 class TestTextoDelAviso(unittest.TestCase):

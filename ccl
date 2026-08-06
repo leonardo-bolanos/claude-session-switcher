@@ -38,6 +38,7 @@ import json
 import os
 import re
 import select
+import signal
 import shutil
 import subprocess
 import sys
@@ -580,6 +581,7 @@ def _sessions_from(cfg_dir):
         proc = subprocess.run(
             [claude_bin() or "claude", "agents", "--cwd", HOME, "--json"],
             capture_output=True, text=True, timeout=30, env=env,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         raise SessionsUnavailable(t("sin_comando"))
@@ -636,7 +638,7 @@ def get_ttys(pids):
     try:
         out = subprocess.run(
             ["ps", "-o", "pid=,tty=", "-p", ",".join(str(p) for p in pids)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
         ).stdout
     except Exception:
         return {}
@@ -674,7 +676,8 @@ def get_iterm_map():
     '''
     try:
         out = subprocess.run(
-            ["osascript", "-e", script], capture_output=True, text=True, timeout=15
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
         ).stdout.strip()
     except Exception:
         return {}
@@ -2129,7 +2132,7 @@ def notificar(titulo, subtitulo, cuerpo):
                     "subtitle (item 3 of argv)"),
              "-e", "end run",
              "--", cuerpo, titulo, subtitulo],
-            capture_output=True, timeout=10, check=True)
+            capture_output=True, timeout=10, check=True, stdin=subprocess.DEVNULL)
         return True
     except (OSError, subprocess.SubprocessError):
         return False   # sin notificaciones se sigue vigilando: no es motivo para morir
@@ -2174,6 +2177,20 @@ def aviso_de(row):
     return titulo, " · ".join(partes), " ".join(str(cuerpo).split())[:200]
 
 
+def _dormir(segundos, parar):
+    """
+    `time.sleep` a rodajas, mirando `parar` entre una y otra.
+
+    De una sola vez no vale: desde PEP 475, `time.sleep()` **reanuda** lo que le queda
+    cuando la interrumpe una señal cuyo manejador no lanza excepcion. O sea que con
+    `--notify 60`, tu Ctrl-C tardaria hasta un minuto en hacer nada visible, que por fuera
+    es exactamente igual que estar colgado.
+    """
+    fin = time.monotonic() + segundos
+    while not parar and time.monotonic() < fin:
+        time.sleep(min(0.5, max(0.0, fin - time.monotonic())))
+
+
 def watch(intervalo=WATCH_SECONDS, vueltas=None):
     """
     Vigila en segundo plano y avisa. `vueltas` acota el bucle (para los tests).
@@ -2182,28 +2199,69 @@ def watch(intervalo=WATCH_SECONDS, vueltas=None):
     mensaje claro, no quedarse en un bucle silencioso que no avisara nunca. A partir de ahi
     los fallos se ignoran, como en el panel: que Claude Code se reinicie no puede matar al
     vigilante.
+
+    Se atienden SIGINT y SIGTERM con un manejador propio en vez de dejar que salte
+    `KeyboardInterrupt`: la excepcion puede caer dentro del `ThreadPoolExecutor` de
+    `collect()`, y entonces la salida se queda esperando a que terminen `claude` y
+    `osascript` — hasta quince segundos en los que el Ctrl-C parece no hacer nada. Con una
+    bandera se sale en cuanto acaba la vuelta. SIGTERM ademas es lo que manda `kill` y lo
+    que usara launchd al cerrar sesion.
+
+    Y el terminal se restaura al salir. Este proceso vive todo el dia lanzando hijos, y un
+    hijo que muera a mitad —por una señal, sin poder deshacer lo suyo— puede dejarte la
+    terminal en modo raw. Todos se lanzan ya con `stdin=DEVNULL` para que ni siquiera la
+    vean, pero la red de seguridad es barata.
     """
-    vig = Vigilante()
-    vig.nuevas(collect())          # primera foto: memorizar sin avisar
-    hechas = 0
-    while vueltas is None or hechas < vueltas:
-        time.sleep(intervalo)
-        hechas += 1
+    parar = []
+    anteriores = {}
+
+    def _parar(_sig, _frame):
+        parar.append(True)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            pendientes = vig.nuevas(collect())
-        except Exception:
-            continue
-        if not pendientes:
-            continue
-        if len(pendientes) > NOTIFY_MAX:
-            # doce avisos a la vez no se leen, se descartan. Uno que diga cuantas, si.
-            nombres = ", ".join(r["name"] for r in pendientes[:NOTIFY_MAX])
-            notificar(t("notif_varias", n=len(pendientes)),
-                      t("notif_varias_sub"), nombres + "…")
-        else:
-            for r in pendientes:
-                notificar(*aviso_de(r))
-    return 0
+            anteriores[sig] = signal.signal(sig, _parar)
+        except (ValueError, OSError, AttributeError):
+            pass   # sin manejador (p.ej. fuera del hilo principal) se sigue igual
+
+    previos = None
+    try:
+        if sys.stdin.isatty():
+            previos = termios.tcgetattr(sys.stdin.fileno())
+    except (termios.error, ValueError, OSError):
+        previos = None
+
+    try:
+        vig = Vigilante()
+        vig.nuevas(collect())          # primera foto: memorizar sin avisar
+        hechas = 0
+        while not parar and (vueltas is None or hechas < vueltas):
+            _dormir(intervalo, parar)
+            if parar:
+                break
+            hechas += 1
+            try:
+                pendientes = vig.nuevas(collect())
+            except Exception:
+                continue
+            if not pendientes:
+                continue
+            if len(pendientes) > NOTIFY_MAX:
+                # doce avisos a la vez no se leen, se descartan. Uno que diga cuantas, si.
+                nombres = ", ".join(r["name"] for r in pendientes[:NOTIFY_MAX])
+                notificar(t("notif_varias", n=len(pendientes)),
+                          t("notif_varias_sub"), nombres + "…")
+            else:
+                for r in pendientes:
+                    notificar(*aviso_de(r))
+        return 0
+    finally:
+        for sig, manejador in anteriores.items():
+            try:
+                signal.signal(sig, manejador)
+            except (ValueError, OSError):
+                pass
+        _restaurar_tty(previos)
 
 
 # ─────────────────────────────── enfoque ───────────────────────────────
@@ -2224,7 +2282,8 @@ def focus(row, quiet=False):
       activate
     end tell
     '''
-    res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL)
     if res.returncode != 0:
         if not quiet:
             print(t("no_se_pudo_enfocar", error=res.stderr.strip()), file=sys.stderr)
