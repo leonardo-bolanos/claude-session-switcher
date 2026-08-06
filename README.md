@@ -53,7 +53,11 @@ that source, with an interface, plus the jump to the right window.
 
 ## Install
 
-It's one file with no dependencies. Download it and make it executable:
+```bash
+brew install leonardo-bolanos/tap/ccl
+```
+
+Or, since it's one file with no dependencies, download it and make it executable:
 
 ```bash
 mkdir -p ~/.local/bin

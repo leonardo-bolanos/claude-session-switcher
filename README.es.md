@@ -53,7 +53,11 @@ fuente, con interfaz y con el salto a la ventana correcta.
 
 ## Instalación
 
-Es un solo archivo y no tiene dependencias. Descárgalo y dale permiso de ejecución:
+```bash
+brew install leonardo-bolanos/tap/ccl
+```
+
+O, como es un solo archivo y no tiene dependencias, descárgalo y dale permiso de ejecución:
 
 ```bash
 mkdir -p ~/.local/bin

@@ -151,6 +151,30 @@ tardaria un minuto en reaccionar — por fuera, identico a estar colgado.
 **No hay forma corta (`-n`).** Se confundiria con `-w`, y mandar a un demonio a quien queria
 saltar a una sesion es un mal error: se queda mirando una terminal que no hace nada.
 
+## El tap de Homebrew
+
+El repo `leonardo-bolanos/homebrew-tap` (en `/Users/lbolanos/Developer/cariai/homebrew-tap`) sirve
+`brew install leonardo-bolanos/tap/ccl`. **En cada release hay que actualizarlo a mano**, o Homebrew
+seguira instalando la version vieja sin que nada avise:
+
+```bash
+curl -fsSL https://github.com/leonardo-bolanos/claude-session-switcher/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+# cambiar `url` y `sha256` en Formula/ccl.rb, commit y push
+```
+
+Tres cosas de la formula que no se pueden quitar:
+
+- **`include Language::Python::Shebang`**, o `rewrite_shebang` no existe y la formula revienta.
+- **`rewrite_shebang detected_python_shebang`** cambia el `#!/usr/bin/env python3` por el Python de
+  Homebrew. Sin eso, `ccl` usa el `python3` del PATH: en un Mac sin Command Line Tools eso es un
+  stub que abre un dialogo de instalacion, y con pyenv delante puede ser cualquier version.
+- **`depends_on :macos` va ANTES que `depends_on "python@3.13"`**, que es lo unico que pedia
+  `brew audit --strict`.
+
+Y al probar cambios: `brew audit` lee la copia **tapeada** en
+`/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
+sigue auditando la version anterior y parece que el arreglo no funciono.
+
 ## Contratos externos que pueden romperse
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.
