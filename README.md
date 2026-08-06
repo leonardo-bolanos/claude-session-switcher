@@ -104,6 +104,17 @@ way with `CCL_LANG=en` / `CCL_LANG=es`.
 The panel **refreshes itself** and **does not close when you jump**: you land back on the list
 with a confirmation of where you went.
 
+### Two views
+
+`Ctrl-T` swaps the two-line list above for **one line per session, in columns**, with the state as
+a column instead of a group header — roughly twice as many fit on screen. `ccl --table` starts
+that way.
+
+![the table view](table.svg)
+
+`PAUSED` is a mark of your own (`Ctrl-P`) for the sessions waiting on someone else: they leave the
+WAITING queue, so `⌥1`…`⌥9` and `ccl -w` skip them.
+
 <details>
 <summary><b>Jumping to whichever session is waiting on you</b> — including a global shortcut</summary>
 
@@ -216,16 +227,14 @@ leftover entry can't pause anyone by mistake.
 </details>
 
 <details>
-<summary><b>Table view</b></summary>
+<summary><b>Table view</b>, and what it drops on a narrow window</summary>
 
-`Ctrl-T` swaps the two-line-per-session list for one line per session, in columns, with the state
-as a column instead of a group header — roughly twice as many sessions fit on screen:
-
-![the table view](table.svg)
+Everything the panel does keeps working in the table: the cursor stays on the same session when
+you toggle, clicking picks the row you clicked, and filtering keeps the column header.
 
 Narrow windows drop the columns you can live without (branch first, then model) instead of
-squeezing every column down to unreadable; whatever's left over goes to the note. `ccl --table`
-starts that way, and `ccl --list --table` prints it without the panel.
+squeezing every column down to unreadable; whatever's left over goes to the note. `ccl --list
+--table` prints the same thing without the panel, and with no colours, so it pipes.
 
 </details>
 

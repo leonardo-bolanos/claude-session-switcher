@@ -105,6 +105,17 @@ Se puede forzar con `CCL_LANG=es` / `CCL_LANG=en`.
 El panel **se refresca solo** y **no se cierra al saltar**: vuelves a la lista con una
 confirmación de a dónde fuiste.
 
+### Dos vistas
+
+`Ctrl-T` cambia la lista de dos líneas de arriba por **una línea por sesión, en columnas**, con el
+estado como columna en vez de como cabecera de grupo — caben más o menos el doble en pantalla.
+`ccl --table` arranca así.
+
+![la vista de tabla](table.svg)
+
+`PAUSADAS` es una marca tuya (`Ctrl-P`) para las sesiones que esperan a otro: salen de la cola de
+ESPERANDO, así que `⌥1`…`⌥9` y `ccl -w` se las saltan.
+
 <details>
 <summary><b>Ir a la que te está esperando</b> — incluido un atajo global</summary>
 
@@ -218,17 +229,16 @@ huérfana no puede pausar a nadie por error.
 </details>
 
 <details>
-<summary><b>Vista de tabla</b></summary>
+<summary><b>Vista de tabla</b>, y qué columnas caen en una ventana estrecha</summary>
 
-`Ctrl-T` cambia la lista de dos líneas por sesión por una sola línea por sesión, en columnas, con
-el estado como columna en vez de como cabecera de grupo — caben más o menos el doble de sesiones
-en pantalla:
-
-![la vista de tabla](table.svg)
+Todo lo que hace el panel sigue funcionando en la tabla: el cursor se queda en la misma sesión al
+cambiar de vista, el clic elige la fila que pulsaste, y al filtrar se mantiene la cabecera de
+columnas.
 
 En una ventana estrecha desaparecen las columnas prescindibles (primero la rama, luego el modelo)
 en vez de recortarlas todas hasta hacerlas ilegibles; lo que sobra se lo queda la nota.
-`ccl --table` arranca así, y `ccl --list --table` lo imprime sin panel.
+`ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede pasar por una
+tubería.
 
 </details>
 
