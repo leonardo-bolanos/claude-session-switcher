@@ -2543,7 +2543,7 @@ class TestLecturaDeTeclas(unittest.TestCase):
         que el bucle del panel no tenga que saber de bytes.
         """
         for data, esperado in ((b"\x0e", "note"), (b"\x10", "pause"),
-                               (b"\x14", "table")):
+                               (b"\x14", "table"), (b"\x0f", "recuperables")):
             self.assertEqual(self._pulsar(data), esperado, repr(data))
 
     def test_ctrl_r_y_digitos(self):
@@ -2577,7 +2577,8 @@ class TestAyuda(unittest.TestCase):
 
     def test_render_documenta_las_teclas_de_accion(self):
         plano = self._texto_completo()
-        for tecla in ("Ctrl-R", "Ctrl-N", "Ctrl-P", "Ctrl-T", "?", "enter", "esc"):
+        for tecla in ("Ctrl-R", "Ctrl-N", "Ctrl-P", "Ctrl-T", "Ctrl-O",
+                      "?", "enter", "esc"):
             self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
 
     def test_documenta_como_copiar(self):

@@ -117,6 +117,7 @@ ccl --version    # print the version
 | `Ctrl-N` | Write **your own note** on this session |
 | `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
+| `Ctrl-O` | Show the sessions you can **resume** — the ones that died with their terminal |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |

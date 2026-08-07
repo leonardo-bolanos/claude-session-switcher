@@ -100,6 +100,19 @@ def coleccionar():
     return filas
 
 ccl.collect = coleccionar
+# `Ctrl-O` lee de DISCO con `recent_rows`, que escanea los transcripts reales del usuario.
+# Se sustituye por dos filas sinteticas: ni se toca su ~/.claude ni el test depende de que
+# tenga sesiones muertas por ahi.
+def recuperables():
+    filas = []
+    for i, nombre in enumerate(["muerta-uno", "muerta-dos"], 1):
+        f = dict(FIJAS[0])
+        f.update({{"num": i, "name": nombre, "sessionId": "sid-" + nombre,
+                  "recoverable": True, "repo": "viejo", "prompt": "prompt de " + nombre}})
+        filas.append(f)
+    return filas
+
+ccl.recent_rows = lambda limite=20: recuperables()
 ccl.get_iterm_map = lambda: {{}}     # NADIE toca ventanas
 # Sin refresco por defecto, para que el layout no se mueva bajo los pies. Los tests que
 # necesitan un refresco de verdad lo bajan con CCL_TEST_REFRESH.
@@ -441,6 +454,69 @@ class TestRaton(unittest.TestCase):
             self.assertEqual(p.cursor(), "alfa")
             self.assertEqual(p.aviso(), "")
         self.assertNotIn("\033[?1006h", p.bruto)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestRecuperablesEnElPanel(unittest.TestCase):
+    """
+    `Ctrl-O` cambia la FUENTE de las filas: de las vivas que trae el `Feed` a las que se
+    leen de disco. Lo que hay que vigilar es que el Feed no las machaque por detrás y que
+    el cursor no se quede apuntando a una sesión de la otra lista.
+    """
+
+    def test_ctrl_o_cambia_a_las_recuperables_y_vuelve(self):
+        with con_panel() as p:
+            p.enviar(b"\x0f")
+            pantalla = p.ultima()
+            self.assertIn("RECUPERABLES", pantalla)
+            self.assertIn("muerta-uno", pantalla)
+            self.assertNotIn("alfa", pantalla, "siguen las vivas mezcladas")
+            self.assertIn("reanudar", p.aviso())
+            p.enviar(b"\x0f")
+            self.assertIn("ESPERANDO (4)", p.ultima())
+            self.assertIn("alfa", p.ultima())
+
+    def test_el_cursor_salta_a_la_lista_nueva(self):
+        """Su sessionId de antes no existe en la otra lista: quedaría apuntando a nada."""
+        with con_panel() as p:
+            p.enviar(b"\x0f")
+            # `p.cursor()` solo conoce los nombres de las vivas: aquí se mira la banda
+            marcada = next(l for l in p.ultima().split("\n") if "▌" in l)
+            self.assertIn("muerta-uno", marcada)
+
+    def test_el_filtro_se_limpia_al_cambiar_de_lista(self):
+        """El filtro era de la otra lista: dejarlo puesto esconde lo que acabas de pedir."""
+        with con_panel() as p:
+            p.enviar(b"gamma")
+            self.assertIn("1 coincide", p.barra())
+            p.enviar(b"\x0f")
+            self.assertNotIn("filtro:", p.barra())
+            self.assertIn("muerta-uno", p.ultima())
+
+    def test_la_cabecera_dice_de_donde_salen(self):
+        """"20 sesiones · 0 activas" mentiría: no están vivas, salen de disco."""
+        with con_panel() as p:
+            p.enviar(b"\x0f")
+            cabecera = p.ultima().split("\n")[0]
+            self.assertIn("de disco", cabecera)
+            self.assertNotIn("activas", cabecera)
+
+    def test_el_refresco_de_fondo_no_se_las_lleva(self):
+        """
+        El `Feed` sigue trayendo las vivas cada pocos segundos. Si la lista saliera de él,
+        las recuperables desaparecerían solas al primer refresco.
+        """
+        with con_panel(entorno={"CCL_TEST_REFRESH": "1"}) as p:
+            p.enviar(b"\x0f")
+            p._drenar(3 * FACTOR_ESPERA)      # deja pasar varios refrescos
+            self.assertIn("muerta-uno", p.ultima())
+            self.assertNotIn("ESPERANDO (4)", p.ultima())
+
+    def test_la_barra_dice_como_volver(self):
+        with con_panel() as p:
+            self.assertIn("recuperar", p.barra())
+            p.enviar(b"\x0f")
+            self.assertIn("volver", p.barra())
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

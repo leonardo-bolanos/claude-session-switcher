@@ -256,6 +256,19 @@ Y al probar cambios: `brew audit` lee la copia **tapeada** en
 `/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
 sigue auditando la version anterior y parece que el arreglo no funciono.
 
+## `Ctrl-O`: las recuperables sin salir del panel
+
+Cambia la **fuente** de las filas, no un filtro: de las vivas que trae el `Feed` a las que lee
+`recent_rows()` de disco. Se guardan en `filas_recent` **aparte**, porque el `Feed` sigue
+refrescando por detras y al segundo siguiente las machacaria — el mismo motivo por el que existe
+`FeedFijo` para `--recent`. Hay un test que lo fija bajando el refresco a 1 s.
+
+Al cambiar de lista hay que **mover el cursor y limpiar el filtro**: el `sessionId` seleccionado no
+existe en la otra lista, y un filtro escrito para las vivas esconde justo lo que acabas de pedir.
+
+Se lee al pulsar y no en cada refresco: `recent_rows()` cuesta ~0,4 s (la cola de hasta 60
+transcripts). En un refresco de 4 s se notaria.
+
 ## Dos terminales: iTerm2 y Terminal.app
 
 `row["ventana"]` es `(app, ventana, pestaña)`, no `(ventana, pestaña)`. La etiqueta decide **a

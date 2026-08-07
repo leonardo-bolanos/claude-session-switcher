@@ -268,6 +268,11 @@ TEXTOS = {
         "no_se_pudo_enfocar": "Couldn't focus: {error}",
         # panel
         "cabecera": " sessions · ",
+        "cabecera_recent": " resumable · read from disk",
+        "modo_recent": "↻ {n} sessions you can resume",
+        "modo_vivas": "← back to the live ones",
+        "barra_recuperables": " resumable  ",
+        "barra_volver": " back  ",
         "activas": "{n} active",
         "sin_sesiones_esc": "No active sessions. esc to quit",
         "filtro": "filter: ",
@@ -364,6 +369,11 @@ TEXTOS = {
         "cwd": "  cwd: {cwd}",
         "no_se_pudo_enfocar": "No se pudo enfocar: {error}",
         "cabecera": " sesiones · ",
+        "cabecera_recent": " recuperables · leídas de disco",
+        "modo_recent": "↻ {n} sesiones que puedes reanudar",
+        "modo_vivas": "← de vuelta a las vivas",
+        "barra_recuperables": " recuperar  ",
+        "barra_volver": " volver  ",
         "activas": "{n} activas",
         "sin_sesiones_esc": "Sin sesiones activas. esc para salir",
         "filtro": "filtro: ",
@@ -1786,6 +1796,8 @@ def read_key(timeout=None):
             return "refresh"
         if ch == "\x0e":            # Ctrl-N: escribir la nota de este repo
             return "note"
+        if ch == "\x0f":            # Ctrl-O: ver las recuperables, y volver
+            return "recuperables"
         if ch == "\x10":            # Ctrl-P: pausar / reanudar esta sesion
             return "pause"
         if ch == "\x14":            # Ctrl-T: cambiar entre lista y tabla
@@ -1896,6 +1908,12 @@ HELP_EN = [
         ("",           "so ⌥1-9 and ccl -w skip them"),
         ("",           "it's your own mark: Claude Code only reports busy/idle"),
     ]),
+    ("sessions you can resume", [
+        ("Ctrl-O",     "the ones that died with their terminal, read from disk"),
+        ("",           "enter resumes: new window, cd, and `claude --resume`"),
+        ("",           "Ctrl-O again goes back to the live ones"),
+        ("",           "outside the panel: ccl --recent"),
+    ]),
     ("table view", [
         ("Ctrl-T",     "one line per session, in columns, with a state column"),
         ("",           "twice as many fit on screen; branch and model drop"),
@@ -1961,6 +1979,12 @@ HELP_ES = [
         ("",           "las pausadas van a su grupo y salen de ESPERANDO,"),
         ("",           "así que ⌥1-9 y ccl -w se las saltan"),
         ("",           "es marca tuya: Claude Code solo dice busy/idle"),
+    ]),
+    ("sesiones que puedes reanudar", [
+        ("Ctrl-O",     "las que murieron con su terminal, leídas de disco"),
+        ("",           "enter las reanuda: ventana nueva, cd y `claude --resume`"),
+        ("",           "Ctrl-O otra vez vuelve a las vivas"),
+        ("",           "fuera del panel: ccl --recent"),
     ]),
     ("vista de tabla", [
         ("Ctrl-T",     "una línea por sesión, en columnas, con columna de estado"),
@@ -2121,6 +2145,11 @@ def interactive(feed, tabla=False):
     editando_sid = None   # la sesion a la que pertenece ese texto
     editando_repo = ""    # su repo, para el prompt
     aviso_salto = ""      # el resultado de un ⌥N pulsado con la lista vacia por el filtro
+    # Ctrl-O cambia la fuente de las filas: en vez de las vivas que trae el `Feed`, las
+    # recuperables que se leen de disco. Se guardan aparte porque el Feed sigue
+    # refrescando por detras y machacaria la lista al segundo siguiente.
+    modo_recent = False
+    filas_recent = []
     last_cols = cols0
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
     requery = False  # fuerza reconstruir la vista tras tocar el filtro
@@ -2140,7 +2169,8 @@ def interactive(feed, tabla=False):
             fresh, new_stamp = feed.snapshot()
             now_cols = os.get_terminal_size().columns
             if new_stamp != stamp or now_cols != last_cols or requery:
-                stamp, rows, last_cols, requery = new_stamp, fresh, now_cols, False
+                stamp, last_cols, requery = new_stamp, now_cols, False
+                rows = filas_recent if modo_recent else fresh
                 shown = [r for r in rows if matches(r, query)]
                 lines = vista(shown, now_cols, tabla)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
@@ -2226,8 +2256,12 @@ def interactive(feed, tabla=False):
                 y = 1
                 busy_n = sum(1 for r in rows if r["status"] == "busy")
                 more = DIM(" ↕") if len(lines) > body else ""
-                head = (DIM("  ") + BOLD(str(len(rows))) + DIM(t("cabecera"))
-                        + GREEN(t("activas", n=busy_n)) + more)
+                if modo_recent:
+                    head = (DIM("  ") + BOLD(str(len(rows)))
+                            + DIM(t("cabecera_recent")) + more)
+                else:
+                    head = (DIM("  ") + BOLD(str(len(rows))) + DIM(t("cabecera"))
+                            + GREEN(t("activas", n=busy_n)) + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
                 y += 1
 
@@ -2270,6 +2304,8 @@ def interactive(feed, tabla=False):
                             + CYAN("^N") + DIM(t("barra_nota"))
                             + CYAN("^P") + DIM(t("barra_pausa"))
                             + CYAN("^T") + DIM(t("barra_tabla"))
+                            + CYAN("^O") + DIM(t("barra_volver" if modo_recent
+                                                 else "barra_recuperables"))
                             + DIM(t("barra_escribe")) + t("barra_filtrar")
                             + CYAN("?") + DIM(t("barra_ayuda")), cols - 2)
                 if editando is not None:
@@ -2384,6 +2420,24 @@ def interactive(feed, tabla=False):
                         r["paused"] = en_pausa
                 flash = t("pausada" if en_pausa else "reanudada", name=objetivo["name"])
                 requery = True
+            elif k == "recuperables":
+                # Ctrl-O: las que murieron con su terminal, leidas de disco. Cuesta ~0,4 s
+                # (lee la cola de hasta 60 transcripts), asi que se hace al pulsar y no en
+                # cada refresco.
+                modo_recent = not modo_recent
+                if modo_recent:
+                    filas_recent = recent_rows()
+                    if not filas_recent:
+                        modo_recent, flash = False, t("sin_recuperables")
+                    else:
+                        # el cursor tiene que saltar a la lista nueva: su sessionId de
+                        # antes no existe aqui, y quedaria apuntando a nada
+                        sel_id = filas_recent[0]["sessionId"]
+                        flash = t("modo_recent", n=len(filas_recent))
+                else:
+                    flash = t("modo_vivas")
+                # el filtro y el numero a medio teclear son de la otra lista
+                query, typed, top, requery = "", "", 0, True
             elif k == "table":
                 # Ctrl-T: la misma lista en columnas. El cursor sigue al sessionId, asi
                 # que cambiar de vista no lo mueve de sesion.

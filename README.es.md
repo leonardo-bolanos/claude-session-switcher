@@ -118,6 +118,7 @@ ccl --version    # imprime la versión
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión |
 | `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
+| `Ctrl-O` | Ver las sesiones que puedes **reanudar** — las que murieron con su terminal |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
