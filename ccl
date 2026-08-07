@@ -2939,16 +2939,26 @@ def pestaña_nueva(orden, quiet=False, space=None):
     que puede estar en otro escritorio, y entonces no habriamos vuelto a ninguna parte.
     """
     en_su_space = space is not None and ir_a_space(space)
+    # Se escribe en la ventana/pestaña **que se acaba de crear**, capturandola en una
+    # variable — nunca en "current session of current window".
+    #
+    # EL FALLO: tras el `gotoSpace`, la ventana nueva todavia no es la "current" para
+    # iTerm2; la clave sigue siendo la que tenias delante, que es **la que corre `ccl`**.
+    # Asi que el `write text` te tecleaba el `cd … && claude --resume …` DENTRO del panel,
+    # donde aparecia como filtro. Apuntando al objeto creado no depende de a quien
+    # considere iTerm la ventana activa en ese instante.
     script = '''
     on run argv
       tell application "iTerm2"
         activate
         if (count of windows) = 0 or (item 2 of argv) is "ventana" then
-          create window with default profile
+          set destino to (create window with default profile)
         else
-          tell current window to create tab with default profile
+          tell current window
+            set destino to (create tab with default profile)
+          end tell
         end if
-        tell current session of current window to write text (item 1 of argv)
+        tell current session of destino to write text (item 1 of argv)
       end tell
     end run
     '''

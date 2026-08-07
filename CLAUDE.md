@@ -256,6 +256,17 @@ Y al probar cambios: `brew audit` lee la copia **tapeada** en
 `/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
 sigue auditando la version anterior y parece que el arreglo no funciono.
 
+## Al abrir la ventana, escribir en la CREADA (no en "la actual")
+
+`pestaña_nueva()` captura lo que devuelve `create window` / `create tab` en una variable y escribe
+ahi. **Nunca en `current session of current window`.**
+
+EL FALLO, reportado: tras el `gotoSpace`, la ventana nueva todavia no es la "current" para iTerm2
+—la clave sigue siendo la que tenias delante, que es **la que corre `ccl`**— asi que el
+`write text` tecleaba el `cd … && claude --resume …` DENTRO del panel, donde aparecia como texto
+del filtro y no se ejecutaba nada. Es una carrera con la transicion de Space, asi que sin cambio
+de escritorio no se veia. Hay un guardarrail sobre el fuente.
+
 ## `Ctrl-O`: las recuperables sin salir del panel
 
 Cambia la **fuente** de las filas, no un filtro: de las vivas que trae el `Feed` a las que lee

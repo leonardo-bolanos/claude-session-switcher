@@ -158,6 +158,41 @@ class TestNumeracion(unittest.TestCase):
 # ────────────────────── parseo de la salida de iTerm ──────────────────────
 
 
+class TestPestañaNueva(unittest.TestCase):
+    """La ventana que abre `--recent` para reanudar. Un guardarrail sobre el fuente."""
+
+    def test_escribe_en_la_ventana_creada_y_no_en_la_actual(self):
+        """
+        EL FALLO: tras el `gotoSpace`, la ventana recién creada todavía NO es la "current"
+        para iTerm2 — la clave sigue siendo la que tenías delante, que es **la que corre
+        `ccl`**. Así que el `write text` tecleaba el `cd … && claude --resume …` dentro del
+        panel, donde aparecía como texto del filtro y no se ejecutaba nada.
+
+        Capturando el objeto que devuelve `create window` deja de depender de a quién
+        considere iTerm la ventana activa en ese instante.
+        """
+        with open(os.path.join(_HERE, "ccl")) as fh:
+            fuente = fh.read()
+        i = fuente.index("def pestaña_nueva")
+        # sin los comentarios: el que explica este fallo nombra la frase prohibida
+        trozo = "\n".join(l for l in fuente[i:fuente.index("class FeedFijo")].split("\n")
+                          if not l.strip().startswith("#"))
+        self.assertIn("set destino to (create window", trozo)
+        self.assertIn("set destino to (create tab", trozo)
+        self.assertIn("tell current session of destino to write text", trozo)
+        self.assertNotIn("current session of current window", trozo,
+                         "vuelve a escribir en 'la actual': puede teclear dentro de ccl")
+
+    def test_el_texto_va_por_argv(self):
+        """La orden lleva rutas del transcript: interpolarla es ejecucion arbitraria."""
+        with open(os.path.join(_HERE, "ccl")) as fh:
+            fuente = fh.read()
+        i = fuente.index("def pestaña_nueva")
+        trozo = fuente[i:fuente.index("class FeedFijo")]
+        self.assertIn("on run argv", trozo)
+        self.assertIn("item 1 of argv", trozo)
+
+
 class TestMapaTerminalApp(unittest.TestCase):
     """
     Terminal.app, con la misma reconstruccion que iTerm. La diferencia de estructura es
