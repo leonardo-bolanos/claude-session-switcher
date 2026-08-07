@@ -512,6 +512,36 @@ class TestRecuperablesEnElPanel(unittest.TestCase):
             self.assertIn("muerta-uno", p.ultima())
             self.assertNotIn("ESPERANDO (4)", p.ultima())
 
+    def test_se_pueden_buscar(self):
+        """
+        El filtro tiene que funcionar tambien aqui: con cien recuperables en disco, la
+        lista sin buscador no sirve para encontrar nada.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0f")
+            p.enviar(b"dos")
+            self.assertIn("1 coincide", p.barra())
+            self.assertIn("muerta-dos", p.ultima())
+            self.assertNotIn("muerta-uno", p.ultima())
+            p.enviar(b"\033")                      # esc limpia el filtro
+            self.assertIn("muerta-uno", p.ultima())
+
+    def test_salen_de_la_mas_reciente_a_la_mas_vieja(self):
+        """`recent_rows` ordena por el `ts` de DENTRO del transcript, no por el mtime."""
+        import datetime
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        def iso(h):
+            return (ahora - datetime.timedelta(hours=h)).isoformat().replace("+00:00", "Z")
+        filas = [dict(num=i, sessionId="s%d" % i, name="n%d" % i, ts=iso(h), startedAt=0,
+                      recoverable=True, status="idle", kind="interactive", cwd="/x",
+                      repo="r", ventana=None, tty="", branch=None, model=None,
+                      effort=None, title=None, prompt=None, note="", paused=False,
+                      account="")
+                 for i, h in enumerate([5, 1, 9, 3], 1)]
+        ccl_mod = _cargar("ccl_orden", "ccl")
+        _, _, items = ccl_mod.grouped(filas)[0]
+        self.assertEqual([f["name"] for f in items], ["n2", "n4", "n1", "n3"])
+
     def test_la_barra_dice_como_volver(self):
         with con_panel() as p:
             self.assertIn("recuperar", p.barra())

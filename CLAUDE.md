@@ -256,6 +256,16 @@ Y al probar cambios: `brew audit` lee la copia **tapeada** en
 `/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
 sigue auditando la version anterior y parece que el arreglo no funciono.
 
+## `RECENT_MAX` son 200, y ese numero importa
+
+Con 20 la lista de recuperables servia para "que se acaba de caer", pero **no para buscar** — que
+es para lo que se usa. Con 111 transcripts en disco, filtrar entre los 20 mas recientes no
+encuentra casi nada, y el filtro parecia roto cuando lo que faltaba era la lista.
+
+Sale gratis porque **el coste lo domina el escaneo del directorio, no el numero de colas**:
+medido, 20 filas 0,41 s y 107 filas 0,44 s. El tope existe solo para acotar a quien tenga miles de
+transcripts; ahi `--recent 50` sigue estando.
+
 ## Al abrir la ventana, escribir en la CREADA (no en "la actual")
 
 `pestaña_nueva()` captura lo que devuelve `create window` / `create tab` en una variable y escribe

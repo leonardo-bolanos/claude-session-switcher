@@ -2521,7 +2521,14 @@ def interactive(feed, tabla=False):
 # iniciar sesion y olvidarlo.
 
 
-RECENT_MAX = 20       # cuantas recuperables se enseñan por defecto
+# Cuantas recuperables se enseñan por defecto. 200 y no 20: con 20 la lista servia para
+# "que se acaba de caer", pero no para BUSCAR — que es para lo que se usa. Con 111
+# transcripts en disco, buscar entre los 20 mas recientes no encuentra casi nada.
+#
+# Y sale gratis: el coste lo domina el escaneo del directorio, no el numero de colas que se
+# leen. Medido en esa maquina: 20 filas 0,41 s, 107 filas 0,44 s. El tope existe solo para
+# acotar el caso raro de quien tenga miles; ahi `--recent 50` sigue estando.
+RECENT_MAX = 200
 WATCH_SECONDS = 15    # el panel refresca a 4s porque lo estas mirando; esto vive todo el
                       # dia, y cada vuelta cuesta ~0,2s de CPU entre `claude` y osascript
 NOTIFY_MAX = 3        # mas sesiones que esto en una misma tanda: un solo aviso resumido
@@ -2827,7 +2834,7 @@ def procesos_claude():
     return len(res.stdout.split())
 
 
-def recent_rows(limite=20):
+def recent_rows(limite=RECENT_MAX):
     """
     Sesiones que YA NO CORREN pero se pueden reanudar, de la mas reciente hacia atras.
 
