@@ -10,6 +10,7 @@ Uso:
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
     ccl --recent     las que murieron con tu terminal, y las reanuda
+    ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -77,6 +78,7 @@ Usage:
     ccl --table      one line per session, in columns (Ctrl-T toggles it live)
     ccl --notify     watch in the background and notify when one starts waiting
     ccl --recent     sessions that died with your terminal, and resume them
+    ccl --recent --list   just look at them, no panel, nothing touched
     ccl --version    print the version
 
 `-w` is meant to hang off a global shortcut (Hammerspoon, Raycast) and jump to whoever is
@@ -131,6 +133,7 @@ Uso:
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
     ccl --recent     las que murieron con tu terminal, y las reanuda
+    ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -788,7 +791,19 @@ def space_actual():
     pantalla el de `spacesForScreen`, contando solo los de tipo `user`.
     """
     salida = _hs(_LUA_ORDENADOS + """
-      local actual = hs.spaces.focusedSpace()
+      -- El Space de la VENTANA de delante, no el "Space activo". Parece lo mismo y no lo
+      -- es: `focusedSpace()` describe la PANTALLA, y el cambio de escritorio que dispara
+      -- el `activate` del AppleScript se anima de forma asincrona — osascript vuelve en
+      -- cuanto despacha el evento, no cuando acaba la transicion. Leyendo ahi se apunta
+      -- el escritorio del que VIENES, y quedaba guardada la respuesta equivocada.
+      -- `windowSpaces` es una propiedad de la ventana: no depende de la animacion.
+      local actual = nil
+      local w = hs.window.frontmostWindow()
+      if w then
+        local suyos = hs.spaces.windowSpaces(w)
+        if suyos and #suyos > 0 then actual = suyos[1] end
+      end
+      actual = actual or hs.spaces.focusedSpace()
       for i, sid in ipairs(orden) do
         if sid == actual then print("CCLSPACE " .. i) return end
       end
@@ -1259,10 +1274,36 @@ def short_model(m):
     return m.replace("claude-", "").replace("-20", " ").split()[0]
 
 
+def despausar_las_que_trabajan(sessions, pausadas, spaces=None):
+    """
+    Quita la marca de pausa a las sesiones que han vuelto a trabajar. Devuelve el conjunto
+    que queda.
+
+    Pausar dice "esta espera a otro, no me avises". En cuanto vuelve a estar `busy` esa
+    frase ya es falsa: le diste trabajo tu. Si la marca se quedara puesta, al terminar
+    caeria otra vez en PAUSADAS y **no te avisaria ni contaria para `-w`** — justo la
+    sesion que acabas de atender seria la unica invisible.
+
+    Se despausa al verla `busy`, no al terminar, porque el flanco de "empieza a trabajar"
+    es el que significa "vuelvo a estar pendiente de esto".
+    """
+    trabajando = {s["sessionId"] for s in sessions
+                  if s.get("status") == "busy" and s["sessionId"] in pausadas}
+    if not trabajando:
+        return pausadas
+    quedan = pausadas - trabajando
+    # Se relee el estado antes de escribir: entre la lectura de `build` y este punto pudo
+    # guardarse una nota desde el panel, y `guardar_estado` escribe el archivo entero.
+    sesion, repo, _, spaces_disco = load_state()
+    guardar_estado(sesion, repo, quedan, spaces if spaces is not None else spaces_disco)
+    return quedan
+
+
 def build(sessions, ttys, iterm, numbers, tmux=None):
     rows = []
     # una lectura por refresco: es diminuto
-    notas_sesion, notas_repo, pausadas, _ = load_state()
+    notas_sesion, notas_repo, pausadas, spaces = load_state()
+    pausadas = despausar_las_que_trabajan(sessions, pausadas, spaces)
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")

@@ -584,6 +584,57 @@ class TestPausadas(unittest.TestCase):
         g = ccl.grouped([row(1, "a", "busy", ts=iso(minutes=1), paused=True)])
         self.assertEqual([lbl for lbl, _, _ in g], [ccl.t("grupo_busy")])
 
+    def test_volver_a_trabajar_le_quita_la_pausa(self):
+        """
+        Pausar dice "espera a otro, no me avises". En cuanto vuelve a estar `busy` esa
+        frase es falsa: le diste trabajo tú. Si la marca se quedara, al terminar caería
+        otra vez en PAUSADAS y sería la única sesión que NO te avisa — justo la que
+        acabas de atender.
+        """
+        ccl.toggle_paused("sid-a")
+        quedan = ccl.despausar_las_que_trabajan(
+            [{"sessionId": "sid-a", "status": "busy"}], {"sid-a"})
+        self.assertEqual(quedan, set())
+        self.assertEqual(ccl.load_state()[2], set(), "no se guardó en disco")
+
+    def test_una_pausada_que_sigue_parada_conserva_la_marca(self):
+        ccl.toggle_paused("sid-a")
+        quedan = ccl.despausar_las_que_trabajan(
+            [{"sessionId": "sid-a", "status": "idle"}], {"sid-a"})
+        self.assertEqual(quedan, {"sid-a"})
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+
+    def test_despausar_no_toca_ni_las_notas_ni_los_spaces(self):
+        """`guardar_estado` escribe el archivo entero: es facil llevarse algo por delante."""
+        ccl.save_note("sid-a", "esperando a Felipe")
+        ccl.toggle_paused("sid-a")
+        ccl._hs = lambda lua, marca, timeout=8: "4"
+        ccl.recordar_space("sid-a")
+        ccl.despausar_las_que_trabajan([{"sessionId": "sid-a", "status": "busy"}],
+                                       {"sid-a"})
+        sesion, _, pausadas, spaces = ccl.load_state()
+        self.assertEqual(sesion["sid-a"], "esperando a Felipe")
+        self.assertEqual(spaces, {"sid-a": 4})
+        self.assertEqual(pausadas, set())
+
+    def test_sin_ninguna_trabajando_no_escribe_el_archivo(self):
+        """Corre en cada refresco: reescribir el JSON por nada es gratis de evitar."""
+        ccl.toggle_paused("sid-a")
+        antes = os.path.getmtime(ccl.NOTES_FILE)
+        time.sleep(0.01)
+        ccl.despausar_las_que_trabajan([{"sessionId": "sid-b", "status": "busy"}],
+                                       {"sid-a"})
+        self.assertEqual(os.path.getmtime(ccl.NOTES_FILE), antes)
+
+    def test_build_la_despausa_al_construir_las_filas(self):
+        """De punta a punta: es `build` quien lo aplica, en cada `collect`."""
+        ccl.toggle_paused("sid-a")
+        sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1,
+                     "status": "busy"}]
+        fila = ccl.build(sesiones, {}, {}, {"sid-a": 1})[0]
+        self.assertFalse(fila["paused"])
+        self.assertEqual(ccl.load_state()[2], set())
+
     def test_una_de_background_pausada_no_sale_dos_veces(self):
         rows = [row(1, "bg", "idle", kind="background", paused=True, ts=iso(minutes=1))]
         etiquetas = [lbl for lbl, _, _ in ccl.grouped(rows)]
@@ -1270,6 +1321,31 @@ class TestFondoDelCursor(unittest.TestCase):
         self.assertTrue(salida.startswith(f"\033[48;5;{ccl.CURSOR_BG}m"))
         self.assertTrue(salida.endswith("\033[0m"))
         self.assertEqual(ccl.vis(salida), 20)
+
+
+class TestNoEnsuciarLaConfigReal(unittest.TestCase):
+    """
+    Guardarrail: apareció un `sid-b` de los tests dentro del `~/.claude/ccl-notes.json`
+    de verdad. Los tests escriben notas, pausas y escritorios, así que basta con que una
+    clase nueva olvide desviar `NOTES_FILE` para plantarle datos falsos a quien los corra.
+    """
+
+    def test_ningun_test_escribe_en_el_home_del_usuario(self):
+        import inspect
+        # Toda clase que llame a algo que escriba tiene que desviar NOTES_FILE en setUp.
+        escriben = ("save_note", "toggle_paused", "recordar_space", "guardar_estado",
+                    "despausar_las_que_trabajan", "escribir_json")
+        fuente = inspect.getsource(inspect.getmodule(self))
+        for bloque in fuente.split("\nclass ")[1:]:
+            nombre = bloque.split("(")[0]
+            if not any(f"ccl.{f}(" in bloque for f in escriben):
+                continue
+            self.assertIn("ccl.NOTES_FILE =", bloque,
+                          f"{nombre} escribe estado y no desvía NOTES_FILE")
+
+    def test_el_valor_por_defecto_apunta_al_home(self):
+        """Si esto cambiara, el guardarraíl de arriba dejaría de significar nada."""
+        self.assertTrue(ccl.NOTES_FILE.startswith(os.path.expanduser("~")))
 
 
 class TestVigilante(unittest.TestCase):

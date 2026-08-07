@@ -100,6 +100,7 @@ ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 ccl --table      # una línea por sesión, en columnas
 ccl --notify     # vigila en segundo plano y avisa cuando una pasa a esperarte
 ccl --recent     # las que murieron con tu terminal — para reanudarlas
+ccl --recent --list   # solo verlas, sin tocar nada
 ccl --version    # imprime la versión
 ```
 
@@ -113,7 +114,7 @@ ccl --version    # imprime la versión
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión |
-| `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti |
+| `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |

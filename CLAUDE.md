@@ -256,6 +256,34 @@ Y al probar cambios: `brew audit` lee la copia **tapeada** en
 `/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
 sigue auditando la version anterior y parece que el arreglo no funciono.
 
+## Pausada + trabajando = despausada
+
+**Volver a `busy` le quita la marca de pausa** (`despausar_las_que_trabajan`, llamada desde
+`build`). Pausar dice "espera a otro, no me avises"; en cuanto le das trabajo tu, esa frase es
+falsa. Si la marca se quedara puesta, al terminar caeria otra vez en PAUSADAS y seria la unica
+sesion que **no avisa ni cuenta para `-w`** — justo la que acabas de atender.
+
+Se despausa al verla `busy`, no al terminar: el flanco de "empieza a trabajar" es el que
+significa "vuelvo a estar pendiente de esto".
+
+Y **relee el estado antes de escribir**, porque `guardar_estado` escribe el archivo entero y
+entre la lectura de `build` y ese punto el panel pudo guardar una nota. Sin ninguna trabajando no
+escribe nada: corre en cada refresco.
+
+## El Space se lee de la VENTANA, no de la pantalla
+
+`hs.spaces.focusedSpace()` describe la PANTALLA, y el cambio de escritorio que dispara el
+`activate` del AppleScript **se anima de forma asincrona**: `osascript` vuelve en cuanto despacha
+el evento, no cuando acaba la transicion. Leyendo ahi justo despues de enfocar se apunta el
+escritorio del que VIENES. Por eso `space_actual()` usa `hs.spaces.windowSpaces(frontmostWindow)`,
+que es una propiedad de la ventana y no depende de la animacion, con `focusedSpace()` de respaldo.
+
+**El mapa se aprende usando la herramienta, y eso tiene un limite conocido**: solo se apunta el
+Space al enfocar una sesion VIVA. Una sesion que muere sin que la hayas visitado nunca con `ccl`
+no tiene escritorio guardado, y `--recent` la reabre en una pestaña. No es un fallo: es que no hay
+de donde sacarlo. Si algun dia molesta, la via es mapear ventana de iTerm -> ventana de
+Hammerspoon por posicion (los ids no casan) y apuntarlas todas en cada refresco.
+
 ## Contratos externos que pueden romperse
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.

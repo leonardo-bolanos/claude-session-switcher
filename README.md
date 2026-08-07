@@ -99,6 +99,7 @@ ccl -w2          # same, the second one in the WAITING queue
 ccl --table      # one line per session, in columns
 ccl --notify     # watch in the background, notify when one starts waiting
 ccl --recent     # the ones that died with your terminal — resume them
+ccl --recent --list   # just look at them, nothing is touched
 ccl --version    # print the version
 ```
 
@@ -112,7 +113,7 @@ ccl --version    # print the version
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
 | `Ctrl-N` | Write **your own note** on this session |
-| `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you |
+| `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
