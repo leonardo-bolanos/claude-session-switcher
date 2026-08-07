@@ -270,6 +270,14 @@ terminal, que es el peor sintoma posible — parece cosa del atajo y no lo es. L
 (`zsh -ic`) costaba ~0,7 s por pulsacion; `zsh -lc` no sirve, porque nvm se carga en `.zshrc` y
 un shell de login no lo lee.
 
+**Una actualizacion de Claude Code VACIA el registro de sesiones.** Verificado el 2026-08-06 al
+pasar de 2.1.220 a 2.1.224: tres sesiones seguian corriendo, `claude agents --json` devolvia `[]`,
+y una sesion arrancada DESPUES aparecia al momento. O sea que los procesos anteriores a la
+actualizacion quedan huerfanos del registro hasta que se reinician. No es cosa de `ccl`, pero se
+ve como "no hay sesiones activas" y manda a diagnosticar el sitio equivocado: por eso
+`procesos_claude()` cuenta los `claude` vivos con `pgrep` y, si los hay, el mensaje lo explica y
+manda a `--recent`, que lee de disco y no depende del registro.
+
 | Fuente | Qué se usa | Si cambia |
 |---|---|---|
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status` | El panel se queda sin datos |

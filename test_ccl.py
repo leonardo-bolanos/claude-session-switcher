@@ -856,6 +856,54 @@ class TestTmux(unittest.TestCase):
         self.assertIn(("select-pane", "-t", "trabajo:0.1"), self.llamadas)
 
 
+class TestRegistroVacioPeroSesionesVivas(unittest.TestCase):
+    """
+    El caso que reportó el usuario: "tengo varias sesiones abiertas" y el panel decía que
+    no había ninguna. Causa verificada: Claude Code se auto-actualizó (2.1.220 → 2.1.224) y
+    las sesiones anteriores a la actualización se caen de su registro. Siguen corriendo,
+    pero `claude agents --json` devuelve `[]`.
+
+    No es un fallo de `ccl`, pero decir "no hay sesiones" cuando las hay manda a
+    diagnosticar el sitio equivocado.
+    """
+
+    def test_cuenta_los_procesos_vivos(self):
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda *a, **k: type(
+            "R", (), {"returncode": 0, "stdout": "111\n222\n333\n"})()
+        try:
+            self.assertEqual(ccl.procesos_claude(), 3)
+        finally:
+            ccl.subprocess.run = orig
+
+    def test_sin_pgrep_no_revienta(self):
+        orig = ccl.subprocess.run
+
+        def revienta(*a, **k):
+            raise OSError("no hay pgrep")
+
+        ccl.subprocess.run = revienta
+        try:
+            self.assertEqual(ccl.procesos_claude(), 0)
+        finally:
+            ccl.subprocess.run = orig
+
+    def test_los_dos_mensajes_existen_y_dicen_cosas_distintas(self):
+        """Uno manda a `--recent`; el otro explica ADEMAS por qué no se ven."""
+        for idioma in ("en", "es"):
+            original = ccl.LANG
+            ccl.LANG = idioma
+            try:
+                vacio = ccl.t("sin_sesiones")
+                vivas = ccl.t("sin_sesiones_pero_vivas", n=3)
+            finally:
+                ccl.LANG = original
+            self.assertNotEqual(vacio, vivas)
+            self.assertIn("3", vivas)
+            self.assertIn("--recent", vivas)
+            self.assertIn("--recent", vacio)
+
+
 class TestSpaces(unittest.TestCase):
     """
     Recordar en qué escritorio vivía una sesión y devolverla ahí al recuperarla.

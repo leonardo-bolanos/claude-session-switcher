@@ -250,6 +250,11 @@ TEXTOS = {
         "sin_sesiones": ("No active Claude Code sessions.\n"
                          "  If your terminal just died, `ccl --recent` lists the ones "
                          "you can resume."),
+        "sin_sesiones_pero_vivas": (
+            "Claude Code's registry is empty, but {n} `claude` processes are running.\n"
+            "  That usually means Claude Code updated itself: sessions started before the\n"
+            "  update fall out of the registry and stay invisible until you restart them.\n"
+            "  `ccl --recent` reads them from disk and can resume them."),
         "no_existe_numero": "There's no session number {n}.",
         "ninguna_esperando": "no session waiting",
         "solo_hay_esperando": "only {n} waiting",
@@ -341,6 +346,12 @@ TEXTOS = {
         "sin_sesiones": ("No hay sesiones de Claude Code activas.\n"
                          "  Si se acaba de caer tu terminal, `ccl --recent` lista las "
                          "que puedes reanudar."),
+        "sin_sesiones_pero_vivas": (
+            "El registro de Claude Code está vacío, pero hay {n} procesos `claude`\n"
+            "  corriendo. Suele significar que Claude Code se actualizó solo: las sesiones\n"
+            "  anteriores a la actualización se caen del registro y quedan invisibles hasta\n"
+            "  que las reinicies.\n"
+            "  `ccl --recent` las lee de disco y puede reanudarlas."),
         "no_existe_numero": "No existe la sesion numero {n}.",
         "ninguna_esperando": "ninguna sesión esperando",
         "solo_hay_esperando": "solo hay {n} esperando",
@@ -2639,6 +2650,25 @@ def collect():
     return build(sessions, ttys, iterm, numbers, tmux)
 
 
+def procesos_claude():
+    """
+    Cuantos procesos `claude` hay vivos ahora mismo.
+
+    Sirve para distinguir dos cosas que en pantalla se veian iguales: "no tienes ninguna
+    sesion" y "las tienes, pero el registro no las ve". Lo segundo pasa **cuando Claude
+    Code se actualiza solo**: los procesos que ya estaban siguen corriendo y desaparecen de
+    `claude agents --json` hasta que los reinicies. Verificado el 2026-08-06 al pasar de
+    2.1.220 a 2.1.224: tres sesiones vivas y el registro vacio; una sesion nueva, arrancada
+    despues, aparecia al momento.
+    """
+    try:
+        res = subprocess.run(["pgrep", "-x", "claude"], capture_output=True, text=True,
+                             timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    return len(res.stdout.split())
+
+
 def recent_rows(limite=20):
     """
     Sesiones que YA NO CORREN pero se pueden reanudar, de la mas reciente hacia atras.
@@ -2913,7 +2943,8 @@ def main():
             return 0
 
     if not rows:
-        print(t("sin_sesiones"))
+        vivos = procesos_claude()
+        print(t("sin_sesiones_pero_vivas", n=vivos) if vivos else t("sin_sesiones"))
         return 0
 
     if opts["waiting"] is not None:
