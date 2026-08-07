@@ -57,15 +57,8 @@ How it would go:
 
 In order of how feasible they look:
 
-- **tmux** — **verified**, and probably the easiest of all: it needs no AppleScript.
-
-  ```
-  $ tmux list-panes -a -F '#{pane_tty} #{session_name}:#{window_index}.#{pane_index}'
-  /dev/ttys082 my-session:0.0
-  ```
-
-  That gives the TTY → target mapping directly, and `tmux switch-client` + `select-window` +
-  `select-pane` focuses it. It also doesn't suffer the tab-index problem: the target is stable.
+- **tmux** — **done.** Sessions running inside a tmux pane are found and focused, and a
+  detached session gets attached in a new iTerm tab. See "Sessions inside tmux" in the README.
 - **kitty** *(unverified)* — has a remote control protocol (`kitty @ ls` returns windows and tabs
   with their PID), so the mapping would be by PID instead of by TTY.
 - **WezTerm** *(unverified)* — `wezterm cli list --format json` includes `pane_id` and the

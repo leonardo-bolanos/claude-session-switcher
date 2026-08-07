@@ -90,7 +90,7 @@ def coleccionar():
     # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
     # filas. Hay que replicar ese paso aqui o la nota no reaparece al reabrir el panel:
     # se veria solo la copia en memoria del panel que la escribio.
-    notas_sesion, notas_repo, pausadas = ccl.load_state()
+    notas_sesion, notas_repo, pausadas, spaces = ccl.load_state()
     filas = [dict(f) for f in FIJAS]
     if _MATAR and os.path.exists(_MATAR):
         filas = [f for f in filas if f["name"] != _MUERTA]

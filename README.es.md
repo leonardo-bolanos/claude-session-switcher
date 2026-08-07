@@ -185,6 +185,54 @@ costa de perder el cambio de pestaña.
 </details>
 
 <details>
+<summary><b>De vuelta a su escritorio</b> — opcional, necesita Hammerspoon</summary>
+
+Cuando `ccl` reanuda una sesión muerta o engancha una de tmux suelta, la ventana nueva caería
+donde macOS quisiera. Si tienes [Hammerspoon](https://www.hammerspoon.org), `ccl` recuerda en qué
+Space (escritorio) vivía cada sesión y la devuelve ahí.
+
+**No mueve ninguna ventana.** `hs.spaces.moveWindowToSpace` está roto desde macOS 15 —devuelve
+`true` y no hace nada— y el único apaño que queda, arrastrar la miniatura en Mission Control,
+suelta las ventanas de iTerm en pantalla completa. Así que `ccl` hace lo contrario: cambia al
+escritorio destino *primero*, y la ventana nueva nace ahí. Sin arrastres y sin Mission Control.
+
+Dos detalles que hubo que medir:
+
+- **El cursor se mueve antes a la pantalla destino.** iTerm crea la ventana en el monitor donde
+  está el ratón, no en el que tiene el Space activo — sin esto la ventana aparecía siempre en el
+  monitor equivocado.
+- **Crea una ventana, no una pestaña.** Una pestaña se suma a la ventana actual, que puede estar
+  en otro escritorio.
+
+El escritorio se **aprende usando `ccl`**: después de un salto con éxito la ventana está delante,
+así que el Space activo es el de esa sesión. Se guarda por sessionId como *ordinal* (escritorio
+1..N en el orden de `allScreens()`), porque los IDs de Space cambian entre reinicios.
+
+Sin Hammerspoon no se rompe nada: la pestaña se abre donde caiga.
+
+</details>
+
+<details>
+<summary><b>Sesiones dentro de tmux</b> — se encuentran, se enfocan y se reenganchan</summary>
+
+Si lanzas Claude Code dentro de un panel de tmux, su TTY es de tmux y no de iTerm — así que `ccl`
+la enseñaba con el ⚠ rojo, incapaz de encontrarla. Ahora las mapea:
+
+- **Sesión enganchada** → `Enter` selecciona el panel dentro de tmux *y* enfoca la ventana de iTerm
+  donde vive ese cliente de tmux. El puente es el TTY del cliente, que ese sí es de iTerm.
+- **Sesión suelta** (se cayó iTerm y tmux siguió vivo) → `Enter` abre una pestaña nueva y hace
+  `tmux attach`, con el panel correcto ya seleccionado.
+
+Ese segundo caso es la razón de usar tmux: **las sesiones sobreviven al terminal**. Si iTerm se
+cae no se pierde nada — una tecla las devuelve a la pantalla, todavía corriendo, en vez de tener
+que reanudarlas desde disco.
+
+Cuesta dos llamadas a `tmux` (~11 ms) por refresco, y nada en absoluto si tmux no está instalado o
+no hay servidor levantado.
+
+</details>
+
+<details>
 <summary><b>Cuando iTerm se cae</b> — recuperar las sesiones</summary>
 
 Las sesiones de Claude Code mueren con su terminal. Así que cuando iTerm se va,

@@ -47,7 +47,7 @@ that source, with an interface, plus the jump to the right window.
 ## Requirements
 
 - **macOS** and **iTerm2** — the window jump uses AppleScript against iTerm2. In Terminal.app
-  the listing works, the jump doesn't.
+  the listing works, the jump doesn't. **tmux is supported** on top of iTerm2 (optional).
 - **Python 3.7+** (for `datetime.fromisoformat`). No external dependencies.
 - **Claude Code** v2.1.139 or newer (when `claude agents` landed).
 
@@ -180,6 +180,54 @@ Keys). Without that, `⌥1` produces a symbol (`¡`) and the panel treats it as 
 `⌘1..9` can't be used at all: iTerm2 keeps it for tab switching and it never reaches `ccl` — if
 you'd rather have it, map `⌘N` → *Send Escape Sequence* `N` and it works the same, at the cost
 of losing tab switching.
+
+</details>
+
+<details>
+<summary><b>Back to the same Space</b> — optional, needs Hammerspoon</summary>
+
+When `ccl` resumes a dead session or attaches a detached tmux one, the new window would normally
+land wherever macOS feels like. If [Hammerspoon](https://www.hammerspoon.org) is installed, `ccl`
+remembers which Space (desktop) each session lived in and puts it back there.
+
+**It never moves a window.** `hs.spaces.moveWindowToSpace` has been broken since macOS 15 — it
+returns `true` and does nothing — and the only workaround left, dragging the thumbnail in Mission
+Control, drops iTerm windows into fullscreen instead. So `ccl` does the opposite: it switches to
+the target Space *first*, and the new window is born there. No dragging, no Mission Control.
+
+Two details that took measuring:
+
+- **The cursor is moved to the target screen first.** iTerm creates the window on the display the
+  mouse is on, not the one whose Space is active — without this the window appears on the wrong
+  monitor every time.
+- **It creates a window, not a tab.** A tab joins the current window, which may be on another
+  desktop entirely.
+
+The Space is **learned by using `ccl`**: after a successful jump, the window is in front, so the
+active Space is that session's. It's stored per session ID as an *ordinal* (desktop 1..N in
+`allScreens()` order), because raw Space IDs change across reboots.
+
+Without Hammerspoon nothing breaks — the tab just opens wherever it opens.
+
+</details>
+
+<details>
+<summary><b>Sessions inside tmux</b> — found, focused, and re-attached</summary>
+
+If you run Claude Code inside a tmux pane, its TTY belongs to tmux, not to iTerm — so `ccl` used
+to show it with the red ⚠, unable to find it. Now it maps them:
+
+- **Attached session** → `Enter` selects the pane inside tmux *and* focuses the iTerm window where
+  that tmux client lives. The bridge is the client's TTY, which *is* an iTerm one.
+- **Detached session** (iTerm died, tmux kept running) → `Enter` opens a new iTerm tab and
+  `tmux attach`es it, with the right pane already selected.
+
+That second case is why tmux is worth it: **the sessions survive the terminal**. If iTerm crashes,
+nothing is lost — one keystroke puts them back on screen, still running, instead of having to
+resume them from disk.
+
+It costs two `tmux` calls (~11 ms) per refresh, and nothing at all if tmux isn't installed or no
+server is running.
 
 </details>
 

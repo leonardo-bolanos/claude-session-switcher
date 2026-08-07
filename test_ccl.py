@@ -560,7 +560,7 @@ class TestPausadas(unittest.TestCase):
     def test_pausar_no_toca_las_notas(self):
         ccl.save_note("sid-a", "esperando a Felipe")
         ccl.toggle_paused("sid-a")
-        sesion, _, pausadas = ccl.load_state()
+        sesion, _, pausadas, _ = ccl.load_state()
         self.assertEqual(sesion["sid-a"], "esperando a Felipe")
         self.assertEqual(pausadas, {"sid-a"})
 
@@ -605,7 +605,7 @@ class TestPausadas(unittest.TestCase):
 
     def test_el_formato_viejo_sigue_leyendose_y_no_tiene_pausadas(self):
         ccl.escribir_json(ccl.NOTES_FILE, {"/repos/web": "escrita con el formato viejo"})
-        sesion, repo, pausadas = ccl.load_state()
+        sesion, repo, pausadas, _ = ccl.load_state()
         self.assertEqual(repo, {"/repos/web": "escrita con el formato viejo"})
         self.assertEqual((sesion, pausadas), ({}, set()))
 
@@ -648,7 +648,7 @@ class TestPausadas(unittest.TestCase):
         """Sin la clave en la deteccion del formato, {"pausadas": [...]} se leia como el
         formato viejo y la lista acababa de nota de un repo llamado "pausadas"."""
         ccl.escribir_json(ccl.NOTES_FILE, {"pausadas": ["sid-a"]})
-        sesion, repo, pausadas = ccl.load_state()
+        sesion, repo, pausadas, _ = ccl.load_state()
         self.assertEqual((sesion, repo), ({}, {}))
         self.assertEqual(pausadas, {"sid-a"})
 
@@ -748,6 +748,230 @@ class TestTabla(unittest.TestCase):
         for ancho in (80, 100, 128):
             for _, texto, _ in ccl.build_table_display(self.filas(), width=ancho):
                 self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
+
+
+class TestTmux(unittest.TestCase):
+    """
+    Una sesión dentro de un panel de tmux es INVISIBLE para `get_iterm_map()`: su tty es
+    el pseudoterminal que creó tmux. Salía siempre con el ⚠ de "no la encuentro", y es
+    justo la que más interesa localizar, porque sobrevive a que el terminal se caiga.
+    """
+
+    def setUp(self):
+        self.orig = ccl._tmux
+        self.llamadas = []
+
+    def tearDown(self):
+        ccl._tmux = self.orig
+
+    def _tmux_falso(self, paneles, clientes=""):
+        def falso(*args):
+            self.llamadas.append(args)
+            if args[0] == "list-panes":
+                return paneles
+            if args[0] == "list-clients":
+                return clientes
+            return ""
+        ccl._tmux = falso
+
+    def test_mapea_el_panel_con_su_destino_y_su_cliente(self):
+        self._tmux_falso("/dev/ttys092\ttrabajo:0.1\ttrabajo\n",
+                         "trabajo\t/dev/ttys004\n")
+        self.assertEqual(ccl.get_tmux_map(),
+                         {"ttys092": ("trabajo:0.1", "trabajo", "ttys004")})
+
+    def test_una_sesion_suelta_no_tiene_cliente(self):
+        """Detached no es un error: es «se cayó iTerm y tmux siguió vivo»."""
+        self._tmux_falso("/dev/ttys092\ttrabajo:0.1\ttrabajo\n", "")
+        self.assertEqual(ccl.get_tmux_map()["ttys092"][2], "")
+
+    def test_sin_tmux_o_sin_servidor_devuelve_vacio(self):
+        ccl._tmux = lambda *a: None
+        self.assertEqual(ccl.get_tmux_map(), {})
+
+    def test_una_linea_rota_no_tumba_el_mapa(self):
+        self._tmux_falso("basura sin tabuladores\n"
+                         "/dev/ttys092\ttrabajo:0.1\ttrabajo\n"
+                         "no-es-un-tty\tx:0.0\tx\n")
+        self.assertEqual(list(ccl.get_tmux_map()), ["ttys092"])
+
+    def _fila(self, tmux_map, iterm=None):
+        ses = [{"sessionId": "sid-a", "name": "n", "cwd": "/x/repo", "pid": 1}]
+        return ccl.build(ses, {1: "ttys092"}, iterm or {}, {"sid-a": 1}, tmux_map)[0]
+
+    def test_la_ventana_se_resuelve_por_el_CLIENTE_no_por_el_panel(self):
+        """
+        El puente entre los dos mapas: el tty del panel no está en iTerm, pero el del
+        cliente al que está enganchada la sesión de tmux sí.
+        """
+        fila = self._fila({"ttys092": ("trabajo:0.1", "trabajo", "ttys004")},
+                          iterm={"ttys004": ("42", 3)})
+        self.assertEqual(fila["tmux"], ("trabajo:0.1", "trabajo"))
+        self.assertEqual(fila["iterm"], ("42", 3))
+
+    def test_suelta_no_tiene_ventana_pero_tampoco_lleva_el_aviso(self):
+        """Se puede llegar a ella —enganchándola—, así que el ⚠ mentiría."""
+        fila = self._fila({"ttys092": ("trabajo:0.1", "trabajo", "")})
+        self.assertIsNone(fila["iterm"])
+        self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.main_line(fila)))
+        self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.table_line(fila, 120)))
+
+    def test_una_sesion_fuera_de_tmux_no_cambia(self):
+        fila = self._fila({}, iterm={"ttys092": ("7", 1)})
+        self.assertIsNone(fila["tmux"])
+        self.assertEqual(fila["iterm"], ("7", 1))
+
+    def test_focus_selecciona_el_panel_y_engancha_si_esta_suelta(self):
+        self._tmux_falso("", "")
+        abiertas = []
+        orig = ccl.pestaña_nueva
+        ccl.pestaña_nueva = (lambda orden, quiet=False, space=None:
+                             abiertas.append(orden) or 0)
+        try:
+            fila = {"tmux": ("trabajo:0.1", "mi sesion"), "iterm": None,
+                    "name": "n", "repo": "r", "tty": "", "num": 1, "cwd": "/x"}
+            self.assertEqual(ccl.focus(fila, quiet=True), 0)
+        finally:
+            ccl.pestaña_nueva = orig
+        self.assertIn(("select-window", "-t", "trabajo:0"), self.llamadas)
+        self.assertIn(("select-pane", "-t", "trabajo:0.1"), self.llamadas)
+        # el nombre de la sesion va entrecomillado: un espacio partiria el comando
+        self.assertEqual(abiertas, ["tmux attach -t 'mi sesion'"])
+
+    def test_si_esta_enganchada_no_abre_pestaña_ninguna(self):
+        self._tmux_falso("", "")
+        abiertas = []
+        orig_p, orig_run = ccl.pestaña_nueva, ccl.subprocess.run
+        ccl.pestaña_nueva = (lambda orden, quiet=False, space=None:
+                             abiertas.append(orden) or 0)
+        ccl.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0,
+                                                            "stderr": ""})()
+        try:
+            fila = {"tmux": ("trabajo:0.1", "trabajo"), "iterm": ("42", 3),
+                    "name": "n", "repo": "r", "tty": "", "num": 1, "cwd": "/x"}
+            self.assertEqual(ccl.focus(fila, quiet=True), 0)
+        finally:
+            ccl.pestaña_nueva, ccl.subprocess.run = orig_p, orig_run
+        self.assertEqual(abiertas, [], "ya estaba a la vista: no hay que enganchar nada")
+        self.assertIn(("select-pane", "-t", "trabajo:0.1"), self.llamadas)
+
+
+class TestSpaces(unittest.TestCase):
+    """
+    Recordar en qué escritorio vivía una sesión y devolverla ahí al recuperarla.
+
+    **No se mueve ninguna ventana**: `hs.spaces.moveWindowToSpace` está roto desde macOS 15
+    y el apaño de arrastrar la miniatura en Mission Control con iTerm la suelta en pantalla
+    completa. Se cambia de Space ANTES y la ventana nace donde toca — verificado en vivo.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = (ccl.NOTES_FILE, ccl._hs)
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+
+    def tearDown(self):
+        ccl.NOTES_FILE, ccl._hs = self.orig
+        self.tmp.cleanup()
+
+    def test_sin_hammerspoon_no_pasa_nada(self):
+        """Es opcional: quien no lo tenga usa `ccl` igual, sin escritorios y sin errores."""
+        ccl._hs = lambda lua, marca, timeout=8: None
+        self.assertIsNone(ccl.space_actual())
+        self.assertFalse(ccl.ir_a_space(3))
+        self.assertIsNone(ccl.recordar_space("sid-a"))
+
+    def test_lee_el_ordinal_del_space_activo(self):
+        ccl._hs = lambda lua, marca, timeout=8: "5"
+        self.assertEqual(ccl.space_actual(), 5)
+
+    def test_un_space_que_no_esta_en_la_lista_es_None(self):
+        """El Lua devuelve 0 cuando el Space activo no es de tipo `user` (pantalla
+        completa, por ejemplo): eso no se guarda."""
+        ccl._hs = lambda lua, marca, timeout=8: "0"
+        self.assertIsNone(ccl.space_actual())
+
+    def test_guarda_el_space_al_enfocar_y_no_pisa_lo_demas(self):
+        ccl.save_note("sid-a", "una nota")
+        ccl.toggle_paused("sid-a")
+        ccl._hs = lambda lua, marca, timeout=8: "4"
+        self.assertEqual(ccl.recordar_space("sid-a"), 4)
+        sesion, _, pausadas, spaces = ccl.load_state()
+        self.assertEqual(spaces, {"sid-a": 4})
+        self.assertEqual(sesion["sid-a"], "una nota")
+        self.assertEqual(pausadas, {"sid-a"})
+
+    def test_no_reescribe_el_archivo_si_no_cambio(self):
+        """Se llama en cada salto: reescribir el JSON por nada es gratis de evitar."""
+        ccl._hs = lambda lua, marca, timeout=8: "4"
+        ccl.recordar_space("sid-a")
+        antes = os.path.getmtime(ccl.NOTES_FILE)
+        time.sleep(0.01)
+        ccl.recordar_space("sid-a")
+        self.assertEqual(os.path.getmtime(ccl.NOTES_FILE), antes)
+
+    def test_un_valor_corrupto_no_revienta(self):
+        ccl.escribir_json(ccl.NOTES_FILE, {"spaces": {"sid-a": "cuatro", "sid-b": 0,
+                                                      "sid-c": 3}})
+        self.assertEqual(ccl.load_state()[3], {"sid-c": 3})
+
+    def test_la_fila_recuperable_lleva_su_space(self):
+        ccl.escribir_json(ccl.NOTES_FILE, {"spaces": {"sid-a": 6}})
+        tmp2 = tempfile.TemporaryDirectory()
+        cfg = os.path.join(tmp2.name, ".claude")
+        os.makedirs(os.path.join(cfg, "projects", "-x"))
+        with open(os.path.join(cfg, "projects", "-x", "sid-a.jsonl"), "w") as fh:
+            fh.write(json.dumps({"sessionId": "sid-a", "cwd": "/x/r",
+                                 "timestamp": iso(minutes=1)}) + "\n")
+        orig = (ccl.config_dirs, ccl.get_sessions)
+        ccl.config_dirs, ccl.get_sessions = (lambda: [cfg]), (lambda: [])
+        try:
+            self.assertEqual(ccl.recent_rows()[0]["space"], 6)
+        finally:
+            ccl.config_dirs, ccl.get_sessions = orig
+            tmp2.cleanup()
+
+    def test_con_space_se_crea_una_VENTANA_no_una_pestaña(self):
+        """
+        Una pestaña se añade a la ventana actual, que puede estar en otro escritorio: no
+        habríamos vuelto a ninguna parte. Con destino hay que crear ventana.
+        """
+        capturado = {}
+
+        def falso(cmd, **kw):
+            capturado["cmd"] = cmd
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+
+        orig_run, orig_ir = ccl.subprocess.run, ccl.ir_a_space
+        ccl.subprocess.run = falso
+        ccl.ir_a_space = lambda n: True
+        try:
+            ccl.pestaña_nueva("echo hola", quiet=True, space=3)
+            self.assertEqual(capturado["cmd"][-1], "ventana")
+            ccl.pestaña_nueva("echo hola", quiet=True)
+            self.assertEqual(capturado["cmd"][-1], "pestaña")
+        finally:
+            ccl.subprocess.run, ccl.ir_a_space = orig_run, orig_ir
+
+    def test_si_el_cambio_de_space_falla_se_abre_una_pestaña_normal(self):
+        """Degradar, no fallar: mejor la sesión en el escritorio equivocado que nada."""
+        capturado = {}
+
+        def falso(cmd, **kw):
+            capturado["cmd"] = cmd
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+
+        orig_run, orig_ir = ccl.subprocess.run, ccl.ir_a_space
+        ccl.subprocess.run, ccl.ir_a_space = falso, (lambda n: False)
+        try:
+            self.assertEqual(ccl.pestaña_nueva("echo", quiet=True, space=3), 0)
+            self.assertEqual(capturado["cmd"][-1], "pestaña")
+        finally:
+            ccl.subprocess.run, ccl.ir_a_space = orig_run, orig_ir
 
 
 class TestRecuperables(unittest.TestCase):
@@ -902,7 +1126,7 @@ class TestReanudar(unittest.TestCase):
         """Un directorio con espacios partiria el `cd` en dos."""
         cmd = self._capturar({"cwd": "/Users/yo/Mis Cosas/repo", "sessionId": "s-1",
                               "name": "x", "repo": "r"})
-        orden = cmd[-1]
+        orden = cmd[cmd.index("--") + 1]
         self.assertIn("'/Users/yo/Mis Cosas/repo'", orden)
         self.assertIn("--resume s-1", orden)
 

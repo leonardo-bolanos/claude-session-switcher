@@ -282,6 +282,7 @@ TEXTOS = {
         "notif_varias": "{n} sessions are waiting for you",
         "notif_varias_sub": "ccl",
         "notify_arrancado": "ccl is watching {n} sessions. Ctrl-C to stop.",
+        "enganchada": "⧉ {name} — attached tmux session {sesion} in a new tab",
         "recuperada": "↻ {name} ({repo}) resumed in a new tab",
         "recuperando": "↻ {name} — new tab",
         "no_se_pudo_recuperar": "⚠ couldn't resume {name}",
@@ -371,6 +372,7 @@ TEXTOS = {
         "notif_varias": "{n} sesiones te esperan",
         "notif_varias_sub": "ccl",
         "notify_arrancado": "ccl vigilando {n} sesiones. Ctrl-C para parar.",
+        "enganchada": "⧉ {name} — sesión de tmux {sesion} enganchada en una pestaña nueva",
         "recuperada": "↻ {name} ({repo}) reanudada en una pestaña nueva",
         "recuperando": "↻ {name} — pestaña nueva",
         "no_se_pudo_recuperar": "⚠ no se pudo reanudar {name}",
@@ -719,6 +721,170 @@ def get_ttys(pids):
     return result
 
 
+# ─────────────── Spaces de macOS (opcional, via Hammerspoon) ───────────────
+#
+# Recordar en QUE escritorio vivia una sesion, y devolverla ahi al recuperarla.
+#
+# **Mover una ventana a un Space esta roto desde macOS 15** (`hs.spaces.moveWindowToSpace`
+# devuelve true sin mover nada), y el apaño que queda —arrastrar la miniatura en Mission
+# Control— con iTerm falla: la suelta en pantalla completa. Por eso aqui NO se mueve nada.
+#
+# Se hace al reves: se CAMBIA al Space destino y se crea la ventana alli. Una ventana nueva
+# nace en el Space activo de la pantalla donde esta el cursor — verificado. Sin arrastres y
+# sin Mission Control.
+#
+# Todo esto es opcional: sin Hammerspoon, `_hs()` devuelve None y `ccl` funciona igual.
+
+_LUA_ORDENADOS = """
+local orden = {}
+for _, p in ipairs(hs.screen.allScreens()) do
+  for _, sid in ipairs(hs.spaces.spacesForScreen(p:id()) or {}) do
+    if hs.spaces.spaceType(sid) == "user" then orden[#orden+1] = sid end
+  end
+end
+"""
+
+
+def _hs(lua, marca, timeout=8):
+    """
+    Lo que imprima `print(marca .. " " .. algo)` en Hammerspoon, o None.
+
+    Se busca una MARCA en vez de leer la salida entera porque `hs -c` escupe tambien sus
+    "-- Loading extension: ..." la primera vez que toca una extension.
+    """
+    if not shutil.which("hs"):
+        return None
+    try:
+        res = subprocess.run(["hs", "-t", str(timeout), "-c", lua],
+                             capture_output=True, text=True, timeout=timeout + 5,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    for linea in res.stdout.splitlines():
+        if linea.startswith(marca + " "):
+            return linea[len(marca) + 1:].strip()
+    return None
+
+
+def space_actual():
+    """
+    El ordinal (1..N) del Space activo, o None si no se puede saber.
+
+    Ordinal y no ID, por lo mismo que en el sistema de restauracion del usuario: los IDs de
+    Space cambian entre reinicios. El orden es el de `allScreens()`, y dentro de cada
+    pantalla el de `spacesForScreen`, contando solo los de tipo `user`.
+    """
+    salida = _hs(_LUA_ORDENADOS + """
+      local actual = hs.spaces.focusedSpace()
+      for i, sid in ipairs(orden) do
+        if sid == actual then print("CCLSPACE " .. i) return end
+      end
+      print("CCLSPACE 0")
+    """, "CCLSPACE")
+    if not salida or not salida.isdigit() or salida == "0":
+        return None
+    return int(salida)
+
+
+def ir_a_space(ordinal):
+    """
+    Cambia al Space `ordinal` y deja el cursor en su pantalla. True si se pudo.
+
+    Lo del cursor no es un detalle: iTerm crea la ventana nueva en la pantalla donde esta
+    el raton, asi que sin moverlo la ventana nace en el monitor equivocado y todo el
+    ejercicio no sirve de nada. Medido: pasaba siempre.
+    """
+    salida = _hs(_LUA_ORDENADOS + """
+      local destino = orden[%d]
+      if not destino then print("CCLGOTO 0") return end
+      for _, p in ipairs(hs.screen.allScreens()) do
+        for _, sid in ipairs(hs.spaces.spacesForScreen(p:id()) or {}) do
+          if sid == destino then
+            local f = p:fullFrame()
+            hs.mouse.absolutePosition({x = f.x + f.w / 2, y = f.y + f.h / 2})
+          end
+        end
+      end
+      hs.spaces.gotoSpace(destino)
+      print("CCLGOTO 1")
+    """ % int(ordinal), "CCLGOTO")
+    return salida == "1"
+
+
+def recordar_space(session_id):
+    """
+    Apunta en que Space esta ahora esa sesion. Se llama tras enfocarla con exito.
+
+    Se aprende USANDO `ccl`: enfocar una sesion trae su ventana al frente, o sea que el
+    Space activo en ese momento **es** el suyo. Nada de escanear ventanas ni de emparejar
+    identificadores de iTerm con los de Hammerspoon, que son mundos distintos.
+    """
+    ordinal = space_actual()
+    if not ordinal:
+        return None
+    sesion, repo, pausadas, spaces = load_state()
+    if spaces.get(session_id) == ordinal:
+        return ordinal            # sin cambios: no se reescribe el archivo por nada
+    spaces[session_id] = ordinal
+    guardar_estado(sesion, repo, pausadas, spaces)
+    return ordinal
+
+
+def _tmux(*args):
+    """Salida de un comando de tmux, o None si no hay tmux o no hay servidor."""
+    if not shutil.which("tmux"):
+        return None
+    try:
+        res = subprocess.run(["tmux"] + list(args), capture_output=True, text=True,
+                             timeout=5, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # sin servidor levantado tmux sale con error y un "no server running": no es un
+    # fallo, es el caso normal de quien no usa tmux
+    return res.stdout if res.returncode == 0 else None
+
+
+def get_tmux_map():
+    """
+    {tty del panel: (destino, sesion, tty del cliente)} para las sesiones dentro de tmux.
+
+    Existe porque una sesion en un panel de tmux es INVISIBLE para `get_iterm_map()`: su
+    tty es el pseudoterminal que creo tmux, no el de iTerm, asi que salia siempre con el ⚠
+    de "no la encuentro". Y es justo la que mas interesa localizar, porque sobrevive a que
+    el terminal se caiga.
+
+    El `tty del cliente` es donde esta ENGANCHADA esa sesion de tmux, y ese si es un tty de
+    iTerm: es el puente entre los dos mapas. Vale None si la sesion esta suelta (detached),
+    que no es un error — es el caso de "se cayo iTerm y tmux siguio vivo".
+
+    Dos consultas y ya (~11 ms). Misma leccion que con AppleScript: nada de un comando por
+    sesion.
+    """
+    paneles = _tmux("list-panes", "-a", "-F",
+                    "#{pane_tty}\t#{session_name}:#{window_index}.#{pane_index}"
+                    "\t#{session_name}")
+    if not paneles:
+        return {}
+    clientes = {}
+    for linea in (_tmux("list-clients", "-F", "#{client_session}\t#{client_tty}") or
+                  "").splitlines():
+        partes = linea.split("\t")
+        if len(partes) == 2 and partes[1]:
+            clientes[partes[0]] = partes[1]
+
+    mapa = {}
+    for linea in paneles.splitlines():
+        partes = linea.split("\t")
+        if len(partes) != 3 or not TTY_RE.fullmatch(partes[0]):
+            continue
+        tty, destino, sesion = partes
+        mapa[tty.replace("/dev/", "")] = (destino, sesion,
+                                          clientes.get(sesion, "").replace("/dev/", ""))
+    return mapa
+
+
 def get_iterm_map():
     """
     {tty: (window_id, tab_index)}. Vacio si iTerm no corre.
@@ -902,12 +1068,12 @@ def load_state():
       - "backend de facturacion" describe el repo y vale para todas sus sesiones, y encima
         sobrevive a reiniciar Claude Code (que cambia el sessionId).
 
-    En disco: {"por_sesion": {...}, "por_repo": {...}, "pausadas": [...]}. Se acepta tambien
-    el formato viejo —un dict plano {cwd: nota}— y se lee como `por_repo`: quien ya tenia
+    En disco: {"por_sesion": …, "por_repo": …, "pausadas": [...], "spaces": {…}}. Se acepta
+    tambien el formato viejo —un dict plano {cwd: nota}— y se lee como `por_repo`: quien ya tenia
     notas escritas no puede perderlas por un cambio de formato.
     """
     datos = leer_json(NOTES_FILE, {})
-    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas")):
+    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "spaces")):
         crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
     else:
         crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
@@ -922,20 +1088,24 @@ def load_state():
     crudo_pausa = datos.get("pausadas")
     pausadas = ({s for s in crudo_pausa if isinstance(s, str)}
                 if isinstance(crudo_pausa, (list, set)) else set())
-    return limpio(crudo_sesion), limpio(crudo_repo), pausadas
+    crudo_spaces = datos.get("spaces")
+    spaces = ({k: v for k, v in crudo_spaces.items()
+               if isinstance(k, str) and isinstance(v, int) and v > 0}
+              if isinstance(crudo_spaces, dict) else {})
+    return limpio(crudo_sesion), limpio(crudo_repo), pausadas, spaces
 
 
 def load_notes():
     """Solo las notas. Es lo que quiere casi todo el mundo: pintar la linea de detalle."""
-    sesion, repo, _ = load_state()
+    sesion, repo, _, _ = load_state()
     return sesion, repo
 
 
-def guardar_estado(sesion, repo, pausadas):
+def guardar_estado(sesion, repo, pausadas, spaces=None):
     """El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff
     del JSON sea legible si alguien lo abre a mano."""
     escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo,
-                               "pausadas": sorted(pausadas)})
+                               "pausadas": sorted(pausadas), "spaces": spaces or {}})
 
 
 def note_for(row, notas_sesion, notas_repo):
@@ -954,13 +1124,13 @@ def save_note(session_id, nota):
     externo desmontado o un repo movido de sitio borraria algo escrito a mano, y el archivo
     son unos pocos KB aunque acumule.
     """
-    sesion, repo, pausadas = load_state()
+    sesion, repo, pausadas, spaces = load_state()
     nota = " ".join(sin_control(str(nota)).split())[:NOTE_MAX]   # una linea, sin control
     if nota:
         sesion[session_id] = nota
     else:
         sesion.pop(session_id, None)
-    guardar_estado(sesion, repo, pausadas)
+    guardar_estado(sesion, repo, pausadas, spaces)
     return nota
 
 
@@ -977,14 +1147,14 @@ def toggle_paused(session_id):
     UUID y no se reutiliza, asi que una entrada huerfana no puede pausar a nadie por
     error, y son unos bytes.
     """
-    sesion, repo, pausadas = load_state()
+    sesion, repo, pausadas, spaces = load_state()
     if session_id in pausadas:
         pausadas.discard(session_id)
         queda = False
     else:
         pausadas.add(session_id)
         queda = True
-    guardar_estado(sesion, repo, pausadas)
+    guardar_estado(sesion, repo, pausadas, spaces)
     return queda
 
 
@@ -1078,10 +1248,10 @@ def short_model(m):
     return m.replace("claude-", "").replace("-20", " ").split()[0]
 
 
-def build(sessions, ttys, iterm, numbers):
+def build(sessions, ttys, iterm, numbers, tmux=None):
     rows = []
     # una lectura por refresco: es diminuto
-    notas_sesion, notas_repo, pausadas = load_state()
+    notas_sesion, notas_repo, pausadas, _ = load_state()
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
@@ -1097,6 +1267,7 @@ def build(sessions, ttys, iterm, numbers):
             "pid": s["pid"],
             "tty": tty,
             "iterm": iterm.get(tty),
+            "tmux": None,   # se rellena abajo: puede cambiar tambien el `iterm`
             "ts": info.get("ts"),
             "branch": sin_control(info.get("branch")),
             "model": short_model(info.get("model")),
@@ -1107,6 +1278,14 @@ def build(sessions, ttys, iterm, numbers):
             "paused": s["sessionId"] in pausadas,
             "startedAt": s.get("startedAt", 0),
         })
+        # Una sesion dentro de tmux no aparece en el mapa de iTerm: su tty es el
+        # pseudoterminal del panel. La ventana que hay que enfocar es la del CLIENTE al que
+        # esta enganchada esa sesion de tmux, y ese tty si es de iTerm.
+        info_tmux = (tmux or {}).get(tty)
+        if info_tmux:
+            destino, sesion, cliente = info_tmux
+            rows[-1]["tmux"] = (destino, sesion)
+            rows[-1]["iterm"] = iterm.get(cliente) if cliente else None
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
     return rows
 
@@ -1232,7 +1411,9 @@ def main_line(r, show_account=False):
     acct = pad(GREY(r.get("account") or ""), 11) if show_account else ""
     # El ⚠ significa "esta viva pero no la encuentro en iTerm", que es un problema. Una
     # recuperable NO esta viva por definicion: ponerselo seria alarmar por lo normal.
-    warn = RED(" ⚠") if not r["iterm"] and not r.get("recoverable") else ""
+    # Y tampoco si vive en tmux: ahi SI se puede llegar, aunque no este en ninguna
+    # ventana de iTerm ahora mismo.
+    warn = "" if r["iterm"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
     return f"{num} {name}{repo}{acct}{color_age(r['ts'])}{warn}"
 
 
@@ -1313,7 +1494,7 @@ def table_line(r, width=100, show_account=False):
     # `clip` a ancho-1 antes de `pad`: garantiza al menos un espacio entre columnas
     # aunque el contenido llegue justo, que es lo que las mantiene legibles.
     fijas = "".join(pad(clip(celda[k], a - 1), a) for k, a in columnas)
-    warn = RED(" ⚠") if not r["iterm"] and not r.get("recoverable") else ""
+    warn = "" if r["iterm"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
 
     cola = NOTE("✎ " + r["note"]) if r.get("note") else ""
     prompt = " ".join(str(r["prompt"] or r["title"] or "").split())
@@ -2351,6 +2532,22 @@ def watch(intervalo=WATCH_SECONDS, vueltas=None):
 
 
 def focus(row, quiet=False):
+    if row.get("tmux"):
+        destino, sesion = row["tmux"]
+        # Seleccionar el panel SIEMPRE, este enganchada la sesion o no: si esta suelta, se
+        # engancha justo despues y ya aparece en el panel correcto.
+        _tmux("select-window", "-t", destino.rsplit(".", 1)[0])
+        _tmux("select-pane", "-t", destino)
+        if not row["iterm"]:
+            # tmux vivo pero sin cliente: es el caso de "se cayo iTerm y tmux aguanto".
+            # Se engancha en una pestaña nueva en vez de decir que no se encuentra.
+            if pestaña_nueva("tmux attach -t " + shlex.quote(sesion), quiet,
+                             row.get("space")) != 0:
+                return 1
+            if not quiet:
+                print(t("enganchada", name=row["name"], sesion=sesion))
+            return 0
+
     if not row["iterm"]:
         if not quiet:
             print(t("no_esta_en_iterm", num=row["num"], name=row["name"],
@@ -2393,11 +2590,19 @@ def try_focus(row, exito):
     """
     Enfoca y devuelve el mensaje que toca. `exito` es el texto si sale bien.
 
+    Al enfocar con exito se apunta en que escritorio quedo: la ventana esta delante, asi
+    que el Space activo ES el suyo. Es la unica forma barata de saberlo, y se aprende
+    usando la herramienta.
+
     Existe porque el par "enfocar + decidir el aviso" estaba copiado en cuatro sitios
     (enter, doble clic, ⌥N, y el ⌥N de la rama sin filas) y ya habia divergido: una de
     las copias se tragaba el fallo sin avisar.
     """
-    return exito if focus(row, quiet=True) == 0 else t("aviso_sin_iterm", name=row["name"])
+    if focus(row, quiet=True) != 0:
+        return t("aviso_sin_iterm", name=row["name"])
+    if row.get("sessionId") and not row.get("recoverable"):
+        recordar_space(row["sessionId"])
+    return exito
 
 
 def jump_waiting(rows, n):
@@ -2427,8 +2632,11 @@ def collect():
             return []
         numbers = assign_numbers(sessions)
         ttys = get_ttys([s["pid"] for s in sessions])
+        # tmux cuesta ~11 ms y sale gratis si no esta instalado o no hay servidor: no
+        # merece un hilo, pero si merece consultarse siempre. Quien no lo use no lo nota.
+        tmux = get_tmux_map()
         iterm = iterm_future.result()
-    return build(sessions, ttys, iterm, numbers)
+    return build(sessions, ttys, iterm, numbers, tmux)
 
 
 def recent_rows(limite=20):
@@ -2464,7 +2672,7 @@ def recent_rows(limite=20):
                 continue
     candidatos.sort(reverse=True)
 
-    notas_sesion, notas_repo, pausadas = load_state()
+    notas_sesion, notas_repo, pausadas, spaces = load_state()
     filas = []
     # Se leen mas de los que se van a enseñar porque el mtime miente un poco: asi el
     # recorte final por `ts` de verdad tiene de donde elegir.
@@ -2493,6 +2701,7 @@ def recent_rows(limite=20):
             "prompt": sin_control(info.get("prompt")),
             "note": "",
             "paused": sid in pausadas,
+            "space": spaces.get(sid),
             "recoverable": True,
             "_cfg": cfg,
             "startedAt": 0,
@@ -2523,11 +2732,30 @@ def resume(row, quiet=False):
     """
     orden = "cd {} && claude --resume {}".format(
         shlex.quote(row["cwd"]), shlex.quote(row["sessionId"]))
+    if pestaña_nueva(orden, quiet, row.get("space")) != 0:
+        return 1
+    if not quiet:
+        print(t("recuperada", name=row["name"], repo=row["repo"]))
+    return 0
+
+
+def pestaña_nueva(orden, quiet=False, space=None):
+    """
+    Abre una pestaña de iTerm y ejecuta `orden`. La usan `resume()` y el attach de tmux.
+
+    **`orden` entra por `argv`, nunca interpolada.** Lleva rutas que salen del transcript y
+    nombres de sesion de tmux: texto de fuera dentro de un script que se ejecuta.
+
+    Con `space`, primero se cambia a ese escritorio y luego se crea una **ventana** en vez
+    de una pestaña. Las dos cosas son necesarias: una pestaña se añade a la ventana actual,
+    que puede estar en otro escritorio, y entonces no habriamos vuelto a ninguna parte.
+    """
+    en_su_space = space is not None and ir_a_space(space)
     script = '''
     on run argv
       tell application "iTerm2"
         activate
-        if (count of windows) = 0 then
+        if (count of windows) = 0 or (item 2 of argv) is "ventana" then
           create window with default profile
         else
           tell current window to create tab with default profile
@@ -2537,9 +2765,10 @@ def resume(row, quiet=False):
     end run
     '''
     try:
-        res = subprocess.run(["osascript", "-e", script, "--", orden],
-                             capture_output=True, text=True, timeout=20,
-                             stdin=subprocess.DEVNULL)
+        res = subprocess.run(
+            ["osascript", "-e", script, "--", orden,
+             "ventana" if en_su_space else "pestaña"],
+            capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as e:
         if not quiet:
             print(t("no_se_pudo_enfocar", error=e), file=sys.stderr)
@@ -2548,8 +2777,6 @@ def resume(row, quiet=False):
         if not quiet:
             print(t("no_se_pudo_enfocar", error=res.stderr.strip()), file=sys.stderr)
         return 1
-    if not quiet:
-        print(t("recuperada", name=row["name"], repo=row["repo"]))
     return 0
 
 

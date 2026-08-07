@@ -106,6 +106,56 @@ unico que marca la fila en un terminal sin 256 colores o con `CCL_CURSOR_BG=0`.
 **La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
 estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
 
+## Sesiones dentro de tmux
+
+**Una sesion en un panel de tmux es invisible para `get_iterm_map()`.** Su tty es el
+pseudoterminal que creo tmux, no el de iTerm, asi que salia siempre con el ⚠ de "no la
+encuentro" — y es justo la que mas interesa localizar, porque **sobrevive a que el terminal se
+caiga**.
+
+**El puente entre los dos mapas es el tty del CLIENTE.** `get_tmux_map()` devuelve
+`{tty del panel: (destino, sesion, tty del cliente)}`, y ese ultimo si es un tty de iTerm: es
+donde esta enganchada la sesion de tmux. `build()` resuelve `row["iterm"]` con el, no con el tty
+del panel.
+
+**Sin cliente (detached) no es un error.** Es el caso de "se cayo iTerm y tmux aguanto": entonces
+`focus()` engancha la sesion en una pestaña nueva (`tmux attach`) en vez de decir que no la
+encuentra. Y el `select-pane` va SIEMPRE, este enganchada o no, para que al aparecer la pestaña ya
+este en el panel correcto.
+
+**Dos consultas, ~11 ms.** Misma leccion que con AppleScript: nada de un comando por sesion. Sale
+gratis si no hay tmux instalado o no hay servidor levantado — `_tmux()` devuelve None y el mapa
+queda vacio, que es el caso de casi todo el mundo.
+
+## Devolver una sesion a su escritorio (Spaces)
+
+**No se mueve ninguna ventana, y eso es la decision entera.** `hs.spaces.moveWindowToSpace` esta
+roto desde macOS 15 (devuelve `true` sin mover nada) y el unico apaño que existe —arrastrar la
+miniatura en Mission Control— **con iTerm falla**: la suelta en pantalla completa. Esta todo
+documentado en el skill `space-restore` del usuario, que se peleo con ello durante dias.
+
+Se hace al reves: **`gotoSpace` al destino y luego crear la ventana ahi**. Una ventana nueva nace
+en el Space activo. Verificado en vivo.
+
+**Hay que mover el CURSOR a la pantalla destino antes.** iTerm crea la ventana en el monitor donde
+esta el raton, no en el que tiene el Space activo: sin eso la ventana nace en el monitor
+equivocado y todo el ejercicio no sirve. Medido — pasaba siempre.
+
+**Y hay que crear una VENTANA, no una pestaña.** Una pestaña se añade a la ventana actual, que
+puede estar en otro escritorio. Por eso `pestaña_nueva()` recibe `space` y cambia de modo.
+
+**El Space se aprende usando `ccl`.** `try_focus()` lo apunta despues de enfocar con exito: la
+ventana esta delante, asi que el Space activo ES el suyo. Nada de escanear ventanas ni de
+emparejar ids de iTerm con los de Hammerspoon, que son mundos distintos y no casan.
+
+**Se guarda el ORDINAL, no el ID.** Los IDs de Space cambian entre reinicios. El orden es el de
+`allScreens()` y dentro de cada pantalla el de `spacesForScreen`, solo los de tipo `user` — la
+misma convencion que el sistema de restauracion del usuario, para que los numeros coincidan.
+
+**Todo esto es opcional.** Sin Hammerspoon, `_hs()` devuelve None y `ccl` funciona igual: se abre
+la pestaña donde caiga. Y `_hs` busca una MARCA en la salida porque `hs -c` escupe sus
+"-- Loading extension: ..." la primera vez que toca una extension.
+
 ## Recuperar sesiones muertas (`--recent`)
 
 **Cuando el terminal se cae, `claude agents --json` deja de ver las sesiones — y a veces no ve
