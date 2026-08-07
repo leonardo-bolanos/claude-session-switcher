@@ -46,8 +46,10 @@ that source, with an interface, plus the jump to the right window.
 
 ## Requirements
 
-- **macOS** and **iTerm2** — the window jump uses AppleScript against iTerm2. In Terminal.app
-  the listing works, the jump doesn't. **tmux is supported** on top of iTerm2 (optional).
+- **macOS** and **iTerm2 or Terminal.app** — the window jump uses AppleScript, and both are
+  supported. **tmux is supported** on top of iTerm2 (optional). Sessions in any other terminal
+  (VS Code, Ghostty, Warp…) are still listed with everything, but marked ⚠: they can't be jumped
+  to, because those apps expose no way to address a tab.
 - **Python 3.7+** (for `datetime.fromisoformat`). No external dependencies.
 - **Claude Code** v2.1.139 or newer (when `claude agents` landed).
 

@@ -75,7 +75,7 @@ def fila(num, nombre, horas):
     return {{"num": num, "name": nombre, "account": "", "repo": "repo",
             "cwd": "/x/compartido" if nombre in ("alfa", "beta") else "/x/" + nombre,
             "kind": "interactive", "status": "idle", "sessionId": "sid-" + nombre,
-            "pid": num, "tty": "", "iterm": None, "ts": marca, "branch": "main",
+            "pid": num, "tty": "", "ventana": None, "ts": marca, "branch": "main",
             "model": "sonnet-5", "effort": None, "title": None,
             "prompt": "prompt de " + nombre, "startedAt": num}}
 

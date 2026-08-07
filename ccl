@@ -261,8 +261,8 @@ TEXTOS = {
         "no_existe_numero": "There's no session number {n}.",
         "ninguna_esperando": "no session waiting",
         "solo_hay_esperando": "only {n} waiting",
-        "no_esta_en_iterm": ("Session [{num}] {name} isn't in iTerm "
-                             "(tty={tty})."),
+        "no_esta_en_iterm": ("Session [{num}] {name} isn't in any window I can "
+                             "reach — iTerm2 or Terminal (tty={tty})."),
         "proceso_muerto": "dead process",
         "cwd": "  cwd: {cwd}",
         "no_se_pudo_enfocar": "Couldn't focus: {error}",
@@ -280,7 +280,7 @@ TEXTOS = {
         "enter_confirma": "  enter confirms · ⌫ delete",
         "actualizando": "refreshing…",
         "esperando_ordinal": "→ waiting #{n}: {name}",
-        "aviso_sin_iterm": "⚠ {name} isn't in iTerm",
+        "aviso_sin_iterm": "⚠ can't find a window for {name}",
         "nota_guardada": "✎ note saved",
         "nota_borrada": "✎ note deleted",
         "nota_sin_cambios": "note unchanged",
@@ -358,8 +358,8 @@ TEXTOS = {
         "no_existe_numero": "No existe la sesion numero {n}.",
         "ninguna_esperando": "ninguna sesión esperando",
         "solo_hay_esperando": "solo hay {n} esperando",
-        "no_esta_en_iterm": ("La sesion [{num}] {name} no esta en iTerm "
-                             "(tty={tty})."),
+        "no_esta_en_iterm": ("La sesion [{num}] {name} no esta en ninguna ventana que "
+                             "sepa alcanzar — iTerm2 o Terminal (tty={tty})."),
         "proceso_muerto": "proceso muerto",
         "cwd": "  cwd: {cwd}",
         "no_se_pudo_enfocar": "No se pudo enfocar: {error}",
@@ -376,7 +376,7 @@ TEXTOS = {
         "enter_confirma": "  enter confirma · ⌫ borra",
         "actualizando": "actualizando…",
         "esperando_ordinal": "→ {n}ª esperando: {name}",
-        "aviso_sin_iterm": "⚠ {name} no está en iTerm",
+        "aviso_sin_iterm": "⚠ no encuentro la ventana de {name}",
         "nota_guardada": "✎ nota guardada",
         "nota_borrada": "✎ nota borrada",
         "nota_sin_cambios": "nota sin cambios",
@@ -911,60 +911,104 @@ def get_tmux_map():
     return mapa
 
 
+def _parsear_mapa(salida, app):
+    """
+    {tty: (app, ventana, pestaña)} a partir de "id:n,id:n,...@@@tty,tty,...".
+
+    Compartido por iTerm2 y Terminal.app porque las dos consultas devuelven la misma
+    forma: los conteos por ventana permiten reconstruir a que pestaña pertenece cada tty
+    de la lista plana, que viene en orden ventana > pestaña.
+    """
+    if "@@@" not in salida:
+        return {}
+    cabecera, ttys = salida.split("@@@", 1)
+    ventanas = [p.split(":") for p in cabecera.strip().rstrip(",").split(",") if ":" in p]
+    # Validar la forma: si los text item delimiters fallaran, los ttys llegarian
+    # concatenados ("/dev/ttys001/dev/ttys002") y produciriamos claves basura que
+    # no casan con nada. Mejor descartarlas y que se vea el aviso de "no la encuentro".
+    lista = [t for t in (x.strip() for x in ttys.split(",")) if TTY_RE.fullmatch(t)]
+
+    resultado = {}
+    i = 0
+    for wid, cuenta in ventanas:
+        try:
+            n = int(cuenta)
+        except ValueError:
+            continue
+        for pestaña in range(1, n + 1):
+            if i >= len(lista):
+                break
+            resultado[lista[i].replace("/dev/", "")] = (app, wid.strip(), pestaña)
+            i += 1
+    return resultado
+
+
+def _consultar(script):
+    """La salida de un AppleScript, o "" si falla. Nunca revienta."""
+    try:
+        return subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
 def get_iterm_map():
     """
-    {tty: (window_id, tab_index)}. Vacio si iTerm no corre.
+    {tty: ("iTerm2", window_id, tab_index)}. Vacio si iTerm no corre.
 
     Usa dos gets masivos en vez de recorrer sesion por sesion: resolver la ruta
     completa (`tty of session s of tab t of window w`) cuesta una llamada IPC por
     propiedad y tardaba 2.2s con 44 pestañas. Asi baja a ~0.5s.
 
-    La lista plana de ttys viene en orden ventana > pestaña > sesion, y los conteos
-    por ventana permiten reconstruir a que pestaña pertenece cada una. Verificado
-    contra la version lenta: 44/44 identicas.
+    El `is running` no es decoracion: sin el, `tell application "iTerm2"` **lanza iTerm**
+    si no esta abierto. Un `ccl --list` desde un script no puede abrirle a nadie una
+    ventana que no habia pedido.
     """
-    script = '''
-    tell application "iTerm2"
-      set AppleScript's text item delimiters to ","
-      set r to ""
-      repeat with w in windows
-        set r to r & ((id of w) as text) & ":" & ((count of tabs of w) as text) & ","
-      end repeat
-      set tl to (tty of sessions of tabs of windows) as text
-      set AppleScript's text item delimiters to ""
-      return r & "@@@" & tl
-    end tell
-    '''
-    try:
-        out = subprocess.run(
-            ["osascript", "-e", script], capture_output=True, text=True, timeout=15,
-            stdin=subprocess.DEVNULL,
-        ).stdout.strip()
-    except Exception:
-        return {}
-    if "@@@" not in out:
-        return {}
+    return _parsear_mapa(_consultar('''
+    if application "iTerm2" is running then
+      tell application "iTerm2"
+        set AppleScript's text item delimiters to ","
+        set r to ""
+        repeat with w in windows
+          set r to r & ((id of w) as text) & ":" & ((count of tabs of w) as text) & ","
+        end repeat
+        set tl to (tty of sessions of tabs of windows) as text
+        set AppleScript's text item delimiters to ""
+        return r & "@@@" & tl
+      end tell
+    end if
+    return ""
+    '''), "iTerm2")
 
-    head, ttys = out.split("@@@", 1)
-    wins = [p.split(":") for p in head.strip().rstrip(",").split(",") if ":" in p]
-    # Validar la forma: si los text item delimiters fallaran, los ttys llegarian
-    # concatenados ("/dev/ttys001/dev/ttys002") y produciriamos claves basura que
-    # no casan con nada. Mejor descartarlas y que se vea el aviso "sin iTerm".
-    tlist = [t for t in (x.strip() for x in ttys.split(",")) if TTY_RE.fullmatch(t)]
 
-    result = {}
-    i = 0
-    for wid, count in wins:
-        try:
-            n = int(count)
-        except ValueError:
-            continue
-        for tab in range(1, n + 1):
-            if i >= len(tlist):
-                break
-            result[tlist[i].replace("/dev/", "")] = (wid.strip(), tab)
-            i += 1
-    return result
+def get_terminal_map():
+    """
+    {tty: ("Terminal", window_id, tab_index)} para Terminal.app. Vacio si no corre.
+
+    Misma forma que iTerm y por las mismas razones, con una diferencia de estructura:
+    Terminal.app no tiene "sesiones" dentro de las pestañas, asi que el tty cuelga
+    directamente de la pestaña.
+
+    Sale practicamente gratis para quien no use Terminal.app: el `is running` corta antes
+    de hablar con nadie. Medido en una maquina donde no corria: ~30 ms.
+    """
+    return _parsear_mapa(_consultar('''
+    if application "Terminal" is running then
+      tell application "Terminal"
+        set AppleScript's text item delimiters to ","
+        set r to ""
+        repeat with w in windows
+          set r to r & ((id of w) as text) & ":" & ((count of tabs of w) as text) & ","
+        end repeat
+        set tl to (tty of tabs of windows) as text
+        set AppleScript's text item delimiters to ""
+        return r & "@@@" & tl
+      end tell
+    end if
+    return ""
+    '''), "Terminal")
 
 
 def read_transcript(session_id, cfg_dir=None):
@@ -1299,7 +1343,7 @@ def despausar_las_que_trabajan(sessions, pausadas, spaces=None):
     return quedan
 
 
-def build(sessions, ttys, iterm, numbers, tmux=None):
+def build(sessions, ttys, ventanas, numbers, tmux=None):
     rows = []
     # una lectura por refresco: es diminuto
     notas_sesion, notas_repo, pausadas, spaces = load_state()
@@ -1318,7 +1362,7 @@ def build(sessions, ttys, iterm, numbers, tmux=None):
             "sessionId": s["sessionId"],
             "pid": s["pid"],
             "tty": tty,
-            "iterm": iterm.get(tty),
+            "ventana": ventanas.get(tty),
             "tmux": None,   # se rellena abajo: puede cambiar tambien el `iterm`
             "ts": info.get("ts"),
             "branch": sin_control(info.get("branch")),
@@ -1337,7 +1381,7 @@ def build(sessions, ttys, iterm, numbers, tmux=None):
         if info_tmux:
             destino, sesion, cliente = info_tmux
             rows[-1]["tmux"] = (destino, sesion)
-            rows[-1]["iterm"] = iterm.get(cliente) if cliente else None
+            rows[-1]["ventana"] = ventanas.get(cliente) if cliente else None
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
     return rows
 
@@ -1465,7 +1509,7 @@ def main_line(r, show_account=False):
     # recuperable NO esta viva por definicion: ponerselo seria alarmar por lo normal.
     # Y tampoco si vive en tmux: ahi SI se puede llegar, aunque no este en ninguna
     # ventana de iTerm ahora mismo.
-    warn = "" if r["iterm"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
+    warn = "" if r["ventana"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
     return f"{num} {name}{repo}{acct}{color_age(r['ts'])}{warn}"
 
 
@@ -1546,7 +1590,7 @@ def table_line(r, width=100, show_account=False):
     # `clip` a ancho-1 antes de `pad`: garantiza al menos un espacio entre columnas
     # aunque el contenido llegue justo, que es lo que las mantiene legibles.
     fijas = "".join(pad(clip(celda[k], a - 1), a) for k, a in columnas)
-    warn = "" if r["iterm"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
+    warn = "" if r["ventana"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
 
     cola = NOTE("✎ " + r["note"]) if r.get("note") else ""
     prompt = " ".join(str(r["prompt"] or r["title"] or "").split())
@@ -2590,7 +2634,7 @@ def focus(row, quiet=False):
         # engancha justo despues y ya aparece en el panel correcto.
         _tmux("select-window", "-t", destino.rsplit(".", 1)[0])
         _tmux("select-pane", "-t", destino)
-        if not row["iterm"]:
+        if not row["ventana"]:
             # tmux vivo pero sin cliente: es el caso de "se cayo iTerm y tmux aguanto".
             # Se engancha en una pestaña nueva en vez de decir que no se encuentra.
             if pestaña_nueva("tmux attach -t " + shlex.quote(sesion), quiet,
@@ -2600,20 +2644,31 @@ def focus(row, quiet=False):
                 print(t("enganchada", name=row["name"], sesion=sesion))
             return 0
 
-    if not row["iterm"]:
+    if not row["ventana"]:
         if not quiet:
             print(t("no_esta_en_iterm", num=row["num"], name=row["name"],
                     tty=row["tty"] or t("proceso_muerto")), file=sys.stderr)
             print(t("cwd", cwd=row["cwd"]), file=sys.stderr)
         return 1
-    wid, tab = row["iterm"]
-    script = f'''
-    tell application "iTerm2"
-      tell window id {wid} to select tab {tab}
-      select window id {wid}
-      activate
-    end tell
-    '''
+    app, wid, tab = row["ventana"]
+    if app == "Terminal":
+        # Terminal.app no tiene "sesiones" ni `select window`: la pestaña se elige por la
+        # propiedad `selected tab` de la ventana, y la ventana se trae con `frontmost`.
+        script = f'''
+        tell application "Terminal"
+          set selected tab of window id {wid} to tab {tab} of window id {wid}
+          set frontmost of window id {wid} to true
+          activate
+        end tell
+        '''
+    else:
+        script = f'''
+        tell application "iTerm2"
+          tell window id {wid} to select tab {tab}
+          select window id {wid}
+          activate
+        end tell
+        '''
     res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
                          stdin=subprocess.DEVNULL)
     if res.returncode != 0:
@@ -2676,19 +2731,27 @@ def jump_waiting(rows, n):
 
 def collect():
     """Una foto completa del estado. iTerm y `claude agents` van en paralelo (~0.4s menos)."""
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         iterm_future = pool.submit(get_iterm_map)
+        # Terminal.app va en su propio hilo aunque casi siempre devuelva vacio: el
+        # `is running` corta en ~30 ms, pero cuando SI corre cuesta lo mismo que iTerm y
+        # sumarlo en serie se notaria en cada refresco.
+        term_future = pool.submit(get_terminal_map)
         sessions = get_sessions()
         if not sessions:
             iterm_future.cancel()
+            term_future.cancel()
             return []
         numbers = assign_numbers(sessions)
         ttys = get_ttys([s["pid"] for s in sessions])
         # tmux cuesta ~11 ms y sale gratis si no esta instalado o no hay servidor: no
         # merece un hilo, pero si merece consultarse siempre. Quien no lo use no lo nota.
         tmux = get_tmux_map()
-        iterm = iterm_future.result()
-    return build(sessions, ttys, iterm, numbers, tmux)
+        # Un tty pertenece a una sola app, asi que los mapas no pueden chocar: cada uno
+        # aporta las suyas.
+        ventanas = dict(term_future.result())
+        ventanas.update(iterm_future.result())
+    return build(sessions, ttys, ventanas, numbers, tmux)
 
 
 def procesos_claude():
@@ -2763,7 +2826,7 @@ def recent_rows(limite=20):
             "sessionId": sid,
             "pid": 0,
             "tty": "",
-            "iterm": None,
+            "ventana": None,
             "ts": info.get("ts"),
             "branch": sin_control(info.get("branch")),
             "model": short_model(info.get("model")),

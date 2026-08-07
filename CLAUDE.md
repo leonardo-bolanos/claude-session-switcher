@@ -256,6 +256,33 @@ Y al probar cambios: `brew audit` lee la copia **tapeada** en
 `/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
 sigue auditando la version anterior y parece que el arreglo no funciono.
 
+## Dos terminales: iTerm2 y Terminal.app
+
+`row["ventana"]` es `(app, ventana, pestaña)`, no `(ventana, pestaña)`. La etiqueta decide **a
+quien se le manda el AppleScript de enfoque**, y por eso el campo dejo de llamarse `iterm`: seguir
+llamandolo asi cuando puede traer un `("Terminal", …)` es una mentira que paga el siguiente.
+
+**`get_iterm_map()` y `get_terminal_map()` comparten parser** (`_parsear_mapa`) porque las dos
+consultas devuelven la misma forma. La diferencia de estructura es que Terminal.app **no tiene
+"sesiones" dentro de las pestañas**: el tty cuelga de la pestaña, asi que es
+`tty of tabs of windows` y no `tty of sessions of tabs of windows`.
+
+**El `if application "X" is running` NO es decoracion.** Sin el, `tell application "Terminal"`
+**lanza Terminal.app** — y un `ccl --list` desde un script le abriria a alguien una ventana que no
+pidio. Verificado que preguntar por `is running` no lanza la app. Se le puso tambien a iTerm, que
+tenia el mismo agujero. Hay un test sobre el fuente que exige que cada `tell` de una consulta
+cuelgue de su guarda.
+
+**Enfocar es distinto en cada una.** iTerm tiene `select tab` y `select window`; Terminal.app no:
+la pestaña se elige por la propiedad `selected tab` de la ventana y la ventana se trae con
+`frontmost`. Los dos caminos estan en `focus()`.
+
+Terminal.app hereda la limitacion del indice de pestaña, igual que iTerm. Y **VS Code no se puede
+soportar por esta via**: no tiene diccionario de AppleScript —verificado, `sdef` no devuelve nada y
+un `tell` falla con -1728—, asi que no hay forma de preguntarle que terminal tiene el tty X ni de
+enfocar una pestaña. Sus sesiones se listan (la terminal integrada es un pty de verdad) y salen
+con el ⚠, que ahi dice la verdad.
+
 ## Pausada + trabajando = despausada
 
 **Volver a `busy` le quita la marca de pausa** (`despausar_las_que_trabajan`, llamada desde

@@ -129,7 +129,7 @@ def fila(num, nombre, repo, rama, modelo, effort, prompt, minutos, estado):
             "pid": num, "tty": "ttys%03d" % num,
             # un par ventana/pestaña de mentira: sin esto todas saldrian con el ⚠ de
             # "no esta en iTerm", que en un demo parece que la herramienta esta rota
-            "iterm": ("1", num), "ts": marca, "branch": rama, "model": modelo,
+            "ventana": ("iTerm2", "1", num), "ts": marca, "branch": rama, "model": modelo,
             "effort": effort, "title": None, "prompt": prompt, "startedAt": num}}
 
 FIJAS = [fila(*s) for s in {SESIONES!r}]

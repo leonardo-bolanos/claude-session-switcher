@@ -158,6 +158,58 @@ class TestNumeracion(unittest.TestCase):
 # ────────────────────── parseo de la salida de iTerm ──────────────────────
 
 
+class TestMapaTerminalApp(unittest.TestCase):
+    """
+    Terminal.app, con la misma reconstruccion que iTerm. La diferencia de estructura es
+    que sus pestañas no tienen "sesiones" dentro: el tty cuelga de la pestaña.
+    """
+
+    def _map(self, salida):
+        class Fake:
+            stdout = salida
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda *a, **k: Fake()
+        try:
+            return ccl.get_terminal_map()
+        finally:
+            ccl.subprocess.run = orig
+
+    def test_etiqueta_las_filas_como_de_Terminal(self):
+        """La etiqueta decide a QUE app se le manda el AppleScript de enfoque."""
+        got = self._map("145863:1,@@@/dev/ttys056")
+        self.assertEqual(got, {"ttys056": ("Terminal", "145863", 1)})
+
+    def test_varias_ventanas_y_pestanas(self):
+        got = self._map("10:2,11:1,@@@/dev/ttys001,/dev/ttys002,/dev/ttys003")
+        self.assertEqual(got, {"ttys001": ("Terminal", "10", 1),
+                               "ttys002": ("Terminal", "10", 2),
+                               "ttys003": ("Terminal", "11", 1)})
+
+    def test_terminal_cerrado_devuelve_vacio(self):
+        """
+        El AppleScript lleva un `is running`, asi que con Terminal.app cerrado devuelve
+        cadena vacia — y **no lo lanza**, que es lo que importa: consultar el estado no
+        puede abrirle a nadie una ventana que no pidio.
+        """
+        self.assertEqual(self._map(""), {})
+        self.assertEqual(self._map("sin la marca"), {})
+
+    def test_el_script_no_lanza_la_app(self):
+        """Guardarrail sobre el fuente: sin el `is running`, `tell application` la abre."""
+        with open(os.path.join(_HERE, "ccl")) as fh:
+            fuente = fh.read()
+        for app in ("Terminal", "iTerm2"):
+            # cada `tell application "X"` de una CONSULTA tiene que ir precedido por su
+            # guarda; se comprueba que aparecen emparejados y en ese orden
+            guarda = f'if application "{app}" is running then'
+            i = fuente.find(guarda)
+            self.assertNotEqual(i, -1, f"falta la guarda de {app}")
+            siguiente = fuente.find(f'tell application "{app}"', i)
+            self.assertNotEqual(siguiente, -1)
+            self.assertLess(siguiente - i, 120,
+                            f"el tell de {app} no cuelga de su `is running`")
+
+
 class TestMapaITerm(unittest.TestCase):
     """
     Reconstruir tty -> (ventana, pestaña) desde dos gets masivos.
@@ -176,9 +228,9 @@ class TestMapaITerm(unittest.TestCase):
 
     def test_reconstruye_ventana_y_pestana(self):
         got = self._map("100:2,200:1,@@@/dev/ttys001,/dev/ttys002,/dev/ttys003")
-        self.assertEqual(got, {"ttys001": ("100", 1),
-                               "ttys002": ("100", 2),
-                               "ttys003": ("200", 1)})
+        self.assertEqual(got, {"ttys001": ("iTerm2", "100", 1),
+                               "ttys002": ("iTerm2", "100", 2),
+                               "ttys003": ("iTerm2", "200", 1)})
 
     def test_ttys_concatenados_se_descartan(self):
         # El bug real: `as text` sin text item delimiters concatena sin comas.
@@ -188,18 +240,18 @@ class TestMapaITerm(unittest.TestCase):
 
     def test_valores_que_no_son_tty_se_ignoran(self):
         got = self._map("100:2,@@@basura,/dev/ttys007")
-        self.assertEqual(got, {"ttys007": ("100", 1)})
+        self.assertEqual(got, {"ttys007": ("iTerm2", "100", 1)})
 
     def test_salida_sin_marcador_devuelve_vacio(self):
         self.assertEqual(self._map("basura sin arroba"), {})
 
     def test_menos_ttys_que_pestanas_no_revienta(self):
         got = self._map("100:5,@@@/dev/ttys001")
-        self.assertEqual(got, {"ttys001": ("100", 1)})
+        self.assertEqual(got, {"ttys001": ("iTerm2", "100", 1)})
 
     def test_conteo_no_numerico_se_ignora(self):
         got = self._map("100:x,200:1,@@@/dev/ttys009")
-        self.assertEqual(got, {"ttys009": ("200", 1)})
+        self.assertEqual(got, {"ttys009": ("iTerm2", "200", 1)})
 
     def test_iterm_caido_devuelve_vacio(self):
         orig = ccl.subprocess.run
@@ -345,7 +397,7 @@ class TestFormato(unittest.TestCase):
 
 def row(num, sid, status="idle", ts=None, kind="interactive", paused=False):
     return {"num": num, "name": f"s{num}", "repo": "r", "cwd": "/x", "kind": kind,
-            "status": status, "sessionId": sid, "pid": num, "tty": "", "iterm": None,
+            "status": status, "sessionId": sid, "pid": num, "tty": "", "ventana": None,
             "ts": ts, "branch": None, "model": None, "effort": None,
             "title": None, "prompt": None, "note": "", "paused": paused,
             "startedAt": num}
@@ -846,9 +898,9 @@ class TestTmux(unittest.TestCase):
                          "no-es-un-tty\tx:0.0\tx\n")
         self.assertEqual(list(ccl.get_tmux_map()), ["ttys092"])
 
-    def _fila(self, tmux_map, iterm=None):
+    def _fila(self, tmux_map, ventanas=None):
         ses = [{"sessionId": "sid-a", "name": "n", "cwd": "/x/repo", "pid": 1}]
-        return ccl.build(ses, {1: "ttys092"}, iterm or {}, {"sid-a": 1}, tmux_map)[0]
+        return ccl.build(ses, {1: "ttys092"}, ventanas or {}, {"sid-a": 1}, tmux_map)[0]
 
     def test_la_ventana_se_resuelve_por_el_CLIENTE_no_por_el_panel(self):
         """
@@ -856,21 +908,21 @@ class TestTmux(unittest.TestCase):
         cliente al que está enganchada la sesión de tmux sí.
         """
         fila = self._fila({"ttys092": ("trabajo:0.1", "trabajo", "ttys004")},
-                          iterm={"ttys004": ("42", 3)})
+                          ventanas={"ttys004": ("iTerm2", "42", 3)})
         self.assertEqual(fila["tmux"], ("trabajo:0.1", "trabajo"))
-        self.assertEqual(fila["iterm"], ("42", 3))
+        self.assertEqual(fila["ventana"], ("iTerm2", "42", 3))
 
     def test_suelta_no_tiene_ventana_pero_tampoco_lleva_el_aviso(self):
         """Se puede llegar a ella —enganchándola—, así que el ⚠ mentiría."""
         fila = self._fila({"ttys092": ("trabajo:0.1", "trabajo", "")})
-        self.assertIsNone(fila["iterm"])
+        self.assertIsNone(fila["ventana"])
         self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.main_line(fila)))
         self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.table_line(fila, 120)))
 
     def test_una_sesion_fuera_de_tmux_no_cambia(self):
-        fila = self._fila({}, iterm={"ttys092": ("7", 1)})
+        fila = self._fila({}, ventanas={"ttys092": ("iTerm2", "7", 1)})
         self.assertIsNone(fila["tmux"])
-        self.assertEqual(fila["iterm"], ("7", 1))
+        self.assertEqual(fila["ventana"], ("iTerm2", "7", 1))
 
     def test_focus_selecciona_el_panel_y_engancha_si_esta_suelta(self):
         self._tmux_falso("", "")
@@ -879,7 +931,7 @@ class TestTmux(unittest.TestCase):
         ccl.pestaña_nueva = (lambda orden, quiet=False, space=None:
                              abiertas.append(orden) or 0)
         try:
-            fila = {"tmux": ("trabajo:0.1", "mi sesion"), "iterm": None,
+            fila = {"tmux": ("trabajo:0.1", "mi sesion"), "ventana": None,
                     "name": "n", "repo": "r", "tty": "", "num": 1, "cwd": "/x"}
             self.assertEqual(ccl.focus(fila, quiet=True), 0)
         finally:
@@ -898,7 +950,7 @@ class TestTmux(unittest.TestCase):
         ccl.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0,
                                                             "stderr": ""})()
         try:
-            fila = {"tmux": ("trabajo:0.1", "trabajo"), "iterm": ("42", 3),
+            fila = {"tmux": ("trabajo:0.1", "trabajo"), "ventana": ("iTerm2", "42", 3),
                     "name": "n", "repo": "r", "tty": "", "num": 1, "cwd": "/x"}
             self.assertEqual(ccl.focus(fila, quiet=True), 0)
         finally:
@@ -1614,7 +1666,7 @@ class TestSubprocesosSinTerminal(unittest.TestCase):
             "get_ttys": lambda: ccl.get_ttys([1, 2]),
             "get_iterm_map": ccl.get_iterm_map,
             "notificar": lambda: ccl.notificar("a", "b", "c"),
-            "focus": lambda: ccl.focus({"iterm": ("1", 2), "num": 1, "name": "x",
+            "focus": lambda: ccl.focus({"ventana": ("iTerm2", "1", 2), "num": 1, "name": "x",
                                         "tty": "", "cwd": "/x"}, quiet=True),
         }
         for nombre, fn in casos.items():
@@ -2629,8 +2681,8 @@ class TestMainLine(unittest.TestCase):
         self.assertIn(ccl.t("hace_min", n=2), plano)
 
     def test_marca_las_que_no_estan_en_iterm(self):
-        con = ccl.ANSI_RE.sub("", ccl.main_line(self.r(iterm=("100", 1))))
-        sin = ccl.ANSI_RE.sub("", ccl.main_line(self.r(iterm=None)))
+        con = ccl.ANSI_RE.sub("", ccl.main_line(self.r(ventana=("iTerm2", "100", 1))))
+        sin = ccl.ANSI_RE.sub("", ccl.main_line(self.r(ventana=None)))
         self.assertNotIn("⚠", con)
         self.assertIn("⚠", sin)
 

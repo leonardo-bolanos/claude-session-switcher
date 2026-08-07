@@ -5,29 +5,17 @@ taking one on, issues and PRs are welcome.
 
 ---
 
-## Support Terminal.app
+## Support VS Code
 
-**Status: doable, verified.** The most sensible thing to do next.
+**Status: not possible this way.** Sessions in the VS Code integrated terminal *are* listed — it's
+a real pty, so they show up with everything — but the jump can't work: VS Code has **no AppleScript
+dictionary** (`sdef` returns nothing, and a `tell` fails with -1728). There's no way to ask it
+which terminal holds tty X, nor to focus a specific one. Raising the app is possible; picking the
+right window or tab is not.
 
-Listing already works in any terminal; only the window jump is iTerm2-only. For Terminal.app the
-piece that was needed exists: its AppleScript dictionary exposes `tty` per tab, and it has
-`selected tab`, `index` and `frontmost` for focusing.
-
-```
-$ sdef /System/Applications/Utilities/Terminal.app | grep 'name="tty"'
-<property name="tty" description="The tab's TTY device." code="ttty" type="text" access="r">
-```
-
-What it involves:
-
-- A `get_terminal_map()` alongside `get_iterm_map()`, and merging both maps. A TTY is unique per
-  session, so there's no collision: each one contributes its own.
-- Storing which application holds each row, to know where to send the focus AppleScript. Today
-  `row["iterm"]` is `(window_id, tab)`; it would have to become `(app, window_id, tab)`.
-- Terminal.app addresses tabs by `index` within the window, same as iTerm2, so it inherits the
-  same limitation: the index shifts if you close a tab.
-- Watch the performance: the `get_iterm_map()` lesson applies here too. Bulk queries, not a loop
-  per session, or it's seconds instead of milliseconds.
+The only real route is the other way round: a VS Code extension publishing its terminals and their
+ttys on a local endpoint. That's a different product, and it would mean installing something —
+the opposite of ccl's pitch.
 
 ## Support Windows
 

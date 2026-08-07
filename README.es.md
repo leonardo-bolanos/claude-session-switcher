@@ -46,8 +46,10 @@ fuente, con interfaz y con el salto a la ventana correcta.
 
 ## Requisitos
 
-- **macOS** y **iTerm2** — el salto de ventana usa AppleScript contra iTerm2. En Terminal.app el
-  listado funciona, pero el salto no.
+- **macOS** y **iTerm2 o Terminal.app** — el salto de ventana usa AppleScript, y las dos están
+  soportadas. Las sesiones en cualquier otra terminal (VS Code, Ghostty, Warp…) se siguen listando
+  con todos sus datos, pero marcadas con ⚠: no se puede saltar a ellas porque esas apps no exponen
+  ninguna forma de direccionar una pestaña.
 - **Python 3.7+** (por `datetime.fromisoformat`). Sin dependencias externas.
 - **Claude Code** v2.1.139 o superior (cuando apareció `claude agents`).
 
