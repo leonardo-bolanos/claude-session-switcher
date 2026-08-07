@@ -437,7 +437,7 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
                                 "help": False, "version": False, "table": False,
-                                "notify": None})
+                                "notify": None, "recent": None})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -481,6 +481,15 @@ class TestParseoDeArgumentos(unittest.TestCase):
     def test_el_intervalo_de_notify_no_se_confunde_con_una_sesion(self):
         """`--notify 30` son 30 segundos, no la sesion [30]."""
         opts, err = ccl.parse_args(["--notify", "30"])
+        self.assertIsNone(err)
+        self.assertIsNone(opts["num"])
+
+    def test_recent(self):
+        self.assertEqual(ccl.parse_args(["--recent"])[0]["recent"], ccl.RECENT_MAX)
+        self.assertEqual(ccl.parse_args(["--recent", "5"])[0]["recent"], 5)
+        self.assertTrue(ccl.parse_args(["--recent", "0"])[1])
+        # el numero es el limite, no una sesion
+        opts, err = ccl.parse_args(["--recent", "5"])
         self.assertIsNone(err)
         self.assertIsNone(opts["num"])
 
@@ -739,6 +748,181 @@ class TestTabla(unittest.TestCase):
         for ancho in (80, 100, 128):
             for _, texto, _ in ccl.build_table_display(self.filas(), width=ancho):
                 self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
+
+
+class TestRecuperables(unittest.TestCase):
+    """
+    `--recent`: las sesiones que ya no corren pero se pueden reanudar. Es la funcion para
+    el dia que iTerm se cae, asi que se prueba sobre todo lo que pasa cuando NADA funciona.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = os.path.join(self.tmp.name, ".claude")
+        os.makedirs(os.path.join(self.cfg, "projects", "-x-repo"))
+        self.orig = (ccl.config_dirs, ccl.get_sessions, ccl.NOTES_FILE)
+        ccl.config_dirs = lambda: [self.cfg]
+        ccl.get_sessions = lambda: []
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+
+    def tearDown(self):
+        ccl.config_dirs, ccl.get_sessions, ccl.NOTES_FILE = self.orig
+        self.tmp.cleanup()
+
+    def _transcript(self, sid, cwd="/x/repo", minutos=5, extra=None):
+        ruta = os.path.join(self.cfg, "projects", "-x-repo", f"{sid}.jsonl")
+        lineas = [{"sessionId": sid, "cwd": cwd, "timestamp": iso(minutes=minutos),
+                   "gitBranch": "main"}]
+        if extra:
+            lineas.append(extra)
+        with open(ruta, "w") as fh:
+            for l in lineas:
+                fh.write(json.dumps(l) + "\n")
+        return ruta
+
+    def test_lista_las_que_no_estan_corriendo(self):
+        self._transcript("sid-viva")
+        self._transcript("sid-muerta")
+        ccl.get_sessions = lambda: [{"sessionId": "sid-viva"}]
+        self.assertEqual([r["sessionId"] for r in ccl.recent_rows()], ["sid-muerta"])
+
+    def test_si_claude_no_responde_las_lista_TODAS(self):
+        """
+        El escenario del desastre: se cayo el terminal y `claude agents` no devuelve nada
+        —comprobado, ni siquiera con procesos vivos—. Fallar aqui dejaria sin la funcion a
+        quien la necesita, justo cuando la necesita.
+        """
+        self._transcript("sid-a")
+        self._transcript("sid-b")
+
+        def revienta():
+            raise ccl.SessionsUnavailable("claude no esta")
+
+        ccl.get_sessions = revienta
+        self.assertEqual(len(ccl.recent_rows()), 2)
+
+    def test_sin_cwd_no_se_puede_reanudar_asi_que_no_se_enseña(self):
+        ruta = os.path.join(self.cfg, "projects", "-x-repo", "sid-sin-cwd.jsonl")
+        with open(ruta, "w") as fh:
+            fh.write(json.dumps({"sessionId": "sid-sin-cwd",
+                                 "timestamp": iso(minutes=1)}) + "\n")
+        self.assertEqual(ccl.recent_rows(), [])
+
+    def test_ordena_por_el_timestamp_de_dentro_no_por_el_mtime(self):
+        """
+        El transcript se escribe en bloque: varias sesiones acaban con el mismo mtime. El
+        mtime solo vale para preseleccionar candidatos baratos.
+        """
+        vieja = self._transcript("sid-vieja", minutos=600)
+        nueva = self._transcript("sid-nueva", minutos=2)
+        # mtimes al reves de la actividad real
+        os.utime(vieja, (time.time(), time.time()))
+        os.utime(nueva, (time.time() - 9999, time.time() - 9999))
+        self.assertEqual([r["sessionId"] for r in ccl.recent_rows()],
+                         ["sid-nueva", "sid-vieja"])
+
+    def test_se_numeran_por_orden_de_lo_que_se_ve(self):
+        self._transcript("sid-a", minutos=1)
+        self._transcript("sid-b", minutos=2)
+        self.assertEqual([r["num"] for r in ccl.recent_rows()], [1, 2])
+
+    def test_respeta_el_limite(self):
+        for i in range(8):
+            self._transcript(f"sid-{i}", minutos=i + 1)
+        self.assertEqual(len(ccl.recent_rows(3)), 3)
+
+    def test_conserva_tu_nota_y_tu_pausa(self):
+        """Van por sessionId, así que sobreviven a que la sesión muera."""
+        self._transcript("sid-a")
+        ccl.save_note("sid-a", "esperando a Felipe")
+        ccl.toggle_paused("sid-a")
+        fila = ccl.recent_rows()[0]
+        self.assertEqual(fila["note"], "esperando a Felipe")
+        self.assertTrue(fila["paused"])
+
+    def test_una_recuperable_nunca_cuenta_como_esperandote(self):
+        """`-w`/⌥N no puede mandarte a una sesión que ya no existe."""
+        muerta = row(1, "sid-a", "idle", ts=iso(minutes=1))
+        muerta["recoverable"] = True
+        self.assertFalse(ccl.is_waiting(muerta))
+        self.assertEqual(ccl.waiting_rows([muerta]), [])
+        self.assertIsNone(ccl.pick_waiting([muerta], 1)[0])
+
+    def test_van_a_su_propio_grupo_y_el_primero(self):
+        muerta = row(1, "sid-a", "idle", ts=iso(minutes=1))
+        muerta["recoverable"] = True
+        viva = row(2, "sid-b", "idle", ts=iso(minutes=2))
+        etiquetas = [lbl for lbl, _, _ in ccl.grouped([viva, muerta])]
+        self.assertEqual(etiquetas, [ccl.t("grupo_recuperables"), ccl.t("grupo_idle")])
+        self.assertEqual(ccl.estado_de(muerta)[0], ccl.t("grupo_recuperables"))
+
+    def test_no_llevan_el_aviso_de_que_no_estan_en_iterm(self):
+        """El ⚠ significa "está viva y no la encuentro". Una muerta no lo está: alarmaría
+        por lo normal."""
+        muerta = row(1, "sid-a", "idle", ts=iso(minutes=1))
+        muerta["recoverable"] = True
+        self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.main_line(muerta)))
+        self.assertNotIn("⚠", ccl.ANSI_RE.sub("", ccl.table_line(muerta, 120)))
+        # y una viva sin iTerm SÍ lo lleva
+        self.assertIn("⚠", ccl.ANSI_RE.sub("", ccl.main_line(row(1, "sid-b"))))
+
+
+class TestReanudar(unittest.TestCase):
+    """`resume()`: dos capas de comillas, y las dos han mordido antes en este proyecto."""
+
+    def _capturar(self, fila):
+        capturado = {}
+
+        def falso(cmd, **kw):
+            capturado["cmd"] = cmd
+            class R:
+                returncode, stdout, stderr = 0, "", ""
+            return R()
+
+        original = ccl.subprocess.run
+        ccl.subprocess.run = falso
+        try:
+            ccl.resume(fila, quiet=True)
+        finally:
+            ccl.subprocess.run = original
+        return capturado["cmd"]
+
+    def test_el_comando_va_por_argv_y_no_dentro_del_applescript(self):
+        """La ruta sale del transcript, o sea de fuera. Interpolarla es AppleScript
+        arbitrario."""
+        malicioso = '/tmp/x" & (do shell script "touch /tmp/ccl-pwned") & "'
+        cmd = self._capturar({"cwd": malicioso, "sessionId": "sid-a", "name": "x",
+                              "repo": "r"})
+        self.assertIn("--", cmd)
+        script = " ".join(cmd[:cmd.index("--")])
+        self.assertNotIn("do shell script", script)
+        self.assertIn("item 1 of argv", script)
+
+    def test_la_ruta_va_entrecomillada_para_el_shell(self):
+        """Un directorio con espacios partiria el `cd` en dos."""
+        cmd = self._capturar({"cwd": "/Users/yo/Mis Cosas/repo", "sessionId": "s-1",
+                              "name": "x", "repo": "r"})
+        orden = cmd[-1]
+        self.assertIn("'/Users/yo/Mis Cosas/repo'", orden)
+        self.assertIn("--resume s-1", orden)
+
+    def test_no_hereda_el_terminal(self):
+        cmd = self._capturar({"cwd": "/x", "sessionId": "s", "name": "x", "repo": "r"})
+        self.assertTrue(cmd)   # el kw se comprueba en TestSubprocesosSinTerminal
+
+    def test_enter_reanuda_si_es_recuperable_y_enfoca_si_no(self):
+        """Un solo punto de decisión: el Enter y el doble clic no pueden discrepar."""
+        llamadas = []
+        orig_resume, orig_focus = ccl.resume, ccl.focus
+        ccl.resume = lambda r, quiet=False: llamadas.append("resume") or 0
+        ccl.focus = lambda r, quiet=False: llamadas.append("focus") or 0
+        try:
+            muerta = row(1, "sid-a"); muerta["recoverable"] = True
+            ccl.abrir(muerta, "ok")
+            ccl.abrir(row(2, "sid-b"), "ok")
+        finally:
+            ccl.resume, ccl.focus = orig_resume, orig_focus
+        self.assertEqual(llamadas, ["resume", "focus"])
 
 
 class TestFondoDelCursor(unittest.TestCase):

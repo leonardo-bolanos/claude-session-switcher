@@ -106,11 +106,42 @@ unico que marca la fila en un terminal sin 256 colores o con `CCL_CURSOR_BG=0`.
 **La barra de estado se recorta (`clip`) al ancho.** Con seis atajos ya no cabe en una ventana
 estrecha, y al envolverse empujaba el panel una linea hacia arriba en cada repintado.
 
+## Recuperar sesiones muertas (`--recent`)
+
+**Cuando el terminal se cae, `claude agents --json` deja de ver las sesiones — y a veces no ve
+NADA.** Medido en una caida real: 20 sesiones perdidas y el registro devolviendo `[]` aun con dos
+procesos `claude` vivos. Por eso `recent_rows()` no se apoya en el: si `get_sessions()` falla,
+asume que no hay ninguna viva y las lista todas. Fallar ahi seria fallar exactamente en el
+escenario para el que existe la funcion.
+
+**El estado esta en el transcript, no en el proceso.** `cwd`, `sessionId`, `timestamp` y
+`gitBranch` salen del `.jsonl`, y con eso `claude --resume <id>` la recupera. El nombre del
+archivo **es** el sessionId (verificado); el `cwd` hay que sacarlo de dentro, porque el nombre del
+directorio de `projects/` codifica la ruta con guiones y eso no se puede deshacer sin ambiguedad.
+
+**El `mtime` solo preselecciona candidatos.** El orden final va por el `timestamp` de dentro, por
+la misma razon de siempre: el transcript se escribe en bloque y varias sesiones comparten mtime.
+Se leen `limite * 3` colas y se recorta despues.
+
+**`is_waiting()` excluye las recuperables**, o `-w`/`⌥N` te mandarian a una sesion que ya no
+existe. Y **no llevan el ⚠**: ese simbolo significa "esta viva y no la encuentro en iTerm", que en
+una muerta es alarmar por lo normal.
+
+**`FeedFijo` existe porque el `Feed` normal las borraria.** Refresca llamando a `collect()`, que
+devuelve las vivas: a los cuatro segundos la lista de recuperables se sustituiria sola.
+
+**Al reanudar hay DOS capas de comillas.** La ruta se entrecomilla con `shlex.quote` para el
+shell, y el comando entero entra en el AppleScript por `argv`, nunca interpolado — la ruta sale
+del transcript, o sea de fuera. Hay tests para las dos.
+
+Limitacion conocida y documentada en el README: si el registro esta desactualizado puede colarse
+una sesion viva, y reanudarla abre una segunda pestaña sobre la misma conversacion.
+
 ## Avisos (`--notify`)
 
-**El texto va por `argv`, nunca interpolado en el AppleScript.** Es el unico sitio del programa
-donde texto de FUERA —el nombre de la sesion, tu nota, el ultimo prompt— entra en un script que
-se ejecuta. Interpolarlo convierte una comilla en un error de sintaxis, y algo peor que una
+**El texto va por `argv`, nunca interpolado en el AppleScript.** Es uno de los dos sitios del
+programa donde texto de FUERA —el nombre de la sesion, tu nota, el ultimo prompt— entra en un
+script que se ejecuta (el otro es `resume()`, con la ruta del transcript). Interpolarlo convierte una comilla en un error de sintaxis, y algo peor que una
 comilla en ejecucion de AppleScript arbitrario. Con `on run argv` el texto es un dato y no puede
 volverse codigo. `sin_control()` no vale aqui: protege el dibujado, no a `osascript`. Hay un test
 que intenta colar un `do shell script` y comprueba que acaba en `argv` y no en el script.

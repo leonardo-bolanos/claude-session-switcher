@@ -99,6 +99,7 @@ ccl -w           # salta a la sesión que llevas más tiempo sin atender
 ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 ccl --table      # una línea por sesión, en columnas
 ccl --notify     # vigila en segundo plano y avisa cuando una pasa a esperarte
+ccl --recent     # las que murieron con tu terminal — para reanudarlas
 ccl --version    # imprime la versión
 ```
 
@@ -180,6 +181,43 @@ escrito.
 texto de filtro. `⌘1..9` no puede usarse: iTerm2 se lo queda para cambiar de pestaña y nunca
 llega a `ccl` — si lo prefieres, mapea `⌘N` → *Send Escape Sequence* `N` y funcionará igual, a
 costa de perder el cambio de pestaña.
+
+</details>
+
+<details>
+<summary><b>Cuando iTerm se cae</b> — recuperar las sesiones</summary>
+
+Las sesiones de Claude Code mueren con su terminal. Así que cuando iTerm se va,
+`claude agents --json` deja de verlas y `ccl` enseña un panel vacío **justo cuando más falta
+hace** — medido en una caída real: 20 sesiones perdidas, y el registro devolviendo `[]` incluso
+para los dos procesos que seguían vivos.
+
+Pero la conversación está en disco, en `~/.claude/projects/`, y `claude --resume` la recupera.
+`ccl --recent` lee esos transcripts y lista lo que se puede reanudar — repo, rama, modelo, tu nota
+y el último prompt, para que puedas distinguirlas:
+
+```
+  RECUPERABLES (6)
+
+[ 1] Verificar conexión USB del iPhone   movil-cari    hace 11h
+     ✎ nuevo celu · develop · opus-5 · "…"
+```
+
+`Enter` abre una pestaña nueva de iTerm, entra en el directorio de la sesión y lanza
+`claude --resume`. Una tecla por sesión. El resto del panel funciona igual: el filtro, la vista de
+tabla y tus notas — que van por sessionId, así que sobreviven a que la sesión muera.
+
+Dos cosas que conviene saber:
+
+- **Funciona aunque `claude` no conteste.** Si el registro no responde, `ccl` asume que no hay
+  nada corriendo y las lista todas. Fallar ahí sería fallar exactamente en el escenario para el
+  que existe la función.
+- **Las vivas se filtran con ese mismo registro**, así que si está desactualizado puede colarse
+  una que sí está corriendo. Reanudarla abre una segunda pestaña sobre la misma conversación — el
+  último prompt suele bastar para reconocer las que aún tienes abiertas.
+
+Si prefieres no perderlas siquiera, lanza Claude Code dentro de tmux: las sesiones sobreviven al
+terminal, y algún día `ccl` soportará tmux ([TODO.md](TODO.md)).
 
 </details>
 

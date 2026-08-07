@@ -98,6 +98,7 @@ ccl -w           # jump to the session that's been waiting on you longest
 ccl -w2          # same, the second one in the WAITING queue
 ccl --table      # one line per session, in columns
 ccl --notify     # watch in the background, notify when one starts waiting
+ccl --recent     # the ones that died with your terminal — resume them
 ccl --version    # print the version
 ```
 
@@ -179,6 +180,43 @@ Keys). Without that, `⌥1` produces a symbol (`¡`) and the panel treats it as 
 `⌘1..9` can't be used at all: iTerm2 keeps it for tab switching and it never reaches `ccl` — if
 you'd rather have it, map `⌘N` → *Send Escape Sequence* `N` and it works the same, at the cost
 of losing tab switching.
+
+</details>
+
+<details>
+<summary><b>When iTerm crashes</b> — getting your sessions back</summary>
+
+Claude Code sessions die with their terminal. So when iTerm goes down, `claude agents --json`
+stops reporting them and `ccl` shows an empty panel **exactly when you need it most** — measured
+during one real crash: 20 sessions gone, and the registry returned `[]` even for the two
+processes that were somehow still alive.
+
+But the conversation is on disk, in `~/.claude/projects/`, and `claude --resume` can bring it
+back. `ccl --recent` reads those transcripts and lists what you can resume — repo, branch, model,
+your note and the last prompt, so you can tell them apart:
+
+```
+  RECOVERABLE (6)
+
+[ 1] Verify iPhone 17 USB connection    movil-cari    11h ago
+     ✎ new phone · develop · opus-5 · "…"
+```
+
+`Enter` opens a new iTerm tab, cds into the session's directory and runs `claude --resume`. One
+key per session. Everything else in the panel works the same: filtering, the table view, and your
+notes — those are stored per session ID, so they survive the session dying.
+
+Two things worth knowing:
+
+- **It works even when `claude` itself doesn't answer.** If the registry is unreachable, `ccl`
+  assumes nothing is running and lists everything. Failing there would mean failing exactly in
+  the scenario the feature exists for.
+- **Live sessions are filtered out using that same registry**, so if it's stale you may see one
+  that's actually running. Resuming it opens a second tab on the same conversation — the last
+  prompt shown is usually enough to recognise the ones you still have open.
+
+If you'd rather not lose them at all, run Claude Code inside tmux: the sessions survive the
+terminal, and `ccl` gains tmux support one day ([TODO.md](TODO.md)).
 
 </details>
 

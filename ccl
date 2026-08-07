@@ -9,6 +9,7 @@ Uso:
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
+    ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -38,6 +39,7 @@ import json
 import os
 import re
 import select
+import shlex
 import signal
 import shutil
 import subprocess
@@ -74,6 +76,7 @@ Usage:
     ccl -w <n>       jump to the <n>th WAITING session (the first one by default)
     ccl --table      one line per session, in columns (Ctrl-T toggles it live)
     ccl --notify     watch in the background and notify when one starts waiting
+    ccl --recent     sessions that died with your terminal, and resume them
     ccl --version    print the version
 
 `-w` is meant to hang off a global shortcut (Hammerspoon, Raycast) and jump to whoever is
@@ -86,6 +89,11 @@ runs even as the list reorders. It's recycled when the session dies.
 Ctrl-N writes your own note on a session, stored in ~/.claude/ccl-notes.json. A session
 with no note of its own falls back to its repo's note (`por_repo` in that file). Filtering
 searches notes too.
+
+`--recent` is for the day iTerm crashes. The sessions die with their terminal, so
+`claude agents --json` stops reporting them and the panel goes empty exactly when you need
+it — but the state is on disk. It lists what you can resume, and Enter opens a new iTerm
+tab, cds into the directory and runs `claude --resume`.
 
 `--notify` is the one that doesn't need you to look: it stays in the background and sends
 a macOS notification when a session starts waiting on you. It notifies on the EDGE, not on
@@ -122,6 +130,7 @@ Uso:
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
+    ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -138,6 +147,11 @@ mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la se
 Ctrl-N escribe tu propia nota sobre una sesion, en ~/.claude/ccl-notes.json. Una sesion
 sin nota propia muestra la de su repo (`por_repo` en ese archivo). Tambien se busca por
 ellas al filtrar.
+
+`--recent` es para el dia que iTerm se cae. Las sesiones mueren con su terminal, asi que
+`claude agents --json` deja de verlas y el panel se queda vacio justo cuando hace falta —
+pero el estado sigue en disco. Lista lo que se puede reanudar, y Enter abre una pestaña
+nueva de iTerm, entra en el directorio y lanza `claude --resume`.
 
 `--notify` es lo unico que no necesita que mires: se queda de fondo y manda una
 notificacion de macOS cuando una sesion pasa a esperarte. Avisa del FLANCO, no del estado,
@@ -202,6 +216,7 @@ TEXTOS = {
         "grupo_busy": "WORKING",
         "grupo_idle": "WAITING",
         "grupo_pausa": "PAUSED",
+        "grupo_recuperables": "RECOVERABLE",
         "grupo_bg": "BACKGROUND",
         # cabeceras de la vista de tabla
         "col_estado": "state",
@@ -231,7 +246,10 @@ TEXTOS = {
         "opcion_desconocida": "unknown option: {opcion}",
         "w_desde_uno": "-w counts from 1",
         "notify_desde_uno": "--notify needs at least 1 second",
-        "sin_sesiones": "No active Claude Code sessions.",
+        "recent_desde_uno": "--recent counts from 1",
+        "sin_sesiones": ("No active Claude Code sessions.\n"
+                         "  If your terminal just died, `ccl --recent` lists the ones "
+                         "you can resume."),
         "no_existe_numero": "There's no session number {n}.",
         "ninguna_esperando": "no session waiting",
         "solo_hay_esperando": "only {n} waiting",
@@ -264,6 +282,10 @@ TEXTOS = {
         "notif_varias": "{n} sessions are waiting for you",
         "notif_varias_sub": "ccl",
         "notify_arrancado": "ccl is watching {n} sessions. Ctrl-C to stop.",
+        "recuperada": "↻ {name} ({repo}) resumed in a new tab",
+        "recuperando": "↻ {name} — new tab",
+        "no_se_pudo_recuperar": "⚠ couldn't resume {name}",
+        "sin_recuperables": "Nothing to resume: no recent sessions on disk.",
         "pausada": "⏸ {name} paused",
         "reanudada": "▶ {name} waiting again",
         # barra de estado
@@ -288,6 +310,7 @@ TEXTOS = {
         "grupo_busy": "TRABAJANDO",
         "grupo_idle": "ESPERANDO",
         "grupo_pausa": "PAUSADAS",
+        "grupo_recuperables": "RECUPERABLES",
         "grupo_bg": "BACKGROUND",
         "col_estado": "estado",
         "col_sesion": "sesión",
@@ -313,7 +336,10 @@ TEXTOS = {
         "opcion_desconocida": "opcion desconocida: {opcion}",
         "w_desde_uno": "-w cuenta desde 1",
         "notify_desde_uno": "--notify necesita al menos 1 segundo",
-        "sin_sesiones": "No hay sesiones de Claude Code activas.",
+        "recent_desde_uno": "--recent cuenta desde 1",
+        "sin_sesiones": ("No hay sesiones de Claude Code activas.\n"
+                         "  Si se acaba de caer tu terminal, `ccl --recent` lista las "
+                         "que puedes reanudar."),
         "no_existe_numero": "No existe la sesion numero {n}.",
         "ninguna_esperando": "ninguna sesión esperando",
         "solo_hay_esperando": "solo hay {n} esperando",
@@ -345,6 +371,10 @@ TEXTOS = {
         "notif_varias": "{n} sesiones te esperan",
         "notif_varias_sub": "ccl",
         "notify_arrancado": "ccl vigilando {n} sesiones. Ctrl-C para parar.",
+        "recuperada": "↻ {name} ({repo}) reanudada en una pestaña nueva",
+        "recuperando": "↻ {name} — pestaña nueva",
+        "no_se_pudo_recuperar": "⚠ no se pudo reanudar {name}",
+        "sin_recuperables": "Nada que reanudar: no hay sesiones recientes en disco.",
         "pausada": "⏸ {name} en pausa",
         "reanudada": "▶ {name} vuelve a esperando",
         "barra_mover": " mover  ",
@@ -777,7 +807,10 @@ def read_transcript(session_id, cfg_dir=None):
             continue  # linea truncada por el corte de la cola
         if not isinstance(o, dict):
             continue
-        for key, field in (("timestamp", "ts"), ("gitBranch", "branch"), ("effort", "effort")):
+        # `cwd` hace falta para reanudar una sesion muerta: `claude --resume` tiene que
+        # lanzarse en su directorio o abre la conversacion en el sitio equivocado.
+        for key, field in (("timestamp", "ts"), ("gitBranch", "branch"),
+                           ("effort", "effort"), ("cwd", "cwd")):
             if o.get(key):
                 info[field] = o[key]
         if o.get("type") == "ai-title" and o.get("aiTitle"):
@@ -1120,8 +1153,8 @@ def is_waiting(row):
     espera a otra persona sale idle igual que una que te espera a ti, y colarse en
     `-w`/⌥N te mandaba justo a la que no puedes desatascar.
     """
-    return (not row.get("paused") and row["status"] != "busy"
-            and row["kind"] != "background")
+    return (not row.get("paused") and not row.get("recoverable")
+            and row["status"] != "busy" and row["kind"] != "background")
 
 
 def waiting_rows(rows):
@@ -1157,15 +1190,19 @@ def grouped(rows):
     que espera a otro, y el background. Una pausada que vuelve a estar `busy` se pinta en
     TRABAJANDO: si esta trabajando no espera a nadie, y dejarla abajo la escondia.
     """
-    pausadas = [r for r in rows if r.get("paused") and r["status"] != "busy"]
+    pausadas = [r for r in rows if r.get("paused") and r["status"] != "busy"
+                and not r.get("recoverable")]
     out = [
-        (t("grupo_busy"), GREEN, [r for r in rows if r["status"] == "busy"]),
+        (t("grupo_recuperables"), MAGENTA,
+         [r for r in rows if r.get("recoverable")]),
+        (t("grupo_busy"), GREEN,
+         [r for r in rows if r["status"] == "busy" and not r.get("recoverable")]),
         (t("grupo_idle"), YELLOW, waiting_rows(rows)),
         (t("grupo_pausa"), BLUE, pausadas),
     ]
     # Grupos de background: solo si existen de verdad
     bg = [r for r in rows if r["kind"] == "background" and r["status"] != "busy"
-          and not r.get("paused")]
+          and not r.get("paused") and not r.get("recoverable")]
     if bg:
         out.append((t("grupo_bg"), CYAN, bg))
     return [(lbl, col, sorted(items, key=sort_key, reverse=True))
@@ -1174,6 +1211,8 @@ def grouped(rows):
 
 def estado_de(row):
     """(etiqueta, color) del grupo al que pertenece la fila. Para la columna de estado."""
+    if row.get("recoverable"):
+        return t("grupo_recuperables"), MAGENTA
     if row["status"] == "busy":
         return t("grupo_busy"), GREEN
     if row.get("paused"):
@@ -1191,7 +1230,9 @@ def main_line(r, show_account=False):
     # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
     # seria una columna vacia en todas las filas.
     acct = pad(GREY(r.get("account") or ""), 11) if show_account else ""
-    warn = RED(" ⚠") if not r["iterm"] else ""
+    # El ⚠ significa "esta viva pero no la encuentro en iTerm", que es un problema. Una
+    # recuperable NO esta viva por definicion: ponerselo seria alarmar por lo normal.
+    warn = RED(" ⚠") if not r["iterm"] and not r.get("recoverable") else ""
     return f"{num} {name}{repo}{acct}{color_age(r['ts'])}{warn}"
 
 
@@ -1272,7 +1313,7 @@ def table_line(r, width=100, show_account=False):
     # `clip` a ancho-1 antes de `pad`: garantiza al menos un espacio entre columnas
     # aunque el contenido llegue justo, que es lo que las mantiene legibles.
     fijas = "".join(pad(clip(celda[k], a - 1), a) for k, a in columnas)
-    warn = RED(" ⚠") if not r["iterm"] else ""
+    warn = RED(" ⚠") if not r["iterm"] and not r.get("recoverable") else ""
 
     cola = NOTE("✎ " + r["note"]) if r.get("note") else ""
     prompt = " ".join(str(r["prompt"] or r["title"] or "").split())
@@ -2095,7 +2136,7 @@ def interactive(feed, tabla=False):
                     dirty = False   # cabecera o hueco: no hay nada que elegir ni repintar
                 elif doble:
                     sel_id = tocada["sessionId"]
-                    flash = try_focus(tocada, f"→ {tocada['name']}")
+                    flash = abrir(tocada, f"→ {tocada['name']}")
                     # que un triple clic no cuente como un segundo doble
                     last_click = (0, 0.0)
                 else:
@@ -2131,7 +2172,7 @@ def interactive(feed, tabla=False):
                     target = lines[cl][2]
                 if target:
                     sel_id = target["sessionId"]
-                    flash = try_focus(target, f"→ {target['name']}")
+                    flash = abrir(target, f"→ {target['name']}")
     finally:
         # apagar el raton ANTES de soltar la pantalla alternativa: si se queda activo,
         # la terminal sigue mandando escapes por cada clic y el shell los ve como texto
@@ -2149,6 +2190,7 @@ def interactive(feed, tabla=False):
 # iniciar sesion y olvidarlo.
 
 
+RECENT_MAX = 20       # cuantas recuperables se enseñan por defecto
 WATCH_SECONDS = 15    # el panel refresca a 4s porque lo estas mirando; esto vive todo el
                       # dia, y cada vuelta cuesta ~0,2s de CPU entre `claude` y osascript
 NOTIFY_MAX = 3        # mas sesiones que esto en una misma tanda: un solo aviso resumido
@@ -2334,6 +2376,19 @@ def focus(row, quiet=False):
     return 0
 
 
+def abrir(row, exito):
+    """
+    Enter sobre una fila: enfocar si vive, reanudar si es recuperable.
+
+    Es un solo punto a proposito. El panel llama a esto desde Enter y desde el doble clic,
+    y si cada uno decidiera por su cuenta acabarian discrepando — ya paso con `try_focus`.
+    """
+    if row.get("recoverable"):
+        return (t("recuperando", name=row["name"]) if resume(row, quiet=True) == 0
+                else t("no_se_pudo_recuperar", name=row["name"]))
+    return try_focus(row, exito)
+
+
 def try_focus(row, exito):
     """
     Enfoca y devuelve el mensaje que toca. `exito` es el texto si sale bien.
@@ -2376,13 +2431,161 @@ def collect():
     return build(sessions, ttys, iterm, numbers)
 
 
+def recent_rows(limite=20):
+    """
+    Sesiones que YA NO CORREN pero se pueden reanudar, de la mas reciente hacia atras.
+
+    Existe para el dia que iTerm se cae: entonces `claude agents --json` no devuelve nada
+    —los procesos murieron con su terminal— y el panel se queda vacio justo cuando mas
+    falta hace. Pero el estado sigue en disco, y `claude --resume <id>` lo recupera.
+
+    **`claude` puede no estar disponible y aun asi hay que listar.** Es el escenario del
+    desastre: si `get_sessions()` falla, se asume que no hay ninguna viva y se muestran
+    todas. Al reves seria dejar sin la funcion a quien la necesita.
+
+    El `mtime` solo sirve para PRESELECCIONAR candidatos baratos. El orden final va por el
+    `timestamp` de dentro, porque el transcript se escribe en bloque y varias sesiones
+    acaban con el mismo mtime exacto (ver CLAUDE.md).
+    """
+    try:
+        vivas = {s["sessionId"] for s in get_sessions()}
+    except SessionsUnavailable:
+        vivas = set()
+
+    candidatos = []
+    for cfg in config_dirs():
+        for ruta in glob.glob(os.path.join(cfg, "projects", "*", "*.jsonl")):
+            sid = os.path.basename(ruta)[:-6]
+            if sid in vivas:
+                continue
+            try:
+                candidatos.append((os.path.getmtime(ruta), sid, cfg))
+            except OSError:
+                continue
+    candidatos.sort(reverse=True)
+
+    notas_sesion, notas_repo, pausadas = load_state()
+    filas = []
+    # Se leen mas de los que se van a enseñar porque el mtime miente un poco: asi el
+    # recorte final por `ts` de verdad tiene de donde elegir.
+    for _, sid, cfg in candidatos[:limite * 3]:
+        info = read_transcript(sid, cfg)
+        cwd = info.get("cwd")
+        if not cwd:
+            continue      # sin directorio no se puede reanudar: no sirve de nada enseñarla
+        fila = {
+            "num": 0,     # se numeran abajo, por orden de lo que se ve
+            "name": sin_control(info.get("title") or sid[:8]),
+            "account": sin_control(account_label(cfg) if len(config_dirs()) > 1 else ""),
+            "repo": sin_control(os.path.basename(cwd)),
+            "cwd": cwd,
+            "kind": "interactive",
+            "status": "idle",
+            "sessionId": sid,
+            "pid": 0,
+            "tty": "",
+            "iterm": None,
+            "ts": info.get("ts"),
+            "branch": sin_control(info.get("branch")),
+            "model": short_model(info.get("model")),
+            "effort": info.get("effort"),
+            "title": sin_control(info.get("title")),
+            "prompt": sin_control(info.get("prompt")),
+            "note": "",
+            "paused": sid in pausadas,
+            "recoverable": True,
+            "_cfg": cfg,
+            "startedAt": 0,
+        }
+        fila["note"] = note_for(fila, notas_sesion, notas_repo)
+        filas.append(fila)
+
+    filas.sort(key=sort_key, reverse=True)
+    filas = filas[:limite]
+    for i, f in enumerate(filas, 1):
+        f["num"] = i
+    return filas
+
+
+def resume(row, quiet=False):
+    """
+    Abre una pestaña nueva de iTerm en el directorio de la sesion y la reanuda.
+
+    Dos capas de comillas y las dos importan:
+
+    - **El comando del shell** se arma con `shlex.quote`, porque un directorio con un
+      espacio o una comilla partiria el `cd`.
+    - **El comando entero entra en el AppleScript por `argv`**, nunca interpolado, igual
+      que en las notificaciones: la ruta sale del transcript, o sea de fuera.
+
+    Se escribe `claude` a secas y no la ruta resuelta: la pestaña nueva arranca un shell
+    interactivo que ya carga nvm, y una ruta de nvm fijada aqui caduca al actualizar Node.
+    """
+    orden = "cd {} && claude --resume {}".format(
+        shlex.quote(row["cwd"]), shlex.quote(row["sessionId"]))
+    script = '''
+    on run argv
+      tell application "iTerm2"
+        activate
+        if (count of windows) = 0 then
+          create window with default profile
+        else
+          tell current window to create tab with default profile
+        end if
+        tell current session of current window to write text (item 1 of argv)
+      end tell
+    end run
+    '''
+    try:
+        res = subprocess.run(["osascript", "-e", script, "--", orden],
+                             capture_output=True, text=True, timeout=20,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        if not quiet:
+            print(t("no_se_pudo_enfocar", error=e), file=sys.stderr)
+        return 1
+    if res.returncode != 0:
+        if not quiet:
+            print(t("no_se_pudo_enfocar", error=res.stderr.strip()), file=sys.stderr)
+        return 1
+    if not quiet:
+        print(t("recuperada", name=row["name"], repo=row["repo"]))
+    return 0
+
+
+class FeedFijo:
+    """
+    Un `Feed` que no refresca nunca, para `--recent`.
+
+    Las filas de ahi salen de disco, no de `claude agents`: un refresco normal las
+    sustituiria por las sesiones vivas y la lista de recuperables desapareceria sola a los
+    cuatro segundos. Misma interfaz que `Feed` para que `interactive()` no note la
+    diferencia.
+    """
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def snapshot(self):
+        return self.rows, 0
+
+    def touch(self):
+        pass
+
+    def force(self):
+        pass
+
+    def stop(self):
+        pass
+
+
 def parse_args(argv):
     """
     (opciones, error) — parseo a mano, sin argparse: son cuatro banderas y argparse
     tarda mas en importarse que todo lo demas en arrancar.
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
-            "version": False, "table": False, "notify": None}
+            "version": False, "table": False, "notify": None, "recent": None}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -2394,6 +2597,13 @@ def parse_args(argv):
             opts["list"] = True
         elif a in ("-t", "--table"):
             opts["table"] = True
+        elif a == "--recent":
+            nxt = argv[i + 1] if i + 1 < len(argv) else None
+            if nxt is not None and nxt.isdigit():
+                opts["recent"] = int(nxt)
+                i += 1
+            else:
+                opts["recent"] = RECENT_MAX
         elif a == "--notify":
             # el intervalo puede ir suelto ("--notify 30"); sin numero, el de por defecto.
             # No hay forma corta a proposito: `-n` se confundiria con `-w`, y mandar a
@@ -2423,6 +2633,8 @@ def parse_args(argv):
         return opts, t("w_desde_uno")
     if opts["notify"] is not None and opts["notify"] < 1:
         return opts, t("notify_desde_uno")
+    if opts["recent"] is not None and opts["recent"] < 1:
+        return opts, t("recent_desde_uno")
     return opts, None
 
 
@@ -2446,6 +2658,19 @@ def main():
     except SessionsUnavailable as e:
         print(f"ccl: {e}", file=sys.stderr)
         return 1
+
+    if opts["recent"] is not None:
+        # Tambien antes del "no hay sesiones", y por el mismo motivo elevado al cuadrado:
+        # el caso de uso ES que no haya ninguna viva porque se cayo el terminal.
+        recuperables = recent_rows(opts["recent"])
+        if not recuperables:
+            print(t("sin_recuperables"))
+            return 0
+        if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
+            render(recuperables, opts["table"])
+            return 0
+        interactive(FeedFijo(recuperables), opts["table"])
+        return 0
 
     if opts["notify"] is not None:
         # ANTES del "no hay sesiones": el vigilante arranca al iniciar sesion, cuando lo
