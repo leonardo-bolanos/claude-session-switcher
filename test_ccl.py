@@ -524,7 +524,7 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
                                 "help": False, "version": False, "table": False,
-                                "notify": None, "recent": None})
+                                "recent": None})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -557,19 +557,6 @@ class TestParseoDeArgumentos(unittest.TestCase):
         opts, err = ccl.parse_args(["--list", "--table"])
         self.assertIsNone(err)
         self.assertTrue(opts["list"] and opts["table"])
-
-    def test_notify(self):
-        self.assertEqual(ccl.parse_args(["--notify"])[0]["notify"], ccl.WATCH_SECONDS)
-        self.assertEqual(ccl.parse_args(["--notify", "30"])[0]["notify"], 30)
-        # sin forma corta a proposito: `-n` se confundiria con `-w`
-        self.assertTrue(ccl.parse_args(["-n"])[1])
-        self.assertTrue(ccl.parse_args(["--notify", "0"])[1])
-
-    def test_el_intervalo_de_notify_no_se_confunde_con_una_sesion(self):
-        """`--notify 30` son 30 segundos, no la sesion [30]."""
-        opts, err = ccl.parse_args(["--notify", "30"])
-        self.assertIsNone(err)
-        self.assertIsNone(opts["num"])
 
     def test_recent(self):
         self.assertEqual(ccl.parse_args(["--recent"])[0]["recent"], ccl.RECENT_MAX)
@@ -1435,239 +1422,6 @@ class TestNoEnsuciarLaConfigReal(unittest.TestCase):
         self.assertTrue(ccl.NOTES_FILE.startswith(os.path.expanduser("~")))
 
 
-class TestVigilante(unittest.TestCase):
-    """
-    `--notify`. Toda la decision es pura: `Vigilante` no manda ninguna notificacion, asi
-    que se puede probar entera sin llenar de avisos la pantalla de quien corra los tests.
-    """
-
-    def test_la_primera_foto_no_avisa_de_nada(self):
-        """
-        Arrancar con doce sesiones ociosas y soltar doce notificaciones es la forma mas
-        rapida de que alguien apague los avisos para siempre.
-        """
-        v = ccl.Vigilante()
-        rows = [row(n, f"sid-{n}", "idle", ts=iso(minutes=n)) for n in range(1, 13)]
-        self.assertEqual(v.nuevas(rows), [])
-
-    def test_avisa_de_la_que_acaba_de_ponerse_a_esperar(self):
-        trabajando = row(1, "sid-a", "busy", ts=iso(minutes=1))
-        v = ccl.Vigilante()
-        v.nuevas([trabajando])
-        libre = dict(trabajando, status="idle")
-        self.assertEqual([r["sessionId"] for r in v.nuevas([libre])], ["sid-a"])
-
-    def test_no_repite_el_aviso_mientras_siga_esperando(self):
-        """Avisa del FLANCO, no del estado: si no, repetiria cada 15 s."""
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1))])
-        libre = [row(1, "sid-a", "idle", ts=iso(minutes=1))]
-        self.assertEqual(len(v.nuevas(libre)), 1)
-        for _ in range(3):
-            self.assertEqual(v.nuevas(libre), [])
-
-    def test_si_vuelve_a_trabajar_y_termina_avisa_otra_vez(self):
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "idle", ts=iso(minutes=1))])
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1))])
-        self.assertEqual(len(v.nuevas([row(1, "sid-a", "idle", ts=iso(minutes=1))])), 1)
-
-    def test_una_pausada_no_avisa_nunca(self):
-        """Marcaste que espera a otro: avisarte de ella es lo contrario de lo que pediste."""
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1))])
-        libre_pausada = [row(1, "sid-a", "idle", ts=iso(minutes=1), paused=True)]
-        self.assertEqual(v.nuevas(libre_pausada), [])
-
-    def test_las_de_background_tampoco(self):
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1), kind="background")])
-        self.assertEqual(
-            v.nuevas([row(1, "sid-a", "idle", ts=iso(minutes=1), kind="background")]), [])
-
-    def test_una_sesion_que_muere_no_avisa(self):
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1))])
-        self.assertEqual(v.nuevas([]), [])
-
-    def test_una_sesion_nueva_que_nace_esperando_avisa(self):
-        """Es el caso de `claude --resume`: no estaba, y ya te espera."""
-        v = ccl.Vigilante()
-        v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1))])
-        nuevas = v.nuevas([row(1, "sid-a", "busy", ts=iso(minutes=1)),
-                           row(2, "sid-b", "idle", ts=iso(minutes=2))])
-        self.assertEqual([r["sessionId"] for r in nuevas], ["sid-b"])
-
-    def test_el_orden_es_el_mismo_que_el_del_panel(self):
-        v = ccl.Vigilante()
-        v.nuevas([])
-        rows = [row(1, "vieja", "idle", ts=iso(hours=3)),
-                row(2, "nueva", "idle", ts=iso(minutes=1))]
-        self.assertEqual([r["sessionId"] for r in v.nuevas(rows)],
-                         [r["sessionId"] for r in ccl.waiting_rows(rows)])
-
-
-class TestBucleDeVigilancia(unittest.TestCase):
-    """
-    `watch()` de punta a punta, con `collect` y `notificar` parcheados: ni se ejecuta
-    `claude` ni se manda ninguna notificacion de verdad.
-    """
-
-    def setUp(self):
-        self.avisos = []
-        self.originales = (ccl.collect, ccl.notificar, ccl.time.sleep)
-        ccl.notificar = lambda *a: self.avisos.append(a) or True
-        ccl.time.sleep = lambda _: None      # el intervalo no se espera de verdad
-
-    def tearDown(self):
-        ccl.collect, ccl.notificar, ccl.time.sleep = self.originales
-
-    def _guion(self, fotos):
-        """`collect` va devolviendo una foto distinta en cada llamada."""
-        it = iter(fotos)
-        ultima = [fotos[-1]]
-        ccl.collect = lambda: next(it, ultima[0])
-
-    def test_avisa_una_vez_por_sesion_que_termina(self):
-        ocupada = [row(1, "sid-a", "busy", ts=iso(minutes=1))]
-        libre = [row(1, "sid-a", "idle", ts=iso(minutes=1))]
-        self._guion([ocupada, libre, libre, libre])
-        ccl.watch(intervalo=0, vueltas=3)
-        self.assertEqual(len(self.avisos), 1, "una sola vez, aunque siga esperando")
-        titulo, _, _ = self.avisos[0]
-        self.assertEqual(titulo, "[1] s1")   # `row()` nombra las sesiones s<num>
-
-    def test_muchas_a_la_vez_son_un_solo_aviso_resumido(self):
-        """Doce notificaciones de golpe no se leen, se descartan."""
-        ocupadas = [row(n, f"sid-{n}", "busy", ts=iso(minutes=n)) for n in range(1, 7)]
-        libres = [dict(r, status="idle") for r in ocupadas]
-        self._guion([ocupadas, libres])
-        ccl.watch(intervalo=0, vueltas=1)
-        self.assertEqual(len(self.avisos), 1, "deberia resumir, no mandar seis")
-        self.assertIn("6", self.avisos[0][0])
-
-    def test_justo_en_el_limite_avisa_una_por_una(self):
-        n = ccl.NOTIFY_MAX
-        ocupadas = [row(i, f"sid-{i}", "busy", ts=iso(minutes=i)) for i in range(1, n + 1)]
-        libres = [dict(r, status="idle") for r in ocupadas]
-        self._guion([ocupadas, libres])
-        ccl.watch(intervalo=0, vueltas=1)
-        self.assertEqual(len(self.avisos), n)
-
-    def test_un_fallo_puntual_de_collect_no_mata_al_vigilante(self):
-        """Que Claude Code se reinicie no puede dejarte sin avisos el resto del dia."""
-        ocupada = [row(1, "sid-a", "busy", ts=iso(minutes=1))]
-        libre = [row(1, "sid-a", "idle", ts=iso(minutes=1))]
-        llamadas = [ocupada, "boom", libre]
-        it = iter(llamadas)
-
-        def collect_con_fallo():
-            v = next(it, libre)
-            if v == "boom":
-                raise ccl.SessionsUnavailable("claude se cayo")
-            return v
-
-        ccl.collect = collect_con_fallo
-        ccl.watch(intervalo=0, vueltas=2)
-        self.assertEqual(len(self.avisos), 1, "no avisó tras recuperarse del fallo")
-
-    def test_arranca_aunque_no_haya_ninguna_sesion_todavia(self):
-        """
-        EL FALLO: `main()` cortaba con "no hay sesiones" ANTES de mirar `--notify`. Y el
-        caso de uso principal es arrancarlo al iniciar sesión, cuando lo normal es que aún
-        no haya abierta ninguna: el vigilante salía al instante y en silencio.
-        """
-        vueltas = []
-
-        def collect_vacio_y_luego_una():
-            vueltas.append(1)
-            if len(vueltas) == 1:
-                return []                      # al arrancar no hay nada
-            return [row(1, "sid-a", "idle", ts=iso(minutes=1))]
-
-        ccl.collect = collect_vacio_y_luego_una
-        ccl.watch(intervalo=0, vueltas=1)
-        self.assertEqual(len(self.avisos), 1, "no avisó de la sesión que apareció después")
-
-    def test_si_claude_no_esta_al_arrancar_falla_en_vez_de_callarse(self):
-        """
-        Un demonio silencioso que nunca avisará es indistinguible de uno que funciona.
-        El primer `collect()` va fuera del try justamente para esto.
-        """
-        def collect_roto():
-            raise ccl.SessionsUnavailable("no encuentro claude")
-
-        ccl.collect = collect_roto
-        with self.assertRaises(ccl.SessionsUnavailable):
-            ccl.watch(intervalo=0, vueltas=1)
-
-
-class TestSalirDelVigilante(unittest.TestCase):
-    """
-    Se puede parar. Suena obvio; no lo fue: `ccl --notify` se quedó sin morir con Ctrl-C
-    en una terminal de verdad, y no hay nada peor en un proceso de fondo que uno del que
-    no te puedes bajar.
-    """
-
-    def setUp(self):
-        self.originales = (ccl.collect, ccl.notificar, ccl.time.sleep)
-        ccl.notificar = lambda *a: True
-        ccl.time.sleep = lambda _: None
-
-    def tearDown(self):
-        ccl.collect, ccl.notificar, ccl.time.sleep = self.originales
-
-    def test_una_señal_corta_el_bucle(self):
-        """SIGINT en mitad de una vuelta: la siguiente ya no ocurre."""
-        vueltas = []
-
-        def collect_que_avisa():
-            vueltas.append(1)
-            if len(vueltas) == 2:
-                os.kill(os.getpid(), signal.SIGINT)
-            return [row(1, "sid-a", "idle", ts=iso(minutes=1))]
-
-        ccl.collect = collect_que_avisa
-        self.assertEqual(ccl.watch(intervalo=0, vueltas=50), 0)
-        self.assertLessEqual(len(vueltas), 3, "siguió dando vueltas tras la señal")
-
-    def test_sigterm_tambien(self):
-        """Es lo que manda `kill`, y lo que usará launchd al cerrar sesión."""
-        vueltas = []
-
-        def collect_que_avisa():
-            vueltas.append(1)
-            if len(vueltas) == 2:
-                os.kill(os.getpid(), signal.SIGTERM)
-            return []
-
-        ccl.collect = collect_que_avisa
-        self.assertEqual(ccl.watch(intervalo=0, vueltas=50), 0)
-        self.assertLessEqual(len(vueltas), 3)
-
-    def test_deja_los_manejadores_como_estaban(self):
-        """Los instala para sí, no para siempre: `watch()` también se importa."""
-        antes = signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)
-        ccl.collect = lambda: []
-        ccl.watch(intervalo=0, vueltas=1)
-        self.assertEqual((signal.getsignal(signal.SIGINT),
-                          signal.getsignal(signal.SIGTERM)), antes)
-
-    def test_dormir_se_corta_en_cuanto_hay_bandera(self):
-        """
-        Desde PEP 475 `time.sleep()` REANUDA lo que le queda si la señal no lanza
-        excepción. De una sola vez, un `--notify 60` tardaría un minuto en reaccionar al
-        Ctrl-C, que por fuera es idéntico a estar colgado. Por eso duerme a rodajas.
-        """
-        ccl.time.sleep = self.originales[2]      # aquí el sleep tiene que ser el de verdad
-        parar = []
-        import threading
-        threading.Timer(0.2, lambda: parar.append(True)).start()
-        t0 = time.monotonic()
-        ccl._dormir(30, parar)
-        self.assertLess(time.monotonic() - t0, 3, "no miró la bandera mientras dormía")
-
-
 class TestSubprocesosSinTerminal(unittest.TestCase):
     """
     **Ningún hijo puede ver el terminal.** `capture_output=True` redirige la salida pero
@@ -1700,7 +1454,6 @@ class TestSubprocesosSinTerminal(unittest.TestCase):
         casos = {
             "get_ttys": lambda: ccl.get_ttys([1, 2]),
             "get_iterm_map": ccl.get_iterm_map,
-            "notificar": lambda: ccl.notificar("a", "b", "c"),
             "focus": lambda: ccl.focus({"ventana": ("iTerm2", "1", 2), "num": 1, "name": "x",
                                         "tty": "", "cwd": "/x"}, quiet=True),
         }
@@ -1728,67 +1481,6 @@ class TestSubprocesosSinTerminal(unittest.TestCase):
         self.assertEqual(llamadas, con_devnull,
                          f"{llamadas} llamadas a subprocess.run y solo "
                          f"{con_devnull} con stdin=DEVNULL")
-
-
-class TestTextoDelAviso(unittest.TestCase):
-    def test_lleva_numero_nombre_repo_y_rama(self):
-        r = row(3, "sid-a", "idle", ts=iso(minutes=1))
-        r["name"], r["repo"], r["branch"] = "arreglar-login", "web-app", "fix/login"
-        titulo, subtitulo, _ = ccl.aviso_de(r)
-        self.assertEqual(titulo, "[3] arreglar-login")
-        self.assertEqual(subtitulo, "web-app · fix/login")
-
-    def test_tu_nota_manda_sobre_el_prompt(self):
-        r = row(1, "sid-a", "idle", ts=iso(minutes=1))
-        r["prompt"], r["note"] = "el ultimo prompt", "esperando a Felipe"
-        self.assertEqual(ccl.aviso_de(r)[2], "esperando a Felipe")
-
-    def test_sin_nota_cae_al_prompt_y_luego_al_titulo(self):
-        r = row(1, "sid-a", "idle", ts=iso(minutes=1))
-        r["prompt"] = "revisa el flujo de pago"
-        self.assertEqual(ccl.aviso_de(r)[2], "revisa el flujo de pago")
-        r["prompt"], r["title"] = None, "un titulo"
-        self.assertEqual(ccl.aviso_de(r)[2], "un titulo")
-
-    def test_sin_nada_no_revienta(self):
-        self.assertEqual(ccl.aviso_de(row(1, "sid-a"))[2], "")
-
-    def test_el_cuerpo_se_recorta_y_va_en_una_linea(self):
-        r = row(1, "sid-a", "idle", ts=iso(minutes=1))
-        r["prompt"] = "linea uno\n\nlinea dos   con    espacios " + "x" * 400
-        cuerpo = ccl.aviso_de(r)[2]
-        self.assertNotIn("\n", cuerpo)
-        self.assertIn("linea uno linea dos con espacios", cuerpo)
-        self.assertLessEqual(len(cuerpo), 200)
-
-    def test_el_texto_va_por_argv_y_no_dentro_del_applescript(self):
-        """
-        Aqui entra por primera vez texto de FUERA en un script que se ejecuta. Interpolarlo
-        convierte una comilla en un error de sintaxis, y algo peor que una comilla en
-        AppleScript arbitrario. Con `on run argv` el texto es un dato.
-        """
-        capturado = {}
-
-        def falso_run(cmd, **kw):
-            capturado["cmd"] = cmd
-            class R:
-                returncode = 0
-            return R()
-
-        original = ccl.subprocess.run
-        ccl.subprocess.run = falso_run
-        try:
-            malicioso = '" & (do shell script "touch /tmp/ccl-pwned") & "'
-            ccl.notificar("titulo", "sub", malicioso)
-        finally:
-            ccl.subprocess.run = original
-
-        cmd = capturado["cmd"]
-        self.assertIn("--", cmd, "el texto tiene que ir despues de -- , como argumento")
-        script = " ".join(cmd[:cmd.index("--")])
-        self.assertNotIn(malicioso, script, "el texto acabó DENTRO del AppleScript")
-        self.assertIn(malicioso, cmd[cmd.index("--") + 1:], "el texto deberia ir en argv")
-        self.assertIn("item 1 of argv", script)
 
 
 class TestListadoEstatico(unittest.TestCase):

@@ -99,7 +99,6 @@ ccl 7            # jump straight to session number 7
 ccl -w           # jump to the session that's been waiting on you longest
 ccl -w2          # same, the second one in the WAITING queue
 ccl --table      # one line per session, in columns
-ccl --notify     # watch in the background, notify when one starts waiting
 ccl --recent     # the ones that died with your terminal — resume them
 ccl --recent --list   # just look at them, nothing is touched
 ccl --version    # print the version
@@ -269,47 +268,6 @@ Two things worth knowing:
 
 If you'd rather not lose them at all, run Claude Code inside tmux: the sessions survive the
 terminal, and `ccl` gains tmux support one day ([TODO.md](TODO.md)).
-
-</details>
-
-<details>
-<summary><b>Getting told, instead of looking</b> — background notifications</summary>
-
-`ccl --notify` doesn't draw anything. It stays in the background and sends a macOS notification
-when a session **starts** waiting on you:
-
-```bash
-ccl --notify        # every 15s
-ccl --notify 60     # or slower
-```
-
-It notifies on the **edge, not the state**: the sessions that just went from working to waiting.
-Two consequences that matter more than they sound:
-
-- **The first snapshot is only memorised.** Starting the watcher with a dozen idle sessions fires
-  zero notifications — the fastest way to make someone turn notifications off forever is twelve
-  of them at once.
-- **Paused sessions never notify.** You already said that one is waiting on somebody else.
-
-More than three at the same time collapse into one summary, for the same reason.
-
-Pair it with `-w` on a global shortcut and you never open the panel: it taps you on the shoulder,
-`⌃⌘1` takes you there. To run it at login, `~/Library/LaunchAgents/com.ccl.notify.plist`:
-
-```xml
-<key>ProgramArguments</key>
-<array>
-  <string>/Users/you/.local/bin/ccl</string>
-  <string>--notify</string>
-</array>
-<key>RunAtLoad</key><true/>
-<key>KeepAlive</key><true/>
-```
-
-One wart worth knowing: notifications go out through `osascript`, so macOS attributes them to
-**Script Editor** — that's the icon you'll see, and Script Editor is what you have to allow in
-System Settings → Notifications. Doing better needs a signed app bundle, which is a lot of
-machinery for one line of AppleScript.
 
 </details>
 

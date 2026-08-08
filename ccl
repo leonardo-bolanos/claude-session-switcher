@@ -8,7 +8,6 @@ Uso:
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
-    ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --version    imprime la version
@@ -41,7 +40,6 @@ import os
 import re
 import select
 import shlex
-import signal
 import shutil
 import subprocess
 import sys
@@ -76,7 +74,6 @@ Usage:
     ccl <n>          jump straight to session number <n>
     ccl -w <n>       jump to the <n>th WAITING session (the first one by default)
     ccl --table      one line per session, in columns (Ctrl-T toggles it live)
-    ccl --notify     watch in the background and notify when one starts waiting
     ccl --recent     sessions that died with your terminal, and resume them
     ccl --recent --list   just look at them, no panel, nothing touched
     ccl --version    print the version
@@ -96,12 +93,6 @@ searches notes too.
 `claude agents --json` stops reporting them and the panel goes empty exactly when you need
 it — but the state is on disk. It lists what you can resume, and Enter opens a new iTerm
 tab, cds into the directory and runs `claude --resume`.
-
-`--notify` is the one that doesn't need you to look: it stays in the background and sends
-a macOS notification when a session starts waiting on you. It notifies on the EDGE, not on
-the state, and the first snapshot is only memorised — starting it with a dozen idle
-sessions won't fire a dozen notifications. Paused sessions never notify. Pair it with a
-launchd agent or your login items, and with `-w` on a global shortcut to jump there.
 
 Ctrl-P puts a session on PAUSED: it's the one waiting on something that isn't you (a
 colleague's answer, a deploy, a review). Paused sessions get their own group and leave
@@ -131,7 +122,6 @@ Uso:
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
-    ccl --notify     vigila en segundo plano y avisa cuando una pasa a esperarte
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --version    imprime la version
@@ -139,10 +129,6 @@ Uso:
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
 quien te espera sin abrir el panel: no necesita TTY y sale al momento. Dentro del panel
 lo mismo se hace con Option-1..9.
-
-`--notify` es lo unico que no necesita que mires: se queda de fondo y manda una
-notificacion de macOS cuando una sesion pasa a esperarte. Avisa del FLANCO, no del
-estado, y la primera foto solo se memoriza.
 
 El numero de cada sesion es ESTABLE: se guarda en ~/.claude/ccl-numbers.json y se
 mantiene entre ejecuciones, aunque la lista se reordene. Se recicla cuando la sesion muere.
@@ -155,12 +141,6 @@ ellas al filtrar.
 `claude agents --json` deja de verlas y el panel se queda vacio justo cuando hace falta —
 pero el estado sigue en disco. Lista lo que se puede reanudar, y Enter abre una pestaña
 nueva de iTerm, entra en el directorio y lanza `claude --resume`.
-
-`--notify` es lo unico que no necesita que mires: se queda de fondo y manda una
-notificacion de macOS cuando una sesion pasa a esperarte. Avisa del FLANCO, no del estado,
-y la primera foto solo se memoriza — arrancarlo con doce sesiones ociosas no suelta doce
-avisos. Las pausadas nunca avisan. Combinalo con un agente de launchd o los items de
-inicio, y con `-w` en un atajo global para saltar alli.
 
 Ctrl-P pone una sesion en PAUSADAS: la que espera algo que no eres tu (que conteste un
 compañero, un despliegue, una revision). Van a su propio grupo y salen de ESPERANDO, asi
@@ -248,7 +228,6 @@ TEXTOS = {
         # CLI
         "opcion_desconocida": "unknown option: {opcion}",
         "w_desde_uno": "-w counts from 1",
-        "notify_desde_uno": "--notify needs at least 1 second",
         "recent_desde_uno": "--recent counts from 1",
         "sin_sesiones": ("No active Claude Code sessions.\n"
                          "  If your terminal just died, `ccl --recent` lists the ones "
@@ -292,9 +271,6 @@ TEXTOS = {
         "nota_prompt": "✎ note for {repo}: ",
         "nota_teclas": "  enter saves · empty deletes · esc cancels",
         "nota_perdida": "✎ that session is gone: note not saved",
-        "notif_varias": "{n} sessions are waiting for you",
-        "notif_varias_sub": "ccl",
-        "notify_arrancado": "ccl is watching {n} sessions. Ctrl-C to stop.",
         "enganchada": "⧉ {name} — attached tmux session {sesion} in a new tab",
         "recuperada": "↻ {name} ({repo}) resumed in a new tab",
         "recuperando": "↻ {name} — new tab",
@@ -349,7 +325,6 @@ TEXTOS = {
                        "  Ejecuta Claude Code al menos una vez, o define CCL_CONFIG_DIRS."),
         "opcion_desconocida": "opcion desconocida: {opcion}",
         "w_desde_uno": "-w cuenta desde 1",
-        "notify_desde_uno": "--notify necesita al menos 1 segundo",
         "recent_desde_uno": "--recent cuenta desde 1",
         "sin_sesiones": ("No hay sesiones de Claude Code activas.\n"
                          "  Si se acaba de caer tu terminal, `ccl --recent` lista las "
@@ -393,9 +368,6 @@ TEXTOS = {
         "nota_prompt": "✎ nota de {repo}: ",
         "nota_teclas": "  enter guarda · vacía borra · esc cancela",
         "nota_perdida": "✎ esa sesión ya no está: nota sin guardar",
-        "notif_varias": "{n} sesiones te esperan",
-        "notif_varias_sub": "ccl",
-        "notify_arrancado": "ccl vigilando {n} sesiones. Ctrl-C para parar.",
         "enganchada": "⧉ {name} — sesión de tmux {sesion} enganchada en una pestaña nueva",
         "recuperada": "↻ {name} ({repo}) reanudada en una pestaña nueva",
         "recuperando": "↻ {name} — pestaña nueva",
@@ -2514,177 +2486,6 @@ def interactive(feed, tabla=False):
         _restaurar_tty(attrs_previos)
 
 
-# ─────────────────────── avisos (ccl --notify) ───────────────────────
-#
-# Lo unico que el panel no podia hacer: enterarte SIN mirar. `--notify` no pinta nada, se
-# queda de fondo y avisa cuando una sesion pasa a esperarte. Pensado para arrancarlo al
-# iniciar sesion y olvidarlo.
-
-
-# Cuantas recuperables se enseñan por defecto. 200 y no 20: con 20 la lista servia para
-# "que se acaba de caer", pero no para BUSCAR — que es para lo que se usa. Con 111
-# transcripts en disco, buscar entre los 20 mas recientes no encuentra casi nada.
-#
-# Y sale gratis: el coste lo domina el escaneo del directorio, no el numero de colas que se
-# leen. Medido en esa maquina: 20 filas 0,41 s, 107 filas 0,44 s. El tope existe solo para
-# acotar el caso raro de quien tenga miles; ahi `--recent 50` sigue estando.
-RECENT_MAX = 200
-WATCH_SECONDS = 15    # el panel refresca a 4s porque lo estas mirando; esto vive todo el
-                      # dia, y cada vuelta cuesta ~0,2s de CPU entre `claude` y osascript
-NOTIFY_MAX = 3        # mas sesiones que esto en una misma tanda: un solo aviso resumido
-
-
-def notificar(titulo, subtitulo, cuerpo):
-    """
-    Una notificacion de macOS. Devuelve si se pudo mandar.
-
-    **El texto va por `argv`, nunca interpolado en el AppleScript.** Aqui entra por primera
-    vez texto de fuera —el nombre de la sesion, tu nota, el ultimo prompt— en un script que
-    se ejecuta: interpolarlo convertiria una comilla en un error de sintaxis y algo peor que
-    una comilla en ejecucion de AppleScript arbitrario. Con `on run argv` el texto es un
-    dato y no puede volverse codigo. `sin_control()` ya lo limpio antes, pero eso protege el
-    dibujado, no a osascript.
-    """
-    try:
-        subprocess.run(
-            ["osascript",
-             "-e", "on run argv",
-             "-e", ("display notification (item 1 of argv) with title (item 2 of argv) "
-                    "subtitle (item 3 of argv)"),
-             "-e", "end run",
-             "--", cuerpo, titulo, subtitulo],
-            capture_output=True, timeout=10, check=True, stdin=subprocess.DEVNULL)
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False   # sin notificaciones se sigue vigilando: no es motivo para morir
-
-
-class Vigilante:
-    """
-    Decide de que hay que avisar. **Puro**: no manda ninguna notificacion.
-
-    Avisa del FLANCO, no del estado: de las sesiones que acaban de pasar a esperarte. Si
-    avisara del estado, cada vuelta repetiria el aviso de las mismas doce sesiones.
-
-    La primera foto solo se memoriza. Sin eso, arrancar el vigilante con doce sesiones
-    ociosas soltaba doce notificaciones de golpe — justo el comportamiento que hace que la
-    gente apague los avisos para siempre.
-
-    Las pausadas no cuentan, porque `is_waiting()` ya las excluye: si marcaste que espera a
-    otro, que te avise de ella seria exactamente lo contrario de lo que pediste.
-    """
-
-    def __init__(self):
-        self.vistas = None   # None = aun no hay foto previa
-
-    def nuevas(self, rows):
-        """Las filas que acaban de ponerse a esperarte, ya ordenadas."""
-        ahora = {r["sessionId"] for r in rows if is_waiting(r)}
-        if self.vistas is None:
-            self.vistas = ahora
-            return []
-        # `vistas` se reemplaza entera, no se acumula: una sesion que vuelve a trabajar sale
-        # del conjunto, y cuando termine otra vez habra un flanco nuevo del que avisar.
-        pendientes = [r for r in waiting_rows(rows) if r["sessionId"] not in self.vistas]
-        self.vistas = ahora
-        return pendientes
-
-
-def aviso_de(row):
-    """(titulo, subtitulo, cuerpo) de una sesion. Tu nota manda sobre el prompt."""
-    titulo = f"[{row['num']}] {row['name']}"
-    partes = [x for x in (row.get("repo"), row.get("branch")) if x]
-    cuerpo = row.get("note") or row.get("prompt") or row.get("title") or ""
-    return titulo, " · ".join(partes), " ".join(str(cuerpo).split())[:200]
-
-
-def _dormir(segundos, parar):
-    """
-    `time.sleep` a rodajas, mirando `parar` entre una y otra.
-
-    De una sola vez no vale: desde PEP 475, `time.sleep()` **reanuda** lo que le queda
-    cuando la interrumpe una señal cuyo manejador no lanza excepcion. O sea que con
-    `--notify 60`, tu Ctrl-C tardaria hasta un minuto en hacer nada visible, que por fuera
-    es exactamente igual que estar colgado.
-    """
-    fin = time.monotonic() + segundos
-    while not parar and time.monotonic() < fin:
-        time.sleep(min(0.5, max(0.0, fin - time.monotonic())))
-
-
-def watch(intervalo=WATCH_SECONDS, vueltas=None):
-    """
-    Vigila en segundo plano y avisa. `vueltas` acota el bucle (para los tests).
-
-    El primer `collect()` va FUERA del try: si `claude` no esta, hay que fallar ya y con un
-    mensaje claro, no quedarse en un bucle silencioso que no avisara nunca. A partir de ahi
-    los fallos se ignoran, como en el panel: que Claude Code se reinicie no puede matar al
-    vigilante.
-
-    Se atienden SIGINT y SIGTERM con un manejador propio en vez de dejar que salte
-    `KeyboardInterrupt`: la excepcion puede caer dentro del `ThreadPoolExecutor` de
-    `collect()`, y entonces la salida se queda esperando a que terminen `claude` y
-    `osascript` — hasta quince segundos en los que el Ctrl-C parece no hacer nada. Con una
-    bandera se sale en cuanto acaba la vuelta. SIGTERM ademas es lo que manda `kill` y lo
-    que usara launchd al cerrar sesion.
-
-    Y el terminal se restaura al salir. Este proceso vive todo el dia lanzando hijos, y un
-    hijo que muera a mitad —por una señal, sin poder deshacer lo suyo— puede dejarte la
-    terminal en modo raw. Todos se lanzan ya con `stdin=DEVNULL` para que ni siquiera la
-    vean, pero la red de seguridad es barata.
-    """
-    parar = []
-    anteriores = {}
-
-    def _parar(_sig, _frame):
-        parar.append(True)
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            anteriores[sig] = signal.signal(sig, _parar)
-        except (ValueError, OSError, AttributeError):
-            pass   # sin manejador (p.ej. fuera del hilo principal) se sigue igual
-
-    previos = None
-    try:
-        if sys.stdin.isatty():
-            previos = termios.tcgetattr(sys.stdin.fileno())
-    except (termios.error, ValueError, OSError):
-        previos = None
-
-    try:
-        vig = Vigilante()
-        vig.nuevas(collect())          # primera foto: memorizar sin avisar
-        hechas = 0
-        while not parar and (vueltas is None or hechas < vueltas):
-            _dormir(intervalo, parar)
-            if parar:
-                break
-            hechas += 1
-            try:
-                pendientes = vig.nuevas(collect())
-            except Exception:
-                continue
-            if not pendientes:
-                continue
-            if len(pendientes) > NOTIFY_MAX:
-                # doce avisos a la vez no se leen, se descartan. Uno que diga cuantas, si.
-                nombres = ", ".join(r["name"] for r in pendientes[:NOTIFY_MAX])
-                notificar(t("notif_varias", n=len(pendientes)),
-                          t("notif_varias_sub"), nombres + "…")
-            else:
-                for r in pendientes:
-                    notificar(*aviso_de(r))
-        return 0
-    finally:
-        for sig, manejador in anteriores.items():
-            try:
-                signal.signal(sig, manejador)
-            except (ValueError, OSError):
-                pass
-        _restaurar_tty(previos)
-
-
 # ─────────────────────────────── enfoque ───────────────────────────────
 
 
@@ -2834,6 +2635,16 @@ def procesos_claude():
     return len(res.stdout.split())
 
 
+# Cuantas recuperables se enseñan por defecto. 200 y no 20: con 20 la lista servia para
+# "que se acaba de caer", pero no para BUSCAR — que es para lo que se usa. Con 111
+# transcripts en disco, buscar entre los 20 mas recientes no encuentra casi nada.
+#
+# Y sale gratis: el coste lo domina el escaneo del directorio, no el numero de colas que se
+# leen. Medido: 20 filas 0,41 s, 107 filas 0,44 s. El tope existe solo para acotar el caso
+# raro de quien tenga miles; ahi `--recent 50` sigue estando.
+RECENT_MAX = 200
+
+
 def recent_rows(limite=RECENT_MAX):
     """
     Sesiones que YA NO CORREN pero se pueden reanudar, de la mas reciente hacia atras.
@@ -2920,7 +2731,7 @@ def resume(row, quiet=False):
     - **El comando del shell** se arma con `shlex.quote`, porque un directorio con un
       espacio o una comilla partiria el `cd`.
     - **El comando entero entra en el AppleScript por `argv`**, nunca interpolado, igual
-      que en las notificaciones: la ruta sale del transcript, o sea de fuera.
+      que en el resto: la ruta sale del transcript, o sea de fuera.
 
     Se escribe `claude` a secas y no la ruta resuelta: la pestaña nueva arranca un shell
     interactivo que ya carga nvm, y una ruta de nvm fijada aqui caduca al actualizar Node.
@@ -3017,7 +2828,7 @@ def parse_args(argv):
     tarda mas en importarse que todo lo demas en arrancar.
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
-            "version": False, "table": False, "notify": None, "recent": None}
+            "version": False, "table": False, "recent": None}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3036,16 +2847,6 @@ def parse_args(argv):
                 i += 1
             else:
                 opts["recent"] = RECENT_MAX
-        elif a == "--notify":
-            # el intervalo puede ir suelto ("--notify 30"); sin numero, el de por defecto.
-            # No hay forma corta a proposito: `-n` se confundiria con `-w`, y mandar a
-            # alguien a un demonio cuando queria saltar a una sesion es un mal error.
-            nxt = argv[i + 1] if i + 1 < len(argv) else None
-            if nxt is not None and nxt.isdigit():
-                opts["notify"] = int(nxt)
-                i += 1
-            else:
-                opts["notify"] = WATCH_SECONDS
         elif a in ("-w", "--waiting"):
             # el numero puede ir suelto ("-w 2") o pegado ("-w2"); sin numero, la primera
             nxt = argv[i + 1] if i + 1 < len(argv) else None
@@ -3063,8 +2864,6 @@ def parse_args(argv):
         i += 1
     if opts["waiting"] is not None and opts["waiting"] < 1:
         return opts, t("w_desde_uno")
-    if opts["notify"] is not None and opts["notify"] < 1:
-        return opts, t("notify_desde_uno")
     if opts["recent"] is not None and opts["recent"] < 1:
         return opts, t("recent_desde_uno")
     return opts, None
@@ -3103,19 +2902,6 @@ def main():
             return 0
         interactive(FeedFijo(recuperables), opts["table"])
         return 0
-
-    if opts["notify"] is not None:
-        # ANTES del "no hay sesiones": el vigilante arranca al iniciar sesion, cuando lo
-        # normal es que aun no haya ninguna abierta. Saliendo ahi, el caso de uso principal
-        # —ponerlo en launchd y olvidarlo— no funcionaba nunca, y encima en silencio.
-        #
-        # Se avisa por pantalla de que arranco: un demonio que no dice nada al empezar es
-        # indistinguible de uno que se colgo, y el primer aviso puede tardar horas.
-        print(t("notify_arrancado", n=len(rows)))
-        try:
-            return watch(opts["notify"])
-        except KeyboardInterrupt:
-            return 0
 
     if not rows:
         vivos = procesos_claude()

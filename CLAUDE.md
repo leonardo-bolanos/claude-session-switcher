@@ -187,165 +187,33 @@ del transcript, o sea de fuera. Hay tests para las dos.
 Limitacion conocida y documentada en el README: si el registro esta desactualizado puede colarse
 una sesion viva, y reanudarla abre una segunda pestaña sobre la misma conversacion.
 
-## Avisos (`--notify`)
+## Ningun subproceso hereda el terminal
 
-**El texto va por `argv`, nunca interpolado en el AppleScript.** Es uno de los dos sitios del
-programa donde texto de FUERA —el nombre de la sesion, tu nota, el ultimo prompt— entra en un
-script que se ejecuta (el otro es `resume()`, con la ruta del transcript). Interpolarlo convierte una comilla en un error de sintaxis, y algo peor que una
-comilla en ejecucion de AppleScript arbitrario. Con `on run argv` el texto es un dato y no puede
-volverse codigo. `sin_control()` no vale aqui: protege el dibujado, no a `osascript`. Hay un test
-que intenta colar un `do shell script` y comprueba que acaba en `argv` y no en el script.
+**Todos van con `stdin=subprocess.DEVNULL`.** `capture_output=True` redirige la salida pero **no
+stdin**, asi que el hijo se queda con el tty en el fd 0 y puede reconfigurarlo. `claude` es una TUI
+de Node y pone stdin en modo raw; si muere a mitad por una señal no lo deshace, y te deja la
+terminal **sin Ctrl-C ni Ctrl-Z**. Hay un test que cuenta las llamadas a `subprocess.run` en el
+fuente y exige que todas lo lleven: una nueva sin `stdin` reabre el agujero, y el sintoma aparece
+muy lejos de la causa.
 
-**Se avisa del FLANCO, no del estado.** `Vigilante.nuevas()` compara con la foto anterior y
-devuelve solo las que acaban de ponerse a esperar; si mirara el estado, repetiria los mismos doce
-avisos cada quince segundos.
+**Y el texto de fuera va por `argv`, nunca interpolado en el AppleScript.** El sitio donde pasa es
+`resume()`/`pestaña_nueva()`, con la ruta que sale del transcript. Interpolarla convierte una
+comilla en un error de sintaxis, y algo peor que una comilla en ejecucion de AppleScript
+arbitrario. Con `on run argv` el texto es un dato y no puede volverse codigo. `sin_control()` no
+vale para esto: protege el dibujado, no a `osascript`.
 
-**La primera foto solo se memoriza.** Arrancar con doce sesiones ociosas soltaba doce
-notificaciones de golpe, que es la forma mas rapida de que alguien apague los avisos para
-siempre. Por lo mismo, mas de `NOTIFY_MAX` (3) en una tanda se resumen en uno.
+## Hubo un `--notify` y se quito
 
-**El primer `collect()` va FUERA del try.** Si `claude` no esta hay que fallar ya y con un mensaje
-claro: un demonio silencioso que nunca avisara es indistinguible de uno que funciona. A partir de
-ahi los fallos se ignoran, como en el `Feed` del panel.
+Vigilaba en segundo plano y mandaba una notificacion de macOS cuando una sesion pasaba a
+esperarte. Se retiro a peticion del usuario: **las notificaciones salian por `osascript`, asi que
+macOS se las atribuye a Script Editor** —ese icono, y ese es el permiso que hay que conceder— y en
+uso real no aportaba. Si alguien lo vuelve a pedir, hacerlo bien exige empaquetar una app firmada
+y notarizada con su bundle id, que es mucha maquinaria para una linea de AppleScript.
 
-**`WATCH_SECONDS` son 15, no los 4 del panel.** El panel refresca rapido porque lo estas mirando;
-esto vive todo el dia y cada vuelta cuesta ~0,2 s de CPU entre `claude agents` y `osascript`.
+Lo que SI hay que conservar de aquello esta arriba: el `stdin=DEVNULL` de todos los subprocesos y
+el paso de texto por `argv`. Los dos se descubrieron por `--notify` pero no eran suyos.
 
-**Ningun subproceso hereda el terminal: todos van con `stdin=subprocess.DEVNULL`.**
-`capture_output=True` redirige la salida pero **no stdin**, asi que el hijo se queda con el tty en
-el fd 0 y puede reconfigurarlo. `claude` es una TUI de Node y pone stdin en modo raw; si muere a
-mitad por una señal no lo deshace, y te deja la terminal **sin Ctrl-C ni Ctrl-Z**. Con `--notify`
-eso es peor que en el panel, porque lanza hijos cada quince segundos durante todo el dia y no hay
-nadie mirando. Hay un test que cuenta las llamadas a `subprocess.run` en el fuente y exige que
-todas lo lleven: una nueva sin `stdin` reabre el agujero, y el sintoma aparece muy lejos de la
-causa.
-
-**`--notify` atiende SIGINT y SIGTERM con su propio manejador**, en vez de dejar que salte
-`KeyboardInterrupt`. La excepcion puede caer dentro del `ThreadPoolExecutor` de `collect()`, y
-entonces la salida espera a que terminen `claude` y `osascript`: hasta quince segundos en los que
-el Ctrl-C **parece no hacer nada**. SIGTERM ademas es lo que mandan `kill` y launchd.
-
-**Y duerme a rodajas (`_dormir`).** Desde PEP 475, `time.sleep()` REANUDA lo que le queda cuando
-la interrumpe una señal cuyo manejador no lanza excepcion. De una sola vez, un `--notify 60`
-tardaria un minuto en reaccionar — por fuera, identico a estar colgado.
-
-**No hay forma corta (`-n`).** Se confundiria con `-w`, y mandar a un demonio a quien queria
-saltar a una sesion es un mal error: se queda mirando una terminal que no hace nada.
-
-## El tap de Homebrew
-
-El repo `leonardo-bolanos/homebrew-tap` (en `/Users/lbolanos/Developer/cariai/homebrew-tap`) sirve
-`brew install leonardo-bolanos/tap/ccl`. **En cada release hay que actualizarlo a mano**, o Homebrew
-seguira instalando la version vieja sin que nada avise:
-
-```bash
-curl -fsSL https://github.com/leonardo-bolanos/claude-session-switcher/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
-# cambiar `url` y `sha256` en Formula/ccl.rb, commit y push
-```
-
-Tres cosas de la formula que no se pueden quitar:
-
-- **`include Language::Python::Shebang`**, o `rewrite_shebang` no existe y la formula revienta.
-- **`rewrite_shebang detected_python_shebang`** cambia el `#!/usr/bin/env python3` por el Python de
-  Homebrew. Sin eso, `ccl` usa el `python3` del PATH: en un Mac sin Command Line Tools eso es un
-  stub que abre un dialogo de instalacion, y con pyenv delante puede ser cualquier version.
-- **`depends_on :macos` va ANTES que `depends_on "python@3.13"`**, que es lo unico que pedia
-  `brew audit --strict`.
-
-Y al probar cambios: `brew audit` lee la copia **tapeada** en
-`/opt/homebrew/Library/Taps/leonardo-bolanos/homebrew-tap`, no tu clon. Sin un `git pull` ahi,
-sigue auditando la version anterior y parece que el arreglo no funciono.
-
-## `RECENT_MAX` son 200, y ese numero importa
-
-Con 20 la lista de recuperables servia para "que se acaba de caer", pero **no para buscar** — que
-es para lo que se usa. Con 111 transcripts en disco, filtrar entre los 20 mas recientes no
-encuentra casi nada, y el filtro parecia roto cuando lo que faltaba era la lista.
-
-Sale gratis porque **el coste lo domina el escaneo del directorio, no el numero de colas**:
-medido, 20 filas 0,41 s y 107 filas 0,44 s. El tope existe solo para acotar a quien tenga miles de
-transcripts; ahi `--recent 50` sigue estando.
-
-## Al abrir la ventana, escribir en la CREADA (no en "la actual")
-
-`pestaña_nueva()` captura lo que devuelve `create window` / `create tab` en una variable y escribe
-ahi. **Nunca en `current session of current window`.**
-
-EL FALLO, reportado: tras el `gotoSpace`, la ventana nueva todavia no es la "current" para iTerm2
-—la clave sigue siendo la que tenias delante, que es **la que corre `ccl`**— asi que el
-`write text` tecleaba el `cd … && claude --resume …` DENTRO del panel, donde aparecia como texto
-del filtro y no se ejecutaba nada. Es una carrera con la transicion de Space, asi que sin cambio
-de escritorio no se veia. Hay un guardarrail sobre el fuente.
-
-## `Ctrl-O`: las recuperables sin salir del panel
-
-Cambia la **fuente** de las filas, no un filtro: de las vivas que trae el `Feed` a las que lee
-`recent_rows()` de disco. Se guardan en `filas_recent` **aparte**, porque el `Feed` sigue
-refrescando por detras y al segundo siguiente las machacaria — el mismo motivo por el que existe
-`FeedFijo` para `--recent`. Hay un test que lo fija bajando el refresco a 1 s.
-
-Al cambiar de lista hay que **mover el cursor y limpiar el filtro**: el `sessionId` seleccionado no
-existe en la otra lista, y un filtro escrito para las vivas esconde justo lo que acabas de pedir.
-
-Se lee al pulsar y no en cada refresco: `recent_rows()` cuesta ~0,4 s (la cola de hasta 60
-transcripts). En un refresco de 4 s se notaria.
-
-## Dos terminales: iTerm2 y Terminal.app
-
-`row["ventana"]` es `(app, ventana, pestaña)`, no `(ventana, pestaña)`. La etiqueta decide **a
-quien se le manda el AppleScript de enfoque**, y por eso el campo dejo de llamarse `iterm`: seguir
-llamandolo asi cuando puede traer un `("Terminal", …)` es una mentira que paga el siguiente.
-
-**`get_iterm_map()` y `get_terminal_map()` comparten parser** (`_parsear_mapa`) porque las dos
-consultas devuelven la misma forma. La diferencia de estructura es que Terminal.app **no tiene
-"sesiones" dentro de las pestañas**: el tty cuelga de la pestaña, asi que es
-`tty of tabs of windows` y no `tty of sessions of tabs of windows`.
-
-**El `if application "X" is running` NO es decoracion.** Sin el, `tell application "Terminal"`
-**lanza Terminal.app** — y un `ccl --list` desde un script le abriria a alguien una ventana que no
-pidio. Verificado que preguntar por `is running` no lanza la app. Se le puso tambien a iTerm, que
-tenia el mismo agujero. Hay un test sobre el fuente que exige que cada `tell` de una consulta
-cuelgue de su guarda.
-
-**Enfocar es distinto en cada una.** iTerm tiene `select tab` y `select window`; Terminal.app no:
-la pestaña se elige por la propiedad `selected tab` de la ventana y la ventana se trae con
-`frontmost`. Los dos caminos estan en `focus()`.
-
-Terminal.app hereda la limitacion del indice de pestaña, igual que iTerm. Y **VS Code no se puede
-soportar por esta via**: no tiene diccionario de AppleScript —verificado, `sdef` no devuelve nada y
-un `tell` falla con -1728—, asi que no hay forma de preguntarle que terminal tiene el tty X ni de
-enfocar una pestaña. Sus sesiones se listan (la terminal integrada es un pty de verdad) y salen
-con el ⚠, que ahi dice la verdad.
-
-## Pausada + trabajando = despausada
-
-**Volver a `busy` le quita la marca de pausa** (`despausar_las_que_trabajan`, llamada desde
-`build`). Pausar dice "espera a otro, no me avises"; en cuanto le das trabajo tu, esa frase es
-falsa. Si la marca se quedara puesta, al terminar caeria otra vez en PAUSADAS y seria la unica
-sesion que **no avisa ni cuenta para `-w`** — justo la que acabas de atender.
-
-Se despausa al verla `busy`, no al terminar: el flanco de "empieza a trabajar" es el que
-significa "vuelvo a estar pendiente de esto".
-
-Y **relee el estado antes de escribir**, porque `guardar_estado` escribe el archivo entero y
-entre la lectura de `build` y ese punto el panel pudo guardar una nota. Sin ninguna trabajando no
-escribe nada: corre en cada refresco.
-
-## El Space se lee de la VENTANA, no de la pantalla
-
-`hs.spaces.focusedSpace()` describe la PANTALLA, y el cambio de escritorio que dispara el
-`activate` del AppleScript **se anima de forma asincrona**: `osascript` vuelve en cuanto despacha
-el evento, no cuando acaba la transicion. Leyendo ahi justo despues de enfocar se apunta el
-escritorio del que VIENES. Por eso `space_actual()` usa `hs.spaces.windowSpaces(frontmostWindow)`,
-que es una propiedad de la ventana y no depende de la animacion, con `focusedSpace()` de respaldo.
-
-**El mapa se aprende usando la herramienta, y eso tiene un limite conocido**: solo se apunta el
-Space al enfocar una sesion VIVA. Una sesion que muere sin que la hayas visitado nunca con `ccl`
-no tiene escritorio guardado, y `--recent` la reabre en una pestaña. No es un fallo: es que no hay
-de donde sacarlo. Si algun dia molesta, la via es mapear ventana de iTerm -> ventana de
-Hammerspoon por posicion (los ids no casan) y apuntarlas todas en cada refresco.
-
-## Contratos externos que pueden romperse
+## Contratos externos que pueden romperse## Contratos externos que pueden romperse
 
 Dos dependencias no documentadas por Anthropic. Trátalas siempre como opcionales.
 

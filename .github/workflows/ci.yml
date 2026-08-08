@@ -99,17 +99,3 @@ jobs:
           }
           comprobar en 'find the'
           comprobar es 'encuentro el comando'
-
-      - name: --notify tampoco arranca en silencio sin Claude Code
-        # Un demonio que arranca sin poder consultar a `claude` se queda toda la vida sin
-        # avisar de nada, y por fuera no se distingue de uno que funciona. Tiene que fallar
-        # al momento. El timeout va en Python y no con `timeout`, que no esta en macOS.
-        run: |
-          python3 - <<'EOF'
-          import subprocess, sys
-          r = subprocess.run(["./ccl", "--notify"], capture_output=True, text=True,
-                             timeout=30)
-          print(r.stdout, r.stderr)
-          if r.returncode != 1:
-              sys.exit(f"--notify deberia salir con 1 sin claude, salio con {r.returncode}")
-          EOF
