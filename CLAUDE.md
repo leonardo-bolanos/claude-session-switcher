@@ -187,6 +187,21 @@ del transcript, o sea de fuera. Hay tests para las dos.
 Limitacion conocida y documentada en el README: si el registro esta desactualizado puede colarse
 una sesion viva, y reanudarla abre una segunda pestaña sobre la misma conversacion.
 
+## El raton se REARMA en cada repintado
+
+`MOUSE_ON` se emitia una sola vez, al arrancar el panel. Cualquier cosa que resetee los modos
+privados del terminal —tmux, un `reset` de otro programa, iTerm restaurando la sesion— apagaba el
+reporte de clics **para siempre**, y el panel seguia vivo sin enterarse: los clics dejaban de
+hacer nada y **ningun sintoma apuntaba al terminal**. Reportado como "en algun momento deja de
+funcionar el clic".
+
+Ahora va dentro del `if dirty`, delante del borrado de pantalla. Son 16 bytes, es idempotente, y
+como el refresco de fondo marca `dirty` cada 4-20 s **se cura solo** sin que el usuario haga nada.
+
+Ojo al probarlo: **el reset de verdad no se puede simular en un pty**, porque esos modos viven en
+el EMULADOR de terminal y ahi no hay ninguno — escribir `\033[?1000l` en el maestro es teclearlo,
+no apagarlo. Lo que se comprueba es el contrato: que se emita en cada repintado.
+
 ## Ningun subproceso hereda el terminal
 
 **Todos van con `stdin=subprocess.DEVNULL`.** `capture_output=True` redirige la salida pero **no

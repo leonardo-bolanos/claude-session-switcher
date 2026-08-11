@@ -550,6 +550,47 @@ class TestRecuperablesEnElPanel(unittest.TestCase):
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestElRatonSeRearma(unittest.TestCase):
+    """
+    EL FALLO reportado: "en algun momento deja de funcionar el clic". El panel activaba el
+    reporte de raton UNA sola vez, al arrancar. Cualquier cosa que resetee los modos
+    privados del terminal —tmux, un `reset` de otro programa, iTerm restaurando la sesion—
+    lo apagaba **para siempre**: el panel seguia vivo y los clics dejaban de hacer nada,
+    sin ningun sintoma que apuntara al terminal.
+    """
+
+    ACTIVAR = "\033[?1000h"
+
+    def test_se_activa_en_cada_repintado(self):
+        with con_panel() as p:
+            p.enviar(b"\033[B")
+            p.enviar(b"\033[B")
+            veces = p.bruto.count(self.ACTIVAR)
+            self.assertGreaterEqual(veces, len(p.pantallas()),
+                                    "solo se arma al arrancar: un reset lo apaga para siempre")
+
+    def test_tambien_al_volver_de_la_ayuda(self):
+        """
+        La ayuda repinta la pantalla entera por su cuenta; al volver hay que rearmar.
+
+        No se puede simular el reset de verdad: los modos privados viven en el EMULADOR de
+        terminal, y en un pty no hay ninguno — escribir `\033[?1000l` en el maestro es
+        teclearlo, no apagarlo. Lo comprobable es el contrato: que se emita cada vez que se
+        repinta, que es lo que hace que el fallo se cure solo.
+        """
+        with con_panel() as p:
+            antes = p.bruto.count(self.ACTIVAR)
+            p.enviar(b"?")
+            p.enviar(b"q")
+            self.assertGreater(p.bruto.count(self.ACTIVAR), antes)
+
+    def test_con_el_raton_apagado_no_se_emite_nunca(self):
+        with con_panel(entorno={"CCL_MOUSE": "0"}) as p:
+            p.enviar(b"\033[B")
+            self.assertNotIn(self.ACTIVAR, p.bruto)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestFondoDelCursor(unittest.TestCase):
     """La banda de la fila seleccionada, sobre el panel de verdad y con sus escapes."""
 

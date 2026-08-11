@@ -56,6 +56,13 @@ de repintado (`screen[y] = i`) porque cualquier cosa que se añada arriba —la 
 fija, un aviso— desplaza todo; un calculo aparte se desincroniza en silencio y el clic acaba
 enfocando la sesion vecina, que es el peor fallo posible: parece que funciona.
 
+**`MOUSE_ON` se rearma en CADA repintado, no solo al arrancar.** Emitido una sola vez, cualquier
+reset de los modos privados del terminal (tmux, un `reset` ajeno, iTerm restaurando la sesion)
+apagaba los clics para siempre y el panel seguia tan tranquilo — el sintoma es "en algun momento
+deja de funcionar el clic", y no apunta al terminal por ningun lado. Va dentro del `if dirty`, y
+como el refresco de fondo lo dispara cada 4-20 s se cura solo. No se puede probar el reset en un
+pty (esos modos son del emulador): se comprueba que se emite en cada repintado.
+
 **Con el raton activo, el terminal deja de gestionar la seleccion de texto.** Por eso existe
 `CCL_MOUSE=0`, y por eso el apagado (`MOUSE_OFF`) va **antes** de soltar la pantalla alternativa:
 si el panel muere con el raton activo, el shell recibe escapes por cada clic. Para copiar hay tres
