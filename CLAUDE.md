@@ -202,6 +202,25 @@ Ojo al probarlo: **el reset de verdad no se puede simular en un pty**, porque es
 el EMULADOR de terminal y ahi no hay ninguno — escribir `\033[?1000l` en el maestro es teclearlo,
 no apagarlo. Lo que se comprueba es el contrato: que se emita en cada repintado.
 
+## `CCL_DEBUG`: la traza para cuando "deja de funcionar el clic"
+
+`CCL_DEBUG=/tmp/ccl.log ccl` apunta cada tecla que **llega**, el arranque (version, pid, TERM,
+raton si/no) y cada rearmado del raton. Existe para contestar una pregunta que no se puede
+contestar de otro modo:
+
+- El log **no** muestra `click:` al pulsar → el que dejo de reportar es el TERMINAL.
+- El log **si** los muestra y el cursor no se mueve → el fallo es nuestro, en el manejo.
+
+Envuelve `_read_key` en vez de repartirse por sus quince `return`: asi no se puede añadir una
+salida nueva y olvidarse de registrarla. Los `None` del timeout no se registran — son 2,5 por
+segundo y ahogarian el log en horas. Apagado no cuesta nada (una comparacion contra None) y con
+una ruta imposible se traga el error: una traza de diagnostico no puede ser la causa de un fallo.
+
+**Y lo primero que hay que mirar ante un "deja de funcionar" es la EDAD del proceso**
+(`ps -o lstart= -p <pid>`). Un panel lleva horas abierto y Python leyo el archivo al arrancar: un
+arreglo de hace un rato no esta en el proceso que corre. Paso exactamente asi — siete horas de
+panel contra un arreglo de hacia seis.
+
 ## Ningun subproceso hereda el terminal
 
 **Todos van con `stdin=subprocess.DEVNULL`.** `capture_output=True` redirige la salida pero **no

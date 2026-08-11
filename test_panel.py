@@ -584,6 +584,21 @@ class TestElRatonSeRearma(unittest.TestCase):
             p.enviar(b"q")
             self.assertGreater(p.bruto.count(self.ACTIVAR), antes)
 
+    def test_la_traza_deja_ver_si_el_clic_llego(self):
+        """
+        Es para lo que existe `CCL_DEBUG`: si los clics dejan de funcionar y el log no
+        tiene ningún `click:`, el que dejó de reportar es el terminal, no ccl.
+        """
+        registro = os.path.join(_NOTAS_TMP, "diag-%d.log" % next(_contador_notas))
+        with con_panel(entorno={"CCL_DEBUG": registro}) as p:
+            p.enviar(press(FILA_DE["gamma"]))
+            p.enviar(b"x")
+        texto = open(registro).read()
+        self.assertIn("panel arranca", texto)
+        self.assertIn("click:%d" % FILA_DE["gamma"], texto)
+        self.assertIn("'x'", texto)
+        self.assertIn("raton rearmado", texto)
+
     def test_con_el_raton_apagado_no_se_emite_nunca(self):
         with con_panel(entorno={"CCL_MOUSE": "0"}) as p:
             p.enviar(b"\033[B")

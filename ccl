@@ -1611,6 +1611,26 @@ def render(rows, tabla=False):
 # ───────────────────────── selector interactivo ─────────────────────────
 
 
+# Traza opcional para diagnosticar. `CCL_DEBUG=/tmp/ccl.log ccl` apunta cada tecla que
+# LLEGA. Sirve para una pregunta muy concreta que no se puede contestar de otro modo: cuando
+# los clics "dejan de funcionar", ¿siguen llegando los eventos del raton? Si el log no
+# muestra ningun `click:` al pulsar, el que dejo de reportar es el TERMINAL; si los muestra,
+# el fallo es nuestro. Apagado, no cuesta nada: una comparacion contra None.
+DEBUG_LOG = os.environ.get("CCL_DEBUG")
+
+
+def _log(*partes):
+    """Escribe en CCL_DEBUG si esta puesto. Nunca puede tumbar el panel."""
+    if not DEBUG_LOG:
+        return
+    try:
+        with open(DEBUG_LOG, "a") as fh:
+            fh.write("%s %s\n" % (datetime.datetime.now().strftime("%H:%M:%S.%f")[:12],
+                                   " ".join(str(p) for p in partes)))
+    except Exception:
+        pass
+
+
 MOUSE_ON = "\033[?1000h\033[?1006h"   # solo clics: 1002/1003 (arrastre, movimiento) no
 MOUSE_OFF = "\033[?1006l\033[?1000l"
 DOUBLE_CLICK = 0.4                    # segundos entre dos clics para que cuenten como doble
@@ -1709,7 +1729,7 @@ def _restaurar_tty(attrs):
         pass
 
 
-def read_key(timeout=None):
+def _read_key(timeout=None):
     """
     Una pulsacion en modo raw. Devuelve 'up','down','enter','esc','q','refresh',
     'alt-<digito>', 'click:<fila>', 'wheelup','wheeldn', un digito, o None si vencio
@@ -1779,6 +1799,20 @@ def read_key(timeout=None):
         return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def read_key(timeout=None):
+    """
+    `_read_key` con la traza de `CCL_DEBUG` puesta encima.
+
+    Va en un solo sitio, envolviendo, y no repartido por los quince `return` de dentro:
+    asi no hay forma de añadir una salida nueva y olvidarse de registrarla. Los `None` del
+    timeout NO se registran — son 2,5 por segundo y ahogarian el log en horas.
+    """
+    k = _read_key(timeout)
+    if k is not None:
+        _log("tecla", repr(k))
+    return k
 
 
 class Feed:
@@ -2132,6 +2166,8 @@ def interactive(feed, tabla=False):
     # programa y pierdes la seleccion de texto normal dentro del panel (con ⌥ pulsado
     # se puede seleccionar igual, pero a quien le moleste le sobra con CCL_MOUSE=0).
     mouse = os.environ.get("CCL_MOUSE", "1") != "0"
+    _log("panel arranca", "ccl", __version__, "pid", os.getpid(),
+         "TERM=%s" % os.environ.get("TERM"), "raton" if mouse else "sin raton")
     attrs_previos = _sin_tecla_status()
     sys.stdout.write("\033[?1049h\033[?25l")  # pantalla alternativa, sin cursor
     if mouse:
@@ -2226,6 +2262,8 @@ def interactive(feed, tabla=False):
                 # ningun sintoma que apuntara al terminal. Son 16 bytes, es idempotente, y
                 # como el refresco de fondo marca `dirty` cada 4-20 s, se cura solo.
                 buf = [MOUSE_ON if mouse else "", "\033[H\033[2J"]
+                if mouse:
+                    _log("raton rearmado")
                 # El mapa fila-de-terminal -> linea se construye AQUI, pintando, no
                 # calculando: cualquier cosa que se añada arriba (cabecera de grupo fija,
                 # un aviso) desplaza todo, y un calculo aparte se desincronizaria en

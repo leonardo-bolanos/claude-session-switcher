@@ -1422,6 +1422,60 @@ class TestNoEnsuciarLaConfigReal(unittest.TestCase):
         self.assertTrue(ccl.NOTES_FILE.startswith(os.path.expanduser("~")))
 
 
+class TestTrazaDeDiagnostico(unittest.TestCase):
+    """
+    `CCL_DEBUG=/tmp/ccl.log ccl` apunta cada tecla que LLEGA. Existe para una pregunta que
+    no se puede contestar de otro modo: cuando los clics "dejan de funcionar", ¿siguen
+    llegando los eventos? Sin `click:` en el log, el que dejó de reportar es el terminal.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = ccl.DEBUG_LOG
+        self.ruta = os.path.join(self.tmp.name, "ccl.log")
+
+    def tearDown(self):
+        ccl.DEBUG_LOG = self.orig
+        self.tmp.cleanup()
+
+    def test_apagado_no_escribe_nada(self):
+        ccl.DEBUG_LOG = None
+        ccl._log("no deberia salir")
+        self.assertFalse(os.path.exists(self.ruta))
+
+    def test_encendido_escribe_con_hora(self):
+        ccl.DEBUG_LOG = self.ruta
+        ccl._log("tecla", repr("click:7"))
+        linea = open(self.ruta).read().strip()
+        self.assertIn("click:7", linea)
+        self.assertRegex(linea, r"^\d\d:\d\d:\d\d\.\d+ ")
+
+    def test_va_añadiendo_no_pisando(self):
+        ccl.DEBUG_LOG = self.ruta
+        ccl._log("una"); ccl._log("dos")
+        self.assertEqual(len(open(self.ruta).read().strip().split("\n")), 2)
+
+    def test_una_ruta_imposible_no_tumba_el_panel(self):
+        """Es una traza de diagnóstico: no puede ser la causa de un fallo nuevo."""
+        ccl.DEBUG_LOG = "/no/existe/este/directorio/ccl.log"
+        ccl._log("esto se traga el error")     # no debe lanzar
+
+    def test_read_key_registra_en_un_solo_sitio(self):
+        """
+        La traza envuelve `_read_key` en vez de repartirse por sus quince `return`: así no
+        hay forma de añadir una salida nueva y olvidarse de registrarla.
+        """
+        with open(os.path.join(_HERE, "ccl")) as fh:
+            fuente = fh.read()
+        self.assertIn("def _read_key(timeout=None):", fuente)
+        i = fuente.index("def read_key(timeout=None):")
+        envoltorio = fuente[i:fuente.index("class Feed:")]
+        self.assertIn("_read_key(timeout)", envoltorio)
+        self.assertIn('_log("tecla"', envoltorio)
+        self.assertIn("if k is not None", envoltorio,
+                      "los None del timeout ahogarían el log: 2,5 por segundo")
+
+
 class TestSubprocesosSinTerminal(unittest.TestCase):
     """
     **Ningún hijo puede ver el terminal.** `capture_output=True` redirige la salida pero
