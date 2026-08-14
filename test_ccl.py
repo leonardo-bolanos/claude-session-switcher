@@ -193,6 +193,93 @@ class TestPestañaNueva(unittest.TestCase):
         self.assertIn("item 1 of argv", trozo)
 
 
+class TestProcesos(unittest.TestCase):
+    """
+    `get_procesos` saca de UNA consulta a `ps` el mapa de ttys y cuantos comandos de Bash
+    tiene en vuelo cada sesion.
+    """
+
+    PS = """  100     1 ??       /usr/bin/claude
+  200   100 ttys001  zsh
+  201   100 ttys001  -zsh
+  202   200 ttys001  python3
+  300   100 ??       node
+  301   100 ??       npm exec next-devtools-mcp@latest
+  400     1 ttys009  /bin/bash
+"""
+
+    def _ps(self, salida):
+        class Fake:
+            stdout = salida
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda *a, **k: Fake()
+        try:
+            return ccl.get_procesos()
+        finally:
+            ccl.subprocess.run = orig
+
+    def test_saca_los_ttys(self):
+        ttys, _ = self._ps(self.PS)
+        self.assertEqual(ttys[200], "ttys001")
+        self.assertNotIn(100, ttys, "un proceso sin terminal no tiene tty")
+
+    def test_cuenta_los_shells_hijos_directos(self):
+        _, shells = self._ps(self.PS)
+        self.assertEqual(shells[100], 2, "zsh y -zsh, no el python3 que cuelga de uno")
+
+    def test_un_login_shell_lleva_guion_delante(self):
+        """`ps` devuelve "-zsh" para un login shell: sin normalizar no se contaria."""
+        _, shells = self._ps("  10   1 ttys001  -zsh\n")
+        self.assertEqual(shells[1], 1)
+
+    def test_los_MCP_no_cuentan(self):
+        """
+        Una sesion OCIOSA arrastra cinco o siete hijos que son servidores MCP y viven todo
+        el rato. Contar hijos a secas no distinguiria nada.
+        """
+        _, shells = self._ps("  30 100 ?? node\n  31 100 ?? npm exec next-devtools-mcp\n")
+        self.assertEqual(shells, {})
+
+    def test_una_linea_rota_no_revienta(self):
+        ttys, shells = self._ps("basura\n  x  y  z  w\n  10 1 ttys001 zsh\n")
+        self.assertEqual(shells[1], 1)
+        self.assertEqual(ttys[10], "ttys001")
+
+    def test_si_ps_falla_devuelve_vacio(self):
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(OSError("no hay ps"))
+        try:
+            self.assertEqual(ccl.get_procesos(), ({}, {}))
+        finally:
+            ccl.subprocess.run = orig
+
+
+class TestMarcaDeShells(unittest.TestCase):
+    def test_sin_shells_no_pinta_nada(self):
+        self.assertEqual(ccl.marca_shells(row(1, "a")), "")
+
+    def test_con_shells_dice_cuantos(self):
+        r = row(1, "a", "busy")
+        r["shells"] = 3
+        self.assertIn("$3", ccl.ANSI_RE.sub("", ccl.marca_shells(r)))
+
+    def test_sale_en_la_linea_principal(self):
+        r = row(7, "a", "busy", ts=iso(minutes=1))
+        r["shells"] = 2
+        self.assertIn("$2", ccl.ANSI_RE.sub("", ccl.main_line(r)))
+
+    def test_y_tambien_en_la_tabla(self):
+        r = row(7, "a", "busy", ts=iso(minutes=1))
+        r["shells"] = 2
+        self.assertIn("$2", ccl.ANSI_RE.sub("", ccl.table_line(r, 120)))
+
+    def test_una_fila_sin_el_campo_no_revienta(self):
+        """Las filas que se fabrican a mano se saltan `build`, que es quien lo pone."""
+        cruda = row(1, "a")
+        del cruda["shells"]
+        self.assertEqual(ccl.marca_shells(cruda), "")
+
+
 class TestMapaTerminalApp(unittest.TestCase):
     """
     Terminal.app, con la misma reconstruccion que iTerm. La diferencia de estructura es
@@ -435,7 +522,7 @@ def row(num, sid, status="idle", ts=None, kind="interactive", paused=False):
             "status": status, "sessionId": sid, "pid": num, "tty": "", "ventana": None,
             "ts": ts, "branch": None, "model": None, "effort": None,
             "title": None, "prompt": None, "note": "", "paused": paused,
-            "startedAt": num}
+            "shells": 0, "startedAt": num}
 
 
 class TestAgrupacion(unittest.TestCase):
@@ -1506,7 +1593,7 @@ class TestSubprocesosSinTerminal(unittest.TestCase):
 
     def test_ninguna_llamada_hereda_el_stdin(self):
         casos = {
-            "get_ttys": lambda: ccl.get_ttys([1, 2]),
+            "get_procesos": ccl.get_procesos,
             "get_iterm_map": ccl.get_iterm_map,
             "focus": lambda: ccl.focus({"ventana": ("iTerm2", "1", 2), "num": 1, "name": "x",
                                         "tty": "", "cwd": "/x"}, quiet=True),

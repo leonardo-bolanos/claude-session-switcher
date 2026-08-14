@@ -421,6 +421,7 @@ a session dies its number is freed and recycled.
 | Model | blue Opus · green Sonnet · grey Haiku · magenta Fable |
 | `effort` | yellow only on `xhigh` / `max` |
 | red ⚠ | The session isn't in an iTerm window |
+| `$2` | That session has 2 Bash commands running right now |
 | selected row | cyan `▌` bar plus a dark grey band across the whole row |
 
 The band is a 256-colour background, which reads well on a dark theme and badly on a light one.

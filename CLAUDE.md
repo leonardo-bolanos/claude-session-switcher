@@ -187,6 +187,24 @@ del transcript, o sea de fuera. Hay tests para las dos.
 Limitacion conocida y documentada en el README: si el registro esta desactualizado puede colarse
 una sesion viva, y reanudarla abre una segunda pestaña sobre la misma conversacion.
 
+## `$N`: cuantos comandos esta ejecutando una sesion
+
+`busy` no distingue "esta corriendo un comando" de "esta generando texto", y son cosas muy
+distintas cuando miras el panel para decidir a quien atender. `get_procesos()` cuenta los hijos
+**directos** de cada `claude` que son un shell: cada `zsh` que cuelga de ahi es una llamada a Bash
+en vuelo.
+
+**Hijos directos y solo shells.** Contar descendientes a secas no dice nada: una sesion OCIOSA
+arrastra cinco o siete hijos que son servidores MCP (`context7-mcp`, `chrome-devtools-mcp`,
+`npm exec`) y viven todo el rato. Verificado ademas que hay sesiones `busy` cuyo unico hijo es
+`caffeinate` — esas estan generando, no ejecutando.
+
+**Un `ps` completo, no dos consultas.** `ps -eo pid=,ppid=,tty=,comm=` cuesta 35 ms —**menos** que
+preguntar por unos pocos pids, medido— y de paso trae el arbol. Por eso `get_procesos()` sustituyo
+a `get_ttys()`: misma llamada, dos datos. Es la misma leccion de `get_iterm_map`.
+
+**Un login shell sale como `-zsh`**, con guion delante. Sin normalizarlo no se contaria.
+
 ## El raton se REARMA en cada repintado
 
 `MOUSE_ON` se emitia una sola vez, al arrancar el panel. Cualquier cosa que resetee los modos
