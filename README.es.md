@@ -425,7 +425,7 @@ Cuando una sesión muere, su número se libera y se recicla.
 | Modelo | azul Opus · verde Sonnet · gris Haiku · magenta Fable |
 | `effort` | amarillo solo en `xhigh` / `max` |
 | ⚠ rojo | La sesión no está en una ventana de iTerm |
-| `$2` | Esa sesión tiene 2 comandos de Bash corriendo ahora mismo |
+| `⚡2` | Esa sesión tiene 2 comandos de Bash corriendo ahora mismo |
 | fila seleccionada | barra `▌` cian y una banda gris oscura en toda la fila |
 
 La banda es un fondo de la paleta de 256, que se lee bien en un tema oscuro y mal en uno claro.

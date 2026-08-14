@@ -261,17 +261,17 @@ class TestMarcaDeShells(unittest.TestCase):
     def test_con_shells_dice_cuantos(self):
         r = row(1, "a", "busy")
         r["shells"] = 3
-        self.assertIn("$3", ccl.ANSI_RE.sub("", ccl.marca_shells(r)))
+        self.assertIn("⚡3", ccl.ANSI_RE.sub("", ccl.marca_shells(r)))
 
     def test_sale_en_la_linea_principal(self):
         r = row(7, "a", "busy", ts=iso(minutes=1))
         r["shells"] = 2
-        self.assertIn("$2", ccl.ANSI_RE.sub("", ccl.main_line(r)))
+        self.assertIn("⚡2", ccl.ANSI_RE.sub("", ccl.main_line(r)))
 
     def test_y_tambien_en_la_tabla(self):
         r = row(7, "a", "busy", ts=iso(minutes=1))
         r["shells"] = 2
-        self.assertIn("$2", ccl.ANSI_RE.sub("", ccl.table_line(r, 120)))
+        self.assertIn("⚡2", ccl.ANSI_RE.sub("", ccl.table_line(r, 120)))
 
     def test_una_fila_sin_el_campo_no_revienta(self):
         """Las filas que se fabrican a mano se saltan `build`, que es quien lo pone."""

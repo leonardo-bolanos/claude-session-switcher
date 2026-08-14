@@ -1507,9 +1507,9 @@ def estado_de(row):
 
 
 def marca_shells(r):
-    """` $N` si la sesion tiene N comandos de Bash corriendo, o "" si no."""
+    """` ⚡N` si la sesion tiene N comandos de Bash corriendo, o "" si no."""
     n = r.get("shells") or 0
-    return CYAN(f" ${n}") if n else ""
+    return CYAN(f" ⚡{n}") if n else ""
 
 
 def main_line(r, show_account=False):
@@ -1951,7 +1951,7 @@ HELP_EN = [
         ("",           "it's your own mark: Claude Code only reports busy/idle"),
     ]),
     ("what the columns say", [
-        ("$2",         "that session has 2 Bash commands running right now"),
+        ("⚡2",         "that session has 2 Bash commands running right now"),
         ("",           "it tells apart \"busy running something\" from \"busy thinking\""),
         ("",           "MCP servers don't count: an idle session keeps five of them"),
     ]),
@@ -2028,7 +2028,7 @@ HELP_ES = [
         ("",           "es marca tuya: Claude Code solo dice busy/idle"),
     ]),
     ("lo que dicen las columnas", [
-        ("$2",         "esa sesión tiene 2 comandos de Bash corriendo ahora mismo"),
+        ("⚡2",         "esa sesión tiene 2 comandos de Bash corriendo ahora mismo"),
         ("",           "distingue \"ocupada ejecutando\" de \"ocupada generando\""),
         ("",           "los servidores MCP no cuentan: una ociosa arrastra cinco"),
     ]),
