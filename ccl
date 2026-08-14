@@ -50,7 +50,7 @@ import tty
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")

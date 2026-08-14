@@ -1394,6 +1394,60 @@ class TestReanudar(unittest.TestCase):
         cmd = self._capturar({"cwd": "/x", "sessionId": "s", "name": "x", "repo": "r"})
         self.assertTrue(cmd)   # el kw se comprueba en TestSubprocesosSinTerminal
 
+    def test_le_pasa_a_la_ventana_el_escritorio_guardado(self):
+        """Lo que hace que una recuperada vuelva a SU escritorio y no a donde estés."""
+        vistas = []
+        orig = ccl.pestaña_nueva
+        ccl.pestaña_nueva = lambda orden, quiet=False, space=None: (
+            vistas.append(space) or 0)
+        try:
+            ccl.resume({"cwd": "/x", "sessionId": "s", "name": "n", "repo": "r",
+                        "space": 3}, quiet=True)
+            ccl.resume({"cwd": "/x", "sessionId": "s", "name": "n", "repo": "r"},
+                       quiet=True)
+        finally:
+            ccl.pestaña_nueva = orig
+        self.assertEqual(vistas, [3, None],
+                         "sin escritorio aprendido pasa None, y eso abre pestaña")
+
+    def _pestaña_nueva_con(self, space, ir_bien):
+        """El argv con el que `pestaña_nueva` llama a osascript."""
+        capturado = {}
+        orig_ir, orig_run = ccl.ir_a_space, ccl.subprocess.run
+        ccl.ir_a_space = lambda ordinal: ir_bien
+        ccl.subprocess.run = lambda cmd, **kw: (
+            capturado.__setitem__("cmd", cmd)
+            or type("R", (), {"returncode": 0, "stderr": ""})())
+        try:
+            ccl.pestaña_nueva("echo hola", quiet=True, space=space)
+        finally:
+            ccl.ir_a_space, ccl.subprocess.run = orig_ir, orig_run
+        return capturado["cmd"]
+
+    def test_con_escritorio_pide_VENTANA_y_no_pestaña(self):
+        """
+        Una pestaña se añade a la ventana ACTUAL, que puede estar en otro escritorio —
+        y entonces no habríamos vuelto a ninguna parte. Una ventana nueva nace en el
+        escritorio activo, que es al que se acaba de ir.
+        """
+        self.assertIn("ventana", self._pestaña_nueva_con(space=3, ir_bien=True))
+
+    def test_si_no_se_pudo_cambiar_de_escritorio_vuelve_a_la_pestaña(self):
+        """Sin Hammerspoon, `ir_a_space` es False: se abre donde se pueda, sin fallar."""
+        self.assertIn("pestaña", self._pestaña_nueva_con(space=3, ir_bien=False))
+
+    def test_sin_escritorio_ni_se_intenta_cambiar(self):
+        intentos = []
+        orig_ir, orig_run = ccl.ir_a_space, ccl.subprocess.run
+        ccl.ir_a_space = lambda ordinal: intentos.append(ordinal) or True
+        ccl.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0,
+                                                            "stderr": ""})()
+        try:
+            ccl.pestaña_nueva("echo hola", quiet=True, space=None)
+        finally:
+            ccl.ir_a_space, ccl.subprocess.run = orig_ir, orig_run
+        self.assertEqual(intentos, [])
+
     def test_enter_reanuda_si_es_recuperable_y_enfoca_si_no(self):
         """Un solo punto de decisión: el Enter y el doble clic no pueden discrepar."""
         llamadas = []
@@ -1503,6 +1557,20 @@ class TestNoEnsuciarLaConfigReal(unittest.TestCase):
                 continue
             self.assertIn("ccl.NOTES_FILE =", bloque,
                           f"{nombre} escribe estado y no desvía NOTES_FILE")
+
+    def test_ninguna_clase_de_test_esta_duplicada(self):
+        """
+        Dos clases con el mismo nombre no dan error: Python se queda con la última y la
+        primera **desaparece en silencio**, con todos sus tests. Pasó al añadir los del
+        escritorio a un `TestReanudar` que ya existía — los nuevos parecían pasar y en
+        realidad no se ejecutaba ninguno.
+        """
+        import collections
+        for ruta in ("test_ccl.py", "test_panel.py"):
+            with open(os.path.join(_HERE, ruta)) as fh:
+                nombres = re.findall(r"^class (\w+)", fh.read(), re.M)
+            repes = [n for n, c in collections.Counter(nombres).items() if c > 1]
+            self.assertEqual(repes, [], f"{ruta}: clases duplicadas {repes}")
 
     def test_el_valor_por_defecto_apunta_al_home(self):
         """Si esto cambiara, el guardarraíl de arriba dejaría de significar nada."""
