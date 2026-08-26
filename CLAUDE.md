@@ -205,6 +205,21 @@ a `get_ttys()`: misma llamada, dos datos. Es la misma leccion de `get_iterm_map`
 
 **Un login shell sale como `-zsh`**, con guion delante. Sin normalizarlo no se contaria.
 
+## Una flecha sin nombre acaba siendo `esc`
+
+`read_key` devuelve `"esc"` para toda secuencia CSI que no reconoce, y `esc` significa dos cosas
+destructivas: en el editor de notas **cancela**, y en el panel sin filtro **sale**. Asi que
+mientras `C`/`D` no estuvieron en la tabla, la flecha izquierda tiraba la nota que estabas
+escribiendo y, fuera del editor, **cerraba ccl entero** — reportado como "le doy a la flecha y se
+sale".
+
+La leccion no es de esas dos teclas: **cualquier tecla que no se mapee acaba disfrazada de `esc`**.
+Si añades soporte para una nueva (F1, Insert, `ESC[1;5D` de Ctrl-←), o la mapeas o hereda ese
+comportamiento.
+
+El cursor del editor se pinta **donde esta** (`editando[:pos] + "▏" + editando[pos:]`), no siempre
+al final: si no, moverlo no se ve y parece que la tecla no hace nada.
+
 ## El raton se REARMA en cada repintado
 
 `MOUSE_ON` se emitia una sola vez, al arrancar el panel. Cualquier cosa que resetee los modos

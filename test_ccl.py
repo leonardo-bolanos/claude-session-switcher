@@ -2400,6 +2400,16 @@ class TestLecturaDeTeclas(unittest.TestCase):
         self.assertEqual(self._pulsar(b"\x1b[A"), "up")
         self.assertEqual(self._pulsar(b"\x1b[B"), "down")
 
+    def test_las_flechas_horizontales_tienen_nombre_propio(self):
+        """
+        EL FALLO: `C`/`D` caian en el "esc" de por defecto. Con eso, la flecha izquierda
+        cancelaba la nota que estabas escribiendo y, en el panel sin filtro, **cerraba
+        ccl** — porque ahi `esc` significa salir.
+        """
+        for data, esperado in ((b"\x1b[D", "left"), (b"\x1b[C", "right"),
+                               (b"\x1b[H", "home"), (b"\x1b[F", "end")):
+            self.assertEqual(self._pulsar(data), esperado, repr(data))
+
     def test_pgup_pgdn_no_dejan_la_tilde_en_el_buffer(self):
         """
         ESC [ 5 ~ : si no se consume la '~', la lectura siguiente la ve como texto

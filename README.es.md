@@ -114,7 +114,7 @@ ccl --version    # imprime la versión
 | `Enter` | Abrir esa sesión (enfoca su ventana y pestaña de iTerm) |
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
-| `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión |
+| `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión (`←` `→` `Inicio` `Fin` mueven el cursor) |
 | `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
 | `Ctrl-O` | Ver las sesiones que puedes **reanudar** — las que murieron con su terminal |

@@ -72,8 +72,9 @@ In order of how feasible they look:
   painting the prompt and handling keys. One of those already had to be fixed because it had
   drifted. It fits as a small object (`.activo`, `.tecla(k)`, `.pintar()`) without splitting the
   single file. It wasn't done because it touches the heart of the loop and the benefit is
-  organisational, not functional — but if one more key gets added to it (cursor with `←`/`→`),
-  do it first.
+  organisational, not functional. The cursor keys (`←`/`→`, Home/End) landed *before* that
+  refactor, which was the wrong order — the state is now five loose variables instead of four.
+  Do the extraction before the next key.
 - **The pty harness is duplicated** between `test_panel.py` and `make_demo.py`: fork,
   `TIOCSWINSZ`, bounded draining, with the same justifying comment repeated and already drifting
   (one polls at 0.15 s and the other at 0.1 s, for no reason). It would fit in a

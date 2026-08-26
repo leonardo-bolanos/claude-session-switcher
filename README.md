@@ -113,7 +113,7 @@ ccl --version    # print the version
 | `Enter` | Open that session (focuses its iTerm window and tab) |
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
-| `Ctrl-N` | Write **your own note** on this session |
+| `Ctrl-N` | Write **your own note** on this session (`←` `→` `Home` `End` move the cursor) |
 | `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
 | `Ctrl-O` | Show the sessions you can **resume** — the ones that died with their terminal |

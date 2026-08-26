@@ -894,6 +894,47 @@ class TestNotas(unittest.TestCase):
             p.enviar(b"factur")
             self.assertIn("1 coincide", p.barra())
 
+    def test_la_flecha_izquierda_no_cancela_la_nota(self):
+        """
+        EL FALLO reportado: `Ctrl-N`, escribir, y pulsar ← para corregir — y se salía
+        perdiendo el texto. La flecha llegaba como `esc`, que en el editor cancela.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"texto que no se puede perder")
+            p.enviar(b"\033[D")
+            # sin el cursor: lo parte por la mitad ("perde▏r"), que es justo lo que debe
+            self.assertIn("no se puede perder", p.barra().replace("▏", ""),
+                          "la flecha canceló la nota")
+            self.assertIn("nota de", p.barra(), "el editor debería seguir abierto")
+
+    def test_se_puede_escribir_en_medio(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"hola mundo")
+            p.enviar(b"\033[D" * 5)          # hasta justo antes de "mundo"
+            p.enviar(b"gran ", b"\r")
+            self.assertIn("✎ hola gran mundo", p.ultima())
+
+    def test_el_cursor_se_pinta_donde_esta(self):
+        """Sin esto, mover el cursor no se ve y parece que la tecla no hizo nada."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"hola mundo")
+            p.enviar(b"\033[D" * 5)
+            self.assertIn("hola ▏mundo", p.barra())
+
+    def test_el_borrado_quita_lo_de_delante_del_cursor(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"abcXdef")
+            p.enviar(b"\033[D" * 3)          # cursor justo detrás de la X
+            p.enviar(b"\x7f", b"\r")         # borrar la X, no la f
+            self.assertIn("✎ abcdef", p.ultima())
+
+    def test_inicio_y_fin(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"mundo")
+            p.enviar(b"\033[H", b"hola ")    # Inicio, e insertar delante
+            p.enviar(b"\033[F", b"!", b"\r")  # Fin, y añadir al final
+            self.assertIn("✎ hola mundo!", p.ultima())
+
     def test_no_escribe_en_el_claude_del_usuario(self):
         """Guardarrail: el panel escribe notas de verdad en disco."""
         with con_panel() as p:
@@ -991,6 +1032,16 @@ class TestVistaDeTabla(unittest.TestCase):
                                            if "alfa" in l))
             self.assertIn("ESPERANDO", next(l for l in pantalla.split("\n")
                                             if "beta" in l))
+
+    def test_la_flecha_izquierda_no_cierra_el_panel(self):
+        """
+        El mismo fallo por el otro lado: `←` llegaba como `esc`, y en el panel sin filtro
+        `esc` es SALIR. Se cerraba entero al pulsar una flecha.
+        """
+        with con_panel() as p:
+            p.enviar(b"\033[D")
+            p.enviar(b"\033[B")              # si murió, esto lanza OSError
+            self.assertEqual(p.cursor(), "beta")
 
     def test_ctrl_t_vuelve_a_la_vista_de_dos_lineas(self):
         with con_panel() as p:

@@ -1809,7 +1809,11 @@ def _read_key(timeout=None):
                 return _read_mouse_sgr(fd)
             if rest == "M":
                 return _read_mouse_x10(fd)
-            key = {"A": "up", "B": "down", "5": "pgup", "6": "pgdn"}.get(rest, "esc")
+            # `C`/`D` (derecha/izquierda) tienen que salir con nombre propio. Cayendo
+            # en el "esc" de por defecto pasaban dos cosas malas: en el editor de notas
+            # cancelaban lo escrito, y en el panel sin filtro **cerraban ccl**.
+            key = {"A": "up", "B": "down", "C": "right", "D": "left",
+                   "H": "home", "F": "end", "5": "pgup", "6": "pgdn"}.get(rest, "esc")
             # PgUp/PgDn son ESC [ 5 ~ / ESC [ 6 ~ : hay que comerse la tilde. Sin esto
             # quedaba en el buffer y la lectura siguiente la veia como un '~' escrito,
             # que arrancaba un filtro por "~" al pulsar PgDn.
@@ -1938,6 +1942,8 @@ HELP_EN = [
     ("your own note on a session", [
         ("Ctrl-N",     "write or fix THIS session's note"),
         ("enter",      "save · an empty note deletes it · esc cancels"),
+        ("← →",        "move the cursor · Home / End jump to either end"),
+        ("⌫",          "delete the character before the cursor"),
         ("",           "sessions in the same repo no longer share it"),
         ("",           "with no note of its own, a session shows its repo's"),
         ("",           "one (in ~/.claude/ccl-notes.json, under por_repo)"),
@@ -2015,6 +2021,8 @@ HELP_ES = [
     ("tu nota en una sesión", [
         ("Ctrl-N",     "escribir o corregir la nota de ESTA sesión"),
         ("enter",      "guardar · una nota vacía la borra · esc cancela"),
+        ("← →",        "mover el cursor · Inicio / Fin van a los extremos"),
+        ("⌫",          "borra el carácter anterior al cursor"),
         ("",           "las sesiones del mismo repo ya no la comparten"),
         ("",           "sin nota propia, una sesión muestra la de su repo"),
         ("",           "(en ~/.claude/ccl-notes.json, bajo por_repo)"),
@@ -2196,6 +2204,7 @@ def interactive(feed, tabla=False):
     editando = None       # None = no estas escribiendo; un str = el texto en curso
     editando_sid = None   # la sesion a la que pertenece ese texto
     editando_repo = ""    # su repo, para el prompt
+    editando_pos = 0      # donde esta el cursor DENTRO del texto, no siempre al final
     aviso_salto = ""      # el resultado de un ⌥N pulsado con la lista vacia por el filtro
     # Ctrl-O cambia la fuente de las filas: en vez de las vivas que trae el `Feed`, las
     # recuperables que se leen de disco. Se guardan aparte porque el Feed sigue
@@ -2373,8 +2382,11 @@ def interactive(feed, tabla=False):
                 if editando is not None:
                     # el cursor ▏ hace falta: sin el, una nota vacia no se distingue de
                     # "no estoy en modo edicion" y parece que la tecla no hizo nada
+                    # el cursor ▏ va DONDE ESTA, no siempre al final: si no, moverlo
+                    # con ←/→ no se veria y pareceria que la tecla no hace nada
+                    izq, der = editando[:editando_pos], editando[editando_pos:]
                     hint = (DIM(t("nota_prompt", repo=editando_repo))
-                            + CYAN(BOLD(editando)) + CYAN("▏")
+                            + CYAN(BOLD(izq)) + CYAN("▏") + CYAN(BOLD(der))
                             + DIM(t("nota_teclas")))
                 elif typed:
                     nm = by_num.get(int(typed))
@@ -2420,10 +2432,23 @@ def interactive(feed, tabla=False):
                     editando, requery = None, True
                 elif k == "esc":
                     editando, flash = None, t("nota_sin_cambios")
+                elif k == "left":
+                    editando_pos = max(0, editando_pos - 1)
+                elif k == "right":
+                    editando_pos = min(len(editando), editando_pos + 1)
+                elif k == "home":
+                    editando_pos = 0
+                elif k == "end":
+                    editando_pos = len(editando)
                 elif k == "back":
-                    editando = editando[:-1]
+                    # borra lo de DELANTE del cursor, no el ultimo caracter del texto
+                    if editando_pos:
+                        editando = editando[:editando_pos - 1] + editando[editando_pos:]
+                        editando_pos -= 1
                 elif len(k) == 1 and k.isprintable():
-                    editando = (editando + k)[:NOTE_MAX]
+                    if len(editando) < NOTE_MAX:
+                        editando = editando[:editando_pos] + k + editando[editando_pos:]
+                        editando_pos += 1
                 continue
 
             if k == "esc":
@@ -2469,6 +2494,7 @@ def interactive(feed, tabla=False):
                 # tener que reescribirla entera.
                 objetivo = lines[cl][2]
                 editando = objetivo.get("note") or ""
+                editando_pos = len(editando)
                 editando_sid = objetivo["sessionId"]
                 editando_repo = os.path.basename(objetivo["cwd"])
             elif k == "pause":
