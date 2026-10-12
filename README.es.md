@@ -102,6 +102,8 @@ ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 ccl --table      # una línea por sesión, en columnas
 ccl --recent     # las que murieron con tu terminal — para reanudarlas
 ccl --recent --list   # solo verlas, sin tocar nada
+ccl --save       # antes de reiniciar el terminal: apunta qué hay abierto, y dónde
+ccl --restore    # después: las devuelve a sus ventanas y escritorios
 ccl --version    # imprime la versión
 ```
 
@@ -269,6 +271,45 @@ Dos cosas que conviene saber:
 
 Si prefieres no perderlas siquiera, lanza Claude Code dentro de tmux: las sesiones sobreviven al
 terminal, y algún día `ccl` soportará tmux ([TODO.md](TODO.md)).
+
+</details>
+
+<details>
+<summary><b>Reiniciar el terminal</b> — guardar las sesiones abiertas y devolverlas después</summary>
+
+Antes de reiniciar iTerm o la Terminal, guarda lo que hay abierto:
+
+```bash
+ccl --save
+# Guardadas 24 sesiones en 7 ventanas y 6 escritorios → ~/.claude/ccl-snapshot.json
+```
+
+Después del reinicio, devuélvelas:
+
+```bash
+ccl --restore --list   # mira el plan primero; no abre nada
+ccl --restore
+```
+
+Cada ventana vuelve **con sus pestañas, en su orden, en el escritorio donde estaba**, y cada
+pestaña ejecuta `claude --resume` en su directorio. Recorre los escritorios una sola vez y en orden.
+
+Lo que cuida, porque es lo que duele:
+
+- **Las que siguen corriendo se saltan.** Restaurar dos veces, o sin haber reiniciado nada, nunca
+  abre la misma conversación dos veces.
+- **Guardar sin nada abierto no hace nada.** El momento más probable para teclear `--save` por error
+  es justo *después* del reinicio; no va a pisar la foto buena con una vacía. Además la anterior se
+  conserva como `ccl-snapshot.json.prev`.
+- **Cada sesión se reanuda con su cuenta** (`CLAUDE_CONFIG_DIR`), si usas más de una.
+- Las que ya no tienen directorio se saltan y se listan.
+
+El escritorio de cada ventana se lee al guardar, así que funciona también con sesiones a las que
+nunca saltaste con `ccl` — para eso hace falta Hammerspoon. Sin él, las ventanas se abren donde
+estés.
+
+Dos límites: todo vuelve en **iTerm2**, también lo que estaba en Terminal.app, y **los paneles
+divididos vuelven como pestañas**.
 
 </details>
 

@@ -145,8 +145,15 @@ equivocado y todo el ejercicio no sirve. Medido — pasaba siempre.
 puede estar en otro escritorio. Por eso `pestaña_nueva()` recibe `space` y cambia de modo.
 
 **El Space se aprende usando `ccl`.** `try_focus()` lo apunta despues de enfocar con exito: la
-ventana esta delante, asi que el Space activo ES el suyo. Nada de escanear ventanas ni de
-emparejar ids de iTerm con los de Hammerspoon, que son mundos distintos y no casan.
+ventana esta delante, asi que el Space activo ES el suyo.
+
+**Y ademas se puede LEER de todas las ventanas a la vez** (`spaces_de_ventanas()`). Aqui ponia que
+los ids de iTerm y los de Hammerspoon "eran mundos distintos y no casaban", y **era falso**: el
+`id of window` del AppleScript de iTerm es el CGWindowID, el mismo numero que devuelve
+`hs.spaces.windowsForSpace(sid)`. Verificado el 2026-10-12 con doce ventanas: las doce aparecian
+tal cual, cada una en un solo escritorio, en 0,03 s. Lo usa `--save`. El aprendizaje por salto se
+queda porque cubre a `--recent` cuando no hubo foto: sin un `--save` previo, es lo unico que sabe
+donde vivia cada sesion.
 
 **Se guarda el ORDINAL, no el ID.** Los IDs de Space cambian entre reinicios. El orden es el de
 `allScreens()` y dentro de cada pantalla el de `spacesForScreen`, solo los de tipo `user` — la
@@ -186,6 +193,33 @@ del transcript, o sea de fuera. Hay tests para las dos.
 
 Limitacion conocida y documentada en el README: si el registro esta desactualizado puede colarse
 una sesion viva, y reanudarla abre una segunda pestaña sobre la misma conversacion.
+
+## Guardar y restaurar (`--save` / `--restore`)
+
+Para el reset **planificado** del terminal. `--recent` no servia para esto: lista las cien y pico
+del disco, no "las que tenia abiertas", y reanuda de una en una. `--save` apunta en
+`ccl-snapshot.json` las vivas con su ventana, pestaña y escritorio; `--restore` las devuelve
+agrupadas por ventana, con sus pestañas en orden, recorriendo los escritorios una sola vez.
+
+**Con cero sesiones `--save` NO escribe nada**, y la foto anterior se conserva como `.prev`. El
+momento mas probable para teclearlo por error es justo DESPUES del reset, con la lista vacia:
+sobrescribir ahi tiraria la foto buena.
+
+**`--restore` salta las que ya estan vivas.** Restaurar dos veces, o sin haber reseteado nada, no
+puede duplicar conversaciones. Y salta las que ya no tienen directorio: el `cd` fallaria y
+quedaria una pestaña con un error. `--restore --list` enseña el plan sin abrir nada.
+
+**Un AppleScript por ventana, escribiendo en los objetos creados** (`set w to (create window…)`,
+`set t to (create tab…)`). Mismo motivo que `pestaña_nueva`: tras cambiar de escritorio la
+ventana nueva aun no es la "current", y escribir ahi teclea el comando en la que tenias delante.
+
+**Se reanuda con su cuenta.** `orden_reanudar()` pone `CLAUDE_CONFIG_DIR` cuando la sesion es de
+una cuenta secundaria. Faltaba tambien en `--recent`: una sesion de `~/.claude-personal` se
+buscaba en la principal y no aparecia. Por eso las filas vivas llevan ahora `_cfg`.
+
+**Todo vuelve a iTerm2**, tambien lo que estaba en Terminal.app: crear pestañas en Terminal.app
+por AppleScript no tiene comando propio (hay que simular ⌘T). Y los paneles divididos vuelven como
+pestañas. Las dos cosas estan en el README.
 
 ## `$N`: cuantos comandos esta ejecutando una sesion
 

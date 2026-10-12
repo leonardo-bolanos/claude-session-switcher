@@ -10,6 +10,8 @@ Uso:
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
+    ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
+    ccl --restore    las devuelve a su ventana y su escritorio (--list: solo ver)
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -76,6 +78,8 @@ Usage:
     ccl --table      one line per session, in columns (Ctrl-T toggles it live)
     ccl --recent     sessions that died with your terminal, and resume them
     ccl --recent --list   just look at them, no panel, nothing touched
+    ccl --save       save the open sessions, before you reset your terminal
+    ccl --restore    bring them back to their window and desktop (--list: just look)
     ccl --version    print the version
 
 `-w` is meant to hang off a global shortcut (Hammerspoon, Raycast) and jump to whoever is
@@ -124,6 +128,8 @@ Uso:
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
+    ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
+    ccl --restore    las devuelve a su ventana y su escritorio (--list: solo ver)
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -229,6 +235,15 @@ TEXTOS = {
         "opcion_desconocida": "unknown option: {opcion}",
         "w_desde_uno": "-w counts from 1",
         "recent_desde_uno": "--recent counts from 1",
+        "guardadas": "Saved {n} sessions in {v} windows across {e} desktops → {ruta}",
+        "nada_que_guardar": ("No live sessions to save. The previous snapshot is kept: "
+                             "`ccl --restore` still has it."),
+        "sin_snapshot": "Nothing saved yet. Run `ccl --save` before resetting your terminal.",
+        "snapshot_de": "Snapshot from {fecha}: {n} sessions",
+        "restaurando_ventana": "  ↻ desktop {space} · {n} tab(s): {nombres}",
+        "ya_vivas": "  {n} already running, skipped.",
+        "sin_directorio": "  {n} skipped, their directory is gone: {rutas}",
+        "restaurado_resumen": "Restored {n} sessions in {v} windows.",
         "sin_sesiones": ("No active Claude Code sessions.\n"
                          "  If your terminal just died, `ccl --recent` lists the ones "
                          "you can resume."),
@@ -326,6 +341,15 @@ TEXTOS = {
         "opcion_desconocida": "opcion desconocida: {opcion}",
         "w_desde_uno": "-w cuenta desde 1",
         "recent_desde_uno": "--recent cuenta desde 1",
+        "guardadas": "Guardadas {n} sesiones en {v} ventanas y {e} escritorios → {ruta}",
+        "nada_que_guardar": ("No hay sesiones vivas que guardar. Se conserva la foto "
+                             "anterior: `ccl --restore` la sigue teniendo."),
+        "sin_snapshot": "No hay nada guardado. Usa `ccl --save` antes de reiniciar el terminal.",
+        "snapshot_de": "Foto del {fecha}: {n} sesiones",
+        "restaurando_ventana": "  ↻ escritorio {space} · {n} pestaña(s): {nombres}",
+        "ya_vivas": "  {n} ya estaban corriendo, se saltan.",
+        "sin_directorio": "  {n} se saltan, su directorio ya no existe: {rutas}",
+        "restaurado_resumen": "Restauradas {n} sesiones en {v} ventanas.",
         "sin_sesiones": ("No hay sesiones de Claude Code activas.\n"
                          "  Si se acaba de caer tu terminal, `ccl --recent` lista las "
                          "que puedes reanudar."),
@@ -819,6 +843,35 @@ def space_actual():
     if not salida or not salida.isdigit() or salida == "0":
         return None
     return int(salida)
+
+
+def spaces_de_ventanas():
+    """
+    {id de ventana: ordinal del escritorio} de TODAS las ventanas, de una consulta.
+
+    **El id de ventana de iTerm (AppleScript `id of window`) ES el CGWindowID**, y es el
+    mismo numero que devuelve `hs.spaces.windowsForSpace`. Verificado: las doce ventanas de
+    iTerm abiertas aparecian tal cual, cada una en un solo escritorio. Antes se daba por
+    hecho que "no casaban" y por eso el escritorio solo se aprendia saltando a cada sesion.
+
+    Una ventana fijada en todos los escritorios sale en varios: se queda el primero. Las de
+    sistema (las que salen en todos) no importan, porque solo se consultan las de iTerm.
+    """
+    salida = _hs(_LUA_ORDENADOS + """
+      local partes = {}
+      for i, sid in ipairs(orden) do
+        for _, w in ipairs(hs.spaces.windowsForSpace(sid) or {}) do
+          partes[#partes + 1] = w .. ":" .. i
+        end
+      end
+      print("CCLVENTANAS " .. table.concat(partes, ","))
+    """, "CCLVENTANAS")
+    mapa = {}
+    for par in (salida or "").split(","):
+        wid, _, ordinal = par.partition(":")
+        if wid.isdigit() and ordinal.isdigit():
+            mapa.setdefault(wid, int(ordinal))
+    return mapa
 
 
 def ir_a_space(ordinal):
@@ -1362,6 +1415,7 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             "num": numbers[s["sessionId"]],
             "name": sin_control(s["name"]),
             "account": sin_control(s.get("_account", "")),
+            "_cfg": s.get("_cfg"),   # para reanudarla con su cuenta, no con la principal
             "repo": sin_control(os.path.basename(s["cwd"])),
             "cwd": s["cwd"],
             "kind": s.get("kind", "interactive"),
@@ -1966,6 +2020,7 @@ HELP_EN = [
         ("",           "enter resumes: new window, cd, and `claude --resume`"),
         ("",           "Ctrl-O again goes back to the live ones"),
         ("",           "outside the panel: ccl --recent"),
+        ("",           "before a terminal reset: ccl --save, then ccl --restore"),
     ]),
     ("table view", [
         ("Ctrl-T",     "one line per session, in columns, with a state column"),
@@ -2045,6 +2100,7 @@ HELP_ES = [
         ("",           "enter las reanuda: ventana nueva, cd y `claude --resume`"),
         ("",           "Ctrl-O otra vez vuelve a las vivas"),
         ("",           "fuera del panel: ccl --recent"),
+        ("",           "antes de reiniciar el terminal: ccl --save, y luego ccl --restore"),
     ]),
     ("vista de tabla", [
         ("Ctrl-T",     "una línea por sesión, en columnas, con columna de estado"),
@@ -2838,6 +2894,23 @@ def recent_rows(limite=RECENT_MAX):
     return filas
 
 
+def orden_reanudar(row):
+    """
+    El comando de shell que reanuda una sesion: `cd` a su directorio y `claude --resume`.
+
+    **Con su cuenta.** Una sesion de `~/.claude-personal` hay que reanudarla con
+    `CLAUDE_CONFIG_DIR` apuntando ahi: sin eso, `claude` la busca en la cuenta principal y
+    no la encuentra. Fallaba en silencio para cualquier sesion de una cuenta secundaria.
+    Para la principal no se pone nada, que es lo que escribiria cualquiera a mano.
+    """
+    orden = "cd {} && ".format(shlex.quote(row["cwd"]))
+    cfg = row.get("_cfg") or row.get("cfg")
+    principal = os.path.realpath(os.path.join(HOME, ".claude"))
+    if cfg and os.path.realpath(cfg) != principal:
+        orden += "CLAUDE_CONFIG_DIR={} ".format(shlex.quote(cfg))
+    return orden + "claude --resume {}".format(shlex.quote(row["sessionId"]))
+
+
 def resume(row, quiet=False):
     """
     Abre una pestaña nueva de iTerm en el directorio de la sesion y la reanuda.
@@ -2852,8 +2925,7 @@ def resume(row, quiet=False):
     Se escribe `claude` a secas y no la ruta resuelta: la pestaña nueva arranca un shell
     interactivo que ya carga nvm, y una ruta de nvm fijada aqui caduca al actualizar Node.
     """
-    orden = "cd {} && claude --resume {}".format(
-        shlex.quote(row["cwd"]), shlex.quote(row["sessionId"]))
+    orden = orden_reanudar(row)
     if pestaña_nueva(orden, quiet, row.get("space")) != 0:
         return 1
     if not quiet:
@@ -2912,6 +2984,151 @@ def pestaña_nueva(orden, quiet=False, space=None):
     return 0
 
 
+# ─────────────── guardar y restaurar (`--save` / `--restore`) ───────────────
+#
+# Para el reset PLANIFICADO de iTerm o del terminal: apuntar que sesiones hay abiertas, en
+# que ventana y en que escritorio, y despues devolverlas tal cual. `--recent` no sirve para
+# esto: lista las cien y pico que hay en disco, no "las que tenia abiertas", y reanuda de
+# una en una.
+
+SNAPSHOT_FILE = os.path.join(HOME, ".claude", "ccl-snapshot.json")
+RESTORE_PAUSA = 0.8   # tras cambiar de escritorio: que acabe la animacion antes de crear
+
+
+def guardar_sesiones(rows):
+    """
+    Apunta las sesiones vivas con su ventana, pestaña y escritorio. Devuelve lo guardado,
+    o None si no habia nada que guardar.
+
+    **Con cero sesiones NO se escribe nada.** El momento mas probable para teclear
+    `--save` por error es justo despues del reset, con la lista vacia: sobrescribir ahi
+    tiraria la foto buena. Por lo mismo la anterior se conserva como `.prev`.
+
+    El escritorio se lee de la VENTANA en el momento de guardar, no del mapa que se aprende
+    saltando: asi sale el de todas aunque no hayas visitado ninguna. Sin Hammerspoon se usa
+    lo aprendido, y si tampoco hay, queda vacio y se abrira donde caiga.
+    """
+    vivas = [r for r in rows if not r.get("recoverable")]
+    if not vivas:
+        return None
+    por_ventana = spaces_de_ventanas()
+    aprendidos = load_state()[3]
+    sesiones = []
+    for r in vivas:
+        app, wid, pestaña = r.get("ventana") or (None, None, None)
+        space = (por_ventana.get(str(wid)) if wid else None) or aprendidos.get(r["sessionId"])
+        sesiones.append({"sessionId": r["sessionId"], "cwd": r["cwd"], "name": r["name"],
+                         "cfg": r.get("_cfg"), "app": app, "ventana": wid,
+                         "pestaña": pestaña, "space": space})
+    datos = {"guardado": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+             "sesiones": sesiones}
+    if os.path.exists(SNAPSHOT_FILE):
+        try:
+            os.replace(SNAPSHOT_FILE, SNAPSHOT_FILE + ".prev")
+        except OSError:
+            pass
+    escribir_json(SNAPSHOT_FILE, datos)
+    return datos
+
+
+def cargar_snapshot():
+    """La foto guardada, saneada. Un archivo roto o a mano no puede tumbar nada."""
+    datos = leer_json(SNAPSHOT_FILE, {})
+    sesiones = [x for x in (datos.get("sesiones") or [])
+                if isinstance(x, dict) and isinstance(x.get("sessionId"), str)
+                and isinstance(x.get("cwd"), str)]
+    return {"guardado": datos.get("guardado") if isinstance(datos.get("guardado"), str)
+            else None, "sesiones": sesiones}
+
+
+def plan_de_restauracion(snapshot, vivas):
+    """
+    ([(escritorio, [sesion, …]), …], ya_vivas, sin_directorio). **Puro**: no abre nada.
+
+    Agrupa por la ventana en que estaban, en el orden de sus pestañas, y ordena las ventanas
+    por escritorio: asi se recorren los escritorios una vez y en orden, en vez de ir y
+    volver. Las que no tenian ventana conocida (VS Code, un terminal que no sabemos
+    direccionar) van cada una a su propia ventana, al final.
+
+    **Las que ya estan vivas se saltan**: restaurar dos veces, o sin haber reseteado nada,
+    no puede abrir la misma conversacion por duplicado. Y las que ya no tienen directorio
+    tambien: el `cd` fallaria y quedaria una pestaña con un error.
+    """
+    vivas = set(vivas)
+    grupos, sueltas, ya, sin_dir = {}, [], [], []
+    for ses in snapshot.get("sesiones", []):
+        if ses["sessionId"] in vivas:
+            ya.append(ses)
+        elif not os.path.isdir(ses["cwd"]):
+            sin_dir.append(ses)
+        elif ses.get("ventana"):
+            grupos.setdefault((ses.get("app"), str(ses["ventana"])), []).append(ses)
+        else:
+            sueltas.append([ses])
+    ventanas = [sorted(g, key=lambda x: x.get("pestaña") or 0) for g in grupos.values()]
+    ventanas.sort(key=lambda g: (g[0].get("space") or 999, str(g[0].get("ventana"))))
+    return [(g[0].get("space"), g) for g in ventanas + sueltas], ya, sin_dir
+
+
+def abrir_ventana_con_pestañas(ordenes, space=None):
+    """
+    Una ventana nueva de iTerm con una pestaña por orden, en su escritorio. 0 si fue bien.
+
+    Un solo AppleScript por ventana, y escribiendo en los objetos que devuelven
+    `create window` / `create tab`, nunca en "current session of current window": tras
+    cambiar de escritorio la ventana nueva aun no es la "current", y escribir ahi teclea el
+    comando en la ventana que tenias delante (paso, ver `pestaña_nueva`). Las ordenes van
+    por `argv` por lo de siempre: llevan rutas de fuera.
+    """
+    if space is not None and ir_a_space(space):
+        time.sleep(RESTORE_PAUSA)
+    script = """
+    on run argv
+      tell application "iTerm2"
+        activate
+        set w to (create window with default profile)
+        tell current session of w to write text (item 1 of argv)
+        repeat with i from 2 to (count of argv)
+          tell w
+            set t to (create tab with default profile)
+          end tell
+          tell current session of t to write text (item i of argv)
+        end repeat
+      end tell
+    end run
+    """
+    try:
+        res = subprocess.run(["osascript", "-e", script, "--"] + list(ordenes),
+                             capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return 1
+    return res.returncode
+
+
+def restaurar_sesiones(snapshot, vivas, solo_mirar=False):
+    """Ejecuta (o enseña, con `solo_mirar`) el plan. Devuelve el codigo de salida."""
+    plan, ya, sin_dir = plan_de_restauracion(snapshot, vivas)
+    total = sum(len(g) for _, g in plan)
+    print(t("snapshot_de", fecha=snapshot.get("guardado") or "?",
+            n=len(snapshot.get("sesiones", []))))
+    fallos = 0
+    for space, grupo in plan:
+        print(t("restaurando_ventana", space=space or "?", n=len(grupo),
+                nombres=", ".join(x["name"] for x in grupo)))
+        if not solo_mirar and abrir_ventana_con_pestañas(
+                [orden_reanudar(x) for x in grupo], space) != 0:
+            fallos += 1
+    if ya:
+        print(t("ya_vivas", n=len(ya)))
+    if sin_dir:
+        print(t("sin_directorio", n=len(sin_dir),
+                rutas=", ".join(x["cwd"] for x in sin_dir)))
+    if not solo_mirar and total:
+        print(t("restaurado_resumen", n=total, v=len(plan)))
+    return 1 if fallos else 0
+
+
 class FeedFijo:
     """
     Un `Feed` que no refresca nunca, para `--recent`.
@@ -2944,7 +3161,8 @@ def parse_args(argv):
     tarda mas en importarse que todo lo demas en arrancar.
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
-            "version": False, "table": False, "recent": None}
+            "version": False, "table": False, "recent": None, "save": False,
+            "restore": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -2956,6 +3174,10 @@ def parse_args(argv):
             opts["list"] = True
         elif a in ("-t", "--table"):
             opts["table"] = True
+        elif a == "--save":
+            opts["save"] = True
+        elif a == "--restore":
+            opts["restore"] = True
         elif a == "--recent":
             nxt = argv[i + 1] if i + 1 < len(argv) else None
             if nxt is not None and nxt.isdigit():
@@ -3005,6 +3227,27 @@ def main():
     except SessionsUnavailable as e:
         print(f"ccl: {e}", file=sys.stderr)
         return 1
+
+    if opts["save"]:
+        datos = guardar_sesiones(rows)
+        if datos is None:
+            print(t("nada_que_guardar"))
+            return 1
+        ses = datos["sesiones"]
+        print(t("guardadas", n=len(ses),
+                v=len({(x["app"], x["ventana"]) for x in ses if x["ventana"]}),
+                e=len({x["space"] for x in ses if x["space"]}), ruta=SNAPSHOT_FILE))
+        return 0
+
+    if opts["restore"]:
+        # Va ANTES del "no hay sesiones": tras un reset lo normal es que no quede ninguna,
+        # y ese es justamente el caso para el que existe.
+        snapshot = cargar_snapshot()
+        if not snapshot["sesiones"]:
+            print(t("sin_snapshot"))
+            return 1
+        return restaurar_sesiones(snapshot, {r["sessionId"] for r in rows},
+                                  solo_mirar=opts["list"])
 
     if opts["recent"] is not None:
         # Tambien antes del "no hay sesiones", y por el mismo motivo elevado al cuadrado:

@@ -101,6 +101,8 @@ ccl -w2          # same, the second one in the WAITING queue
 ccl --table      # one line per session, in columns
 ccl --recent     # the ones that died with your terminal — resume them
 ccl --recent --list   # just look at them, nothing is touched
+ccl --save       # before resetting your terminal: remember what's open, and where
+ccl --restore    # after: bring them back to their windows and desktops
 ccl --version    # print the version
 ```
 
@@ -268,6 +270,44 @@ Two things worth knowing:
 
 If you'd rather not lose them at all, run Claude Code inside tmux: the sessions survive the
 terminal, and `ccl` gains tmux support one day ([TODO.md](TODO.md)).
+
+</details>
+
+<details>
+<summary><b>Resetting your terminal</b> — save the open sessions, bring them back after</summary>
+
+Before restarting iTerm or the Terminal, save what's open:
+
+```bash
+ccl --save
+# Saved 24 sessions in 7 windows across 6 desktops → ~/.claude/ccl-snapshot.json
+```
+
+After the reset, bring them back:
+
+```bash
+ccl --restore --list   # look at the plan first; nothing is opened
+ccl --restore
+```
+
+Each window comes back **with its tabs, in their order, on the desktop it was on**, and every
+tab runs `claude --resume` in its own directory. It walks the desktops once, in order.
+
+Things it takes care of, because they're the ones that hurt:
+
+- **Sessions still running are skipped.** Restoring twice, or without having reset anything,
+  never opens the same conversation twice.
+- **Saving with nothing open does nothing.** The most likely moment to type `--save` by mistake
+  is right *after* the reset; it won't overwrite the good snapshot with an empty one. The previous
+  one is kept as `ccl-snapshot.json.prev` too.
+- **Each session resumes with its own account** (`CLAUDE_CONFIG_DIR`), if you use more than one.
+- Sessions whose directory no longer exists are skipped and listed.
+
+The desktop of every window is read at save time, so it works even for sessions you never jumped
+to with `ccl` — this needs Hammerspoon. Without it, windows open wherever you are.
+
+Two limits: everything comes back in **iTerm2**, including what was in Terminal.app, and **split
+panes come back as tabs**.
 
 </details>
 

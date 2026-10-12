@@ -158,6 +158,198 @@ class TestNumeracion(unittest.TestCase):
 # ────────────────────── parseo de la salida de iTerm ──────────────────────
 
 
+def _cuerpo_de(nombre):
+    """El fuente de una funcion de `ccl`, SIN sus comentarios ni su docstring.
+
+    Sin quitarlos, el comentario que explica un fallo —y que por fuerza nombra la frase
+    prohibida— haria saltar el mismo guardarrail que documenta.
+    """
+    import ast
+    with open(os.path.join(_HERE, "ccl")) as fh:
+        fuente = fh.read()
+    for nodo in ast.parse(fuente).body:
+        if isinstance(nodo, ast.FunctionDef) and nodo.name == nombre:
+            trozo = ast.get_source_segment(fuente, nodo)
+            doc = ast.get_docstring(nodo, clean=False)
+            if doc:
+                trozo = trozo.replace(doc, "", 1)
+            return "\n".join(l for l in trozo.split("\n") if not l.strip().startswith("#"))
+    raise AssertionError(f"no existe la funcion {nombre}")
+
+
+class TestGuardarYRestaurar(unittest.TestCase):
+    """
+    `--save` / `--restore`: la foto de las sesiones vivas antes de reiniciar el terminal,
+    y devolverlas a su ventana y su escritorio. Todo puro: no se abre ninguna ventana.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = (ccl.SNAPSHOT_FILE, ccl.NOTES_FILE, ccl.spaces_de_ventanas, ccl._hs)
+        ccl.SNAPSHOT_FILE = os.path.join(self.tmp.name, "ccl-snapshot.json")
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+        ccl.spaces_de_ventanas = lambda: {"100": 3, "200": 1}
+        self.dir = self.tmp.name          # un directorio que SI existe
+
+    def tearDown(self):
+        (ccl.SNAPSHOT_FILE, ccl.NOTES_FILE, ccl.spaces_de_ventanas, ccl._hs) = self.orig
+        self.tmp.cleanup()
+
+    def _fila(self, sid, wid=None, tab=None, cfg=None):
+        r = row(1, sid, "idle", ts=iso(minutes=1))
+        r.update({"cwd": self.dir, "name": "n-" + sid, "_cfg": cfg,
+                  "ventana": ("iTerm2", wid, tab) if wid else None})
+        return r
+
+    # ── guardar ──
+
+    def test_apunta_ventana_pestaña_y_escritorio(self):
+        datos = ccl.guardar_sesiones([self._fila("a", "100", 2)])
+        ses = datos["sesiones"][0]
+        self.assertEqual((ses["ventana"], ses["pestaña"], ses["space"]), ("100", 2, 3))
+
+    def test_el_escritorio_sale_de_la_ventana_aunque_no_la_hayas_visitado(self):
+        """Antes solo se sabia el de las sesiones a las que habias saltado con ccl."""
+        datos = ccl.guardar_sesiones([self._fila("a", "200", 1)])
+        self.assertEqual(datos["sesiones"][0]["space"], 1)
+
+    def test_sin_hammerspoon_usa_lo_aprendido(self):
+        ccl.spaces_de_ventanas = lambda: {}
+        ccl._hs = lambda lua, marca, timeout=8: "5"
+        ccl.recordar_space("a")
+        datos = ccl.guardar_sesiones([self._fila("a", "999", 1)])
+        self.assertEqual(datos["sesiones"][0]["space"], 5)
+
+    def test_con_cero_sesiones_no_pisa_la_foto_buena(self):
+        """
+        El momento mas probable para teclear `--save` por error es JUSTO despues del reset,
+        con la lista vacia. Sobrescribir ahi tiraria la foto que se queria restaurar.
+        """
+        ccl.guardar_sesiones([self._fila("a", "100", 1)])
+        antes = open(ccl.SNAPSHOT_FILE).read()
+        self.assertIsNone(ccl.guardar_sesiones([]))
+        self.assertEqual(open(ccl.SNAPSHOT_FILE).read(), antes)
+
+    def test_la_anterior_se_conserva_como_prev(self):
+        ccl.guardar_sesiones([self._fila("vieja", "100", 1)])
+        ccl.guardar_sesiones([self._fila("nueva", "100", 1)])
+        prev = json.load(open(ccl.SNAPSHOT_FILE + ".prev"))
+        self.assertEqual(prev["sesiones"][0]["sessionId"], "vieja")
+
+    def test_las_recuperables_no_se_guardan(self):
+        """Solo las vivas: una muerta no es parte de "como estaba"."""
+        muerta = self._fila("m")
+        muerta["recoverable"] = True
+        datos = ccl.guardar_sesiones([self._fila("a", "100", 1), muerta])
+        self.assertEqual([x["sessionId"] for x in datos["sesiones"]], ["a"])
+
+    def test_el_archivo_no_queda_legible_por_otros(self):
+        ccl.guardar_sesiones([self._fila("a", "100", 1)])
+        modo = stat.S_IMODE(os.stat(ccl.SNAPSHOT_FILE).st_mode)
+        self.assertEqual(modo & 0o077, 0)
+
+    def test_una_foto_rota_no_revienta(self):
+        ccl.escribir_json(ccl.SNAPSHOT_FILE, {"sesiones": ["basura", {"sin": "id"},
+                                                          {"sessionId": "a", "cwd": "/x"}]})
+        self.assertEqual([x["sessionId"] for x in ccl.cargar_snapshot()["sesiones"]], ["a"])
+        with open(ccl.SNAPSHOT_FILE, "w") as fh:
+            fh.write("{ no es json")
+        self.assertEqual(ccl.cargar_snapshot()["sesiones"], [])
+
+    # ── el plan ──
+
+    def _ses(self, sid, wid=None, tab=None, space=None, cwd=None):
+        return {"sessionId": sid, "cwd": cwd or self.dir, "name": sid, "app": "iTerm2",
+                "ventana": wid, "pestaña": tab, "space": space}
+
+    def test_agrupa_por_ventana_en_el_orden_de_las_pestañas(self):
+        plan, _, _ = ccl.plan_de_restauracion({"sesiones": [
+            self._ses("b", "100", 2, 3), self._ses("a", "100", 1, 3)]}, [])
+        self.assertEqual(len(plan), 1, "las dos iban en la misma ventana")
+        self.assertEqual([x["sessionId"] for x in plan[0][1]], ["a", "b"])
+
+    def test_recorre_los_escritorios_en_orden(self):
+        """Una pasada por los escritorios, no ir y volver."""
+        plan, _, _ = ccl.plan_de_restauracion({"sesiones": [
+            self._ses("en7", "300", 1, 7), self._ses("en2", "100", 1, 2),
+            self._ses("en5", "200", 1, 5)]}, [])
+        self.assertEqual([space for space, _ in plan], [2, 5, 7])
+
+    def test_salta_las_que_ya_estan_vivas(self):
+        """Restaurar dos veces no puede abrir la misma conversacion por duplicado."""
+        plan, ya, _ = ccl.plan_de_restauracion({"sesiones": [
+            self._ses("viva", "100", 1, 3), self._ses("muerta", "100", 2, 3)]}, ["viva"])
+        self.assertEqual([x["sessionId"] for _, g in plan for x in g], ["muerta"])
+        self.assertEqual([x["sessionId"] for x in ya], ["viva"])
+
+    def test_salta_las_que_ya_no_tienen_directorio(self):
+        """El `cd` fallaria y quedaria una pestaña con un error."""
+        plan, _, sin = ccl.plan_de_restauracion({"sesiones": [
+            self._ses("a", "100", 1, 3, cwd="/no/existe/ya")]}, [])
+        self.assertEqual(plan, [])
+        self.assertEqual([x["sessionId"] for x in sin], ["a"])
+
+    def test_sin_ventana_conocida_va_sola_y_al_final(self):
+        plan, _, _ = ccl.plan_de_restauracion({"sesiones": [
+            self._ses("vscode"), self._ses("iterm", "100", 1, 3)]}, [])
+        self.assertEqual([[x["sessionId"] for x in g] for _, g in plan],
+                         [["iterm"], ["vscode"]])
+
+    def test_ver_el_plan_no_abre_nada(self):
+        """`ccl --restore --list` enseña lo que haria. No puede abrir ninguna ventana."""
+        llamadas = []
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda *a, **k: llamadas.append(a)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ccl.restaurar_sesiones({"sesiones": [self._ses("a", "100", 1, 3)]}, [],
+                                       solo_mirar=True)
+        finally:
+            ccl.subprocess.run = orig
+        self.assertEqual(llamadas, [])
+
+    # ── el comando y la ventana ──
+
+    def test_reanuda_con_su_cuenta(self):
+        """
+        EL FALLO que habia: `cd X && claude --resume id` sin `CLAUDE_CONFIG_DIR`. Una
+        sesion de una cuenta secundaria se buscaba en la principal y no aparecia.
+        """
+        orden = ccl.orden_reanudar({"cwd": "/x", "sessionId": "s",
+                                    "_cfg": os.path.join(ccl.HOME, ".claude-personal")})
+        self.assertIn("CLAUDE_CONFIG_DIR=", orden)
+        self.assertIn(".claude-personal", orden)
+
+    def test_la_cuenta_principal_no_lleva_nada(self):
+        orden = ccl.orden_reanudar({"cwd": "/x", "sessionId": "s",
+                                    "_cfg": os.path.join(ccl.HOME, ".claude")})
+        self.assertNotIn("CLAUDE_CONFIG_DIR", orden)
+        self.assertEqual(orden, "cd /x && claude --resume s")
+
+    def test_la_ventana_escribe_en_lo_que_crea(self):
+        """Lo mismo que `pestaña_nueva`: nunca en la "current", que puede ser ccl."""
+        cuerpo = _cuerpo_de("abrir_ventana_con_pestañas")
+        self.assertIn("set w to (create window", cuerpo)
+        self.assertIn("set t to (create tab", cuerpo)
+        self.assertIn("tell current session of t to write text", cuerpo)
+        self.assertNotIn("current session of current window", cuerpo)
+        self.assertIn("on run argv", cuerpo)
+
+    def test_lee_el_escritorio_de_cada_ventana(self):
+        ccl.spaces_de_ventanas = self.orig[2]
+        ccl._hs = lambda lua, marca, timeout=8: "152139:1,152143:3,54029:1,54029:2,x:y"
+        mapa = ccl.spaces_de_ventanas()
+        self.assertEqual(mapa["152139"], 1)
+        self.assertEqual(mapa["152143"], 3)
+        self.assertEqual(mapa["54029"], 1, "fijada en todos: se queda el primero")
+        self.assertNotIn("x", mapa)
+
+    def test_sin_hammerspoon_el_mapa_esta_vacio(self):
+        ccl.spaces_de_ventanas = self.orig[2]
+        ccl._hs = lambda lua, marca, timeout=8: None
+        self.assertEqual(ccl.spaces_de_ventanas(), {})
+
+
 class TestPestañaNueva(unittest.TestCase):
     """La ventana que abre `--recent` para reanudar. Un guardarrail sobre el fuente."""
 
@@ -171,12 +363,7 @@ class TestPestañaNueva(unittest.TestCase):
         Capturando el objeto que devuelve `create window` deja de depender de a quién
         considere iTerm la ventana activa en ese instante.
         """
-        with open(os.path.join(_HERE, "ccl")) as fh:
-            fuente = fh.read()
-        i = fuente.index("def pestaña_nueva")
-        # sin los comentarios: el que explica este fallo nombra la frase prohibida
-        trozo = "\n".join(l for l in fuente[i:fuente.index("class FeedFijo")].split("\n")
-                          if not l.strip().startswith("#"))
+        trozo = _cuerpo_de("pestaña_nueva")
         self.assertIn("set destino to (create window", trozo)
         self.assertIn("set destino to (create tab", trozo)
         self.assertIn("tell current session of destino to write text", trozo)
@@ -185,10 +372,7 @@ class TestPestañaNueva(unittest.TestCase):
 
     def test_el_texto_va_por_argv(self):
         """La orden lleva rutas del transcript: interpolarla es ejecucion arbitraria."""
-        with open(os.path.join(_HERE, "ccl")) as fh:
-            fuente = fh.read()
-        i = fuente.index("def pestaña_nueva")
-        trozo = fuente[i:fuente.index("class FeedFijo")]
+        trozo = _cuerpo_de("pestaña_nueva")
         self.assertIn("on run argv", trozo)
         self.assertIn("item 1 of argv", trozo)
 
@@ -611,7 +795,7 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
                                 "help": False, "version": False, "table": False,
-                                "recent": None})
+                                "recent": None, "save": False, "restore": False})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -653,6 +837,13 @@ class TestParseoDeArgumentos(unittest.TestCase):
         opts, err = ccl.parse_args(["--recent", "5"])
         self.assertIsNone(err)
         self.assertIsNone(opts["num"])
+
+    def test_save_y_restore(self):
+        self.assertTrue(ccl.parse_args(["--save"])[0]["save"])
+        self.assertTrue(ccl.parse_args(["--restore"])[0]["restore"])
+        opts, err = ccl.parse_args(["--restore", "--list"])
+        self.assertIsNone(err)
+        self.assertTrue(opts["restore"] and opts["list"])
 
     def test_list_y_help(self):
         self.assertTrue(ccl.parse_args(["--list"])[0]["list"])
