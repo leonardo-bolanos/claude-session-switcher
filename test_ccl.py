@@ -350,6 +350,96 @@ class TestGuardarYRestaurar(unittest.TestCase):
         self.assertEqual(ccl.spaces_de_ventanas(), {})
 
 
+class TestLasQueFaltan(unittest.TestCase):
+    """
+    `ccl --saved`: el panel con las sesiones de la foto que todavia no han vuelto, en gris.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = (ccl.SNAPSHOT_FILE, ccl.NOTES_FILE)
+        ccl.SNAPSHOT_FILE = os.path.join(self.tmp.name, "foto.json")
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+
+    def tearDown(self):
+        ccl.SNAPSHOT_FILE, ccl.NOTES_FILE = self.orig
+        self.tmp.cleanup()
+
+    def _foto(self, *sids, cwd=None):
+        return {"sesiones": [{"sessionId": sid, "cwd": cwd or self.tmp.name,
+                              "name": "n-" + sid, "cfg": None, "space": 4}
+                             for sid in sids]}
+
+    def _viva(self, num, sid):
+        r = row(num, sid, "idle", ts=iso(minutes=1))
+        r["ventana"] = ("iTerm2", "1", 1)
+        return r
+
+    def test_solo_salen_las_que_no_estan_vivas(self):
+        faltan = ccl.faltantes(self._foto("viva", "muerta"), [self._viva(1, "viva")])
+        self.assertEqual([f["sessionId"] for f in faltan], ["muerta"])
+
+    def test_van_marcadas_para_pintarse_y_reanudarse(self):
+        f = ccl.faltantes(self._foto("m"), [])[0]
+        self.assertTrue(f["faltante"], "sin la marca no se pintaria en gris")
+        self.assertTrue(f["recoverable"], "sin esta Enter no la reanudaria")
+        self.assertEqual(f["space"], 4, "el escritorio es el de la foto")
+        self.assertEqual(f["name"], "n-m")
+
+    def test_se_numeran_detras_de_las_vivas(self):
+        """Teclear un numero tiene que llevar a UNA sesion: no pueden chocar."""
+        faltan = ccl.faltantes(self._foto("a", "b"),
+                               [self._viva(3, "x"), self._viva(9, "y")])
+        self.assertEqual(sorted(f["num"] for f in faltan), [10, 11])
+
+    def test_las_que_ya_no_tienen_directorio_no_salen(self):
+        """Reanudarla fallaria en el `cd`: mismo criterio que `--restore`."""
+        self.assertEqual(ccl.faltantes(self._foto("m", cwd="/no/existe/ya"), []), [])
+
+    def test_tienen_su_grupo_y_va_el_ultimo(self):
+        """Arriba empujarian fuera de pantalla justo lo que si esta."""
+        rows = [self._viva(1, "viva")] + ccl.faltantes(self._foto("m"), [])
+        etiquetas = [e for e, _, _ in ccl.grouped(rows)]
+        self.assertEqual(etiquetas[-1], ccl.t("grupo_faltan"))
+        self.assertNotIn(ccl.t("grupo_recuperables"), etiquetas,
+                         "no pueden caer tambien en RECUPERABLES: los grupos son excluyentes")
+
+    def test_la_linea_va_entera_en_gris(self):
+        """Un gris sobre el magenta del repo no gana: hay que quitar los colores antes."""
+        f = ccl.faltantes(self._foto("m"), [])[0]
+        linea = ccl.main_line(f)
+        codigos = set(re.findall(r"\033\[([0-9;]*)m", linea)) - {"0"}
+        self.assertEqual(codigos, {"90"}, f"quedan colores que no son gris: {codigos}")
+
+    def test_una_viva_no_se_toca(self):
+        viva = self._viva(1, "viva")
+        self.assertEqual(ccl.gris_si_falta(viva, "\033[35mrepo\033[0m"),
+                         "\033[35mrepo\033[0m")
+
+    def test_salen_de_la_lista_al_volver(self):
+        """
+        Es para lo que sirve la vista: segun reanudas, cada una pasa de gris a su grupo de
+        verdad. `con_faltantes` se recalcula en cada refresco con las vivas de ese momento.
+        """
+        ccl.escribir_json(ccl.SNAPSHOT_FILE, self._foto("a", "b"))
+        antes = ccl.con_faltantes([])
+        despues = ccl.con_faltantes([self._viva(1, "a")])
+        self.assertEqual(sum(1 for r in antes if r.get("faltante")), 2)
+        self.assertEqual([r["sessionId"] for r in despues if r.get("faltante")], ["b"])
+
+    def test_el_feed_usa_la_fuente_que_se_le_da(self):
+        """Sin esto el refresco volveria a llamar a `collect()` y las grises desaparecerian."""
+        feed = ccl.Feed([], fuente=lambda: ["de-la-fuente"])
+        try:
+            feed.force()
+            limite = time.time() + 5
+            while feed.snapshot()[1] == 0 and time.time() < limite:
+                time.sleep(0.05)
+            self.assertEqual(feed.snapshot()[0], ["de-la-fuente"])
+        finally:
+            feed.stop()
+
+
 class TestPestañaNueva(unittest.TestCase):
     """La ventana que abre `--recent` para reanudar. Un guardarrail sobre el fuente."""
 
@@ -795,7 +885,8 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
                                 "help": False, "version": False, "table": False,
-                                "recent": None, "save": False, "restore": False})
+                                "recent": None, "save": False, "restore": False,
+                                "saved": False})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -837,6 +928,12 @@ class TestParseoDeArgumentos(unittest.TestCase):
         opts, err = ccl.parse_args(["--recent", "5"])
         self.assertIsNone(err)
         self.assertIsNone(opts["num"])
+
+    def test_saved(self):
+        self.assertTrue(ccl.parse_args(["--saved"])[0]["saved"])
+        opts, err = ccl.parse_args(["--saved", "--table"])
+        self.assertIsNone(err)
+        self.assertTrue(opts["saved"] and opts["table"])
 
     def test_save_y_restore(self):
         self.assertTrue(ccl.parse_args(["--save"])[0]["save"])

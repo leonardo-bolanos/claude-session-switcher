@@ -221,6 +221,28 @@ buscaba en la principal y no aparecia. Por eso las filas vivas llevan ahora `_cf
 por AppleScript no tiene comando propio (hay que simular ⌘T). Y los paneles divididos vuelven como
 pestañas. Las dos cosas estan en el README.
 
+### `--saved`: las que faltan, en gris
+
+El panel normal mas las sesiones de la foto que aun no han vuelto, en un grupo POR VOLVER **al
+final** (arriba empujarian fuera de pantalla lo que si esta) y en gris. Enter las reanuda porque
+llevan `recoverable`; el gris lo pone `faltante`.
+
+**Solo con el comando, no siempre.** Si saliera en el panel normal, cada sesion cerrada a
+proposito despues de un `--save` se quedaria en gris para siempre. Hay un test que lo fija.
+
+**El Feed recalcula las que faltan en cada refresco** (`Feed(rows, fuente=…)`): segun reanudas,
+cada una pasa sola de gris a su grupo de verdad. La `fuente` se resuelve al llamar y no como valor
+por defecto de la firma — con `fuente=collect` ahi, parchear `ccl.collect` en los tests no surtiria
+efecto.
+
+**El gris va al FINAL de cada linea y quitando antes los colores** (`gris_si_falta`). Un
+`\033[90m` delante no gana a un `\033[35m` del repo que viene despues: el ultimo codigo manda.
+
+**Se numeran detras de las vivas**, para que teclear un numero lleve a una sola sesion.
+
+`fila_de_disco()` la comparten `--recent` y `--saved`: las dos son sesiones muertas que se
+reanudan con Enter, y montarlas en dos sitios era garantizar que divergieran.
+
 ## `$N`: cuantos comandos esta ejecutando una sesion
 
 `busy` no distingue "esta corriendo un comando" de "esta generando texto", y son cosas muy

@@ -104,6 +104,7 @@ ccl --recent     # las que murieron con tu terminal — para reanudarlas
 ccl --recent --list   # solo verlas, sin tocar nada
 ccl --save       # antes de reiniciar el terminal: apunta qué hay abierto, y dónde
 ccl --restore    # después: las devuelve a sus ventanas y escritorios
+ccl --saved      # el panel, con las guardadas que aún no han vuelto en gris
 ccl --version    # imprime la versión
 ```
 
@@ -307,6 +308,11 @@ Lo que cuida, porque es lo que duele:
 El escritorio de cada ventana se lee al guardar, así que funciona también con sesiones a las que
 nunca saltaste con `ccl` — para eso hace falta Hammerspoon. Sin él, las ventanas se abren donde
 estés.
+
+Para traerlas de una en una, `ccl --saved` abre el panel de siempre con las sesiones guardadas que
+**aún no han vuelto** en gris, en un grupo POR VOLVER al final. `Enter` sobre una la reanuda en su
+escritorio, y según vuelve cada una sale sola del gris. Solo aparece con ese comando: si no, cada
+sesión que cierres a propósito después de un `--save` se quedaría en gris para siempre.
 
 Dos límites: todo vuelve en **iTerm2**, también lo que estaba en Terminal.app, y **los paneles
 divididos vuelven como pestañas**.

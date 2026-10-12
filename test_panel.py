@@ -26,6 +26,7 @@ que faltan lineas que si estan.
 import atexit
 import fcntl
 import itertools
+import json
 import os
 import pty
 import re
@@ -127,6 +128,9 @@ _notas = os.environ.get("CCL_TEST_NOTES")
 if not _notas:
     raise SystemExit("falta CCL_TEST_NOTES: el test escribiria en el ~/.claude real")
 ccl.NOTES_FILE = _notas
+# La foto de `--save` tambien: sin desviarla, `--saved` y `--restore` leerian la del usuario
+# y los tests dependerian de que sesiones tenga abiertas quien los corre.
+ccl.SNAPSHOT_FILE = os.environ.get("CCL_TEST_SNAPSHOT") or _notas + ".foto"
 # El panel se arranca con `python -c`, asi que no hay linea de comandos que parsear:
 # los tests de banderas (--table) la pasan por aqui.
 sys.argv = ["ccl"] + os.environ.get("CCL_TEST_ARGS", "").split()
@@ -603,6 +607,50 @@ class TestElRatonSeRearma(unittest.TestCase):
         with con_panel(entorno={"CCL_MOUSE": "0"}) as p:
             p.enviar(b"\033[B")
             self.assertNotIn(self.ACTIVAR, p.bruto)
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestLasQueFaltan(unittest.TestCase):
+    """`ccl --saved`: las de la foto que aun no han vuelto, en gris y al final."""
+
+    def _foto(self, *sids):
+        ruta = os.path.join(_NOTAS_TMP, "foto-%d.json" % next(_contador_notas))
+        with open(ruta, "w") as fh:
+            json.dump({"sesiones": [{"sessionId": "sid-" + n, "cwd": _NOTAS_TMP,
+                                     "name": n, "cfg": None, "space": 2} for n in sids]},
+                      fh)
+        return ruta
+
+    def test_enseña_las_que_faltan_en_su_grupo(self):
+        foto = self._foto("alfa", "vuelta-pendiente")
+        with con_panel(entorno={"CCL_TEST_ARGS": "--saved",
+                                "CCL_TEST_SNAPSHOT": foto}) as p:
+            pantalla = p.ultima()
+            self.assertIn("POR VOLVER (1)", pantalla)
+            self.assertIn("vuelta-pendiente", pantalla)
+            self.assertIn("ESPERANDO (4)", pantalla, "las vivas siguen en su sitio")
+            self.assertLess(pantalla.index("ESPERANDO"), pantalla.index("POR VOLVER"),
+                            "las que faltan van al final")
+
+    def test_van_en_gris(self):
+        foto = self._foto("vuelta-pendiente")
+        with con_panel(entorno={"CCL_TEST_ARGS": "--saved",
+                                "CCL_TEST_SNAPSHOT": foto}) as p:
+            crudo = p.bruto.split(LIMPIAR)[-1]
+            linea = next(l for l in crudo.split("\n") if "vuelta-pendiente" in l)
+            self.assertIn("\033[90m", linea, "la fila de una que falta deberia ir en gris")
+
+    def test_sin_foto_avisa_y_no_abre_el_panel(self):
+        with con_panel(entorno={"CCL_TEST_ARGS": "--saved",
+                                "CCL_TEST_SNAPSHOT": "/no/existe.json"}) as p:
+            self.assertIn("ccl --save", p.bruto)
+
+    def test_el_panel_normal_no_las_enseña(self):
+        """Solo con el comando: si saliera siempre, cada sesion cerrada a proposito tras
+        un --save se quedaria en gris para siempre."""
+        foto = self._foto("vuelta-pendiente")
+        with con_panel(entorno={"CCL_TEST_SNAPSHOT": foto}) as p:
+            self.assertNotIn("vuelta-pendiente", p.ultima())
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

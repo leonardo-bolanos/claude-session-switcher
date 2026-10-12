@@ -103,6 +103,7 @@ ccl --recent     # the ones that died with your terminal — resume them
 ccl --recent --list   # just look at them, nothing is touched
 ccl --save       # before resetting your terminal: remember what's open, and where
 ccl --restore    # after: bring them back to their windows and desktops
+ccl --saved      # the panel, with the saved ones that aren't back yet in grey
 ccl --version    # print the version
 ```
 
@@ -305,6 +306,12 @@ Things it takes care of, because they're the ones that hurt:
 
 The desktop of every window is read at save time, so it works even for sessions you never jumped
 to with `ccl` — this needs Hammerspoon. Without it, windows open wherever you are.
+
+To bring them back one at a time instead, `ccl --saved` opens the usual panel with the saved
+sessions that **aren't back yet** in grey, in a NOT BACK YET group at the bottom. `Enter` on one
+resumes it in its desktop, and as each comes back it moves out of the grey group on its own. It
+only appears with that command: otherwise every session you close on purpose after a `--save`
+would stay greyed out forever.
 
 Two limits: everything comes back in **iTerm2**, including what was in Terminal.app, and **split
 panes come back as tabs**.

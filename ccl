@@ -12,6 +12,7 @@ Uso:
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
     ccl --restore    las devuelve a su ventana y su escritorio (--list: solo ver)
+    ccl --saved      el panel, con las guardadas que aun no han vuelto en gris
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -80,6 +81,7 @@ Usage:
     ccl --recent --list   just look at them, no panel, nothing touched
     ccl --save       save the open sessions, before you reset your terminal
     ccl --restore    bring them back to their window and desktop (--list: just look)
+    ccl --saved      the panel, with the saved ones not back yet in grey
     ccl --version    print the version
 
 `-w` is meant to hang off a global shortcut (Hammerspoon, Raycast) and jump to whoever is
@@ -130,6 +132,7 @@ Uso:
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
     ccl --restore    las devuelve a su ventana y su escritorio (--list: solo ver)
+    ccl --saved      el panel, con las guardadas que aun no han vuelto en gris
     ccl --version    imprime la version
 
 `-w` esta pensado para colgarlo de un atajo global (Hammerspoon, Raycast) y saltar a
@@ -205,6 +208,7 @@ TEXTOS = {
         "grupo_busy": "WORKING",
         "grupo_idle": "WAITING",
         "grupo_pausa": "PAUSED",
+        "grupo_faltan": "NOT BACK YET",
         "grupo_recuperables": "RECOVERABLE",
         "grupo_bg": "BACKGROUND",
         # cabeceras de la vista de tabla
@@ -315,6 +319,7 @@ TEXTOS = {
         "grupo_busy": "TRABAJANDO",
         "grupo_idle": "ESPERANDO",
         "grupo_pausa": "PAUSADAS",
+        "grupo_faltan": "POR VOLVER",
         "grupo_recuperables": "RECUPERABLES",
         "grupo_bg": "BACKGROUND",
         "col_estado": "estado",
@@ -1532,7 +1537,7 @@ def grouped(rows):
                 and not r.get("recoverable")]
     out = [
         (t("grupo_recuperables"), MAGENTA,
-         [r for r in rows if r.get("recoverable")]),
+         [r for r in rows if r.get("recoverable") and not r.get("faltante")]),
         (t("grupo_busy"), GREEN,
          [r for r in rows if r["status"] == "busy" and not r.get("recoverable")]),
         (t("grupo_idle"), YELLOW, waiting_rows(rows)),
@@ -1543,6 +1548,9 @@ def grouped(rows):
           and not r.get("paused") and not r.get("recoverable")]
     if bg:
         out.append((t("grupo_bg"), CYAN, bg))
+    # Las que faltan de una foto van las ULTIMAS: son lo que todavia no esta, y arriba
+    # empujarian fuera de pantalla justo lo que si esta.
+    out.append((t("grupo_faltan"), GREY, [r for r in rows if r.get("faltante")]))
     return [(lbl, col, sorted(items, key=sort_key, reverse=True))
             for lbl, col, items in out if items]
 
@@ -1566,6 +1574,17 @@ def marca_shells(r):
     return CYAN(f" ⚡{n}") if n else ""
 
 
+def gris_si_falta(r, texto):
+    """
+    Toda la linea en gris si la sesion es una de las que faltan de la foto.
+
+    Se quitan sus colores primero: un gris por encima de un `\033[35m` del repo no gana,
+    el ultimo codigo manda. Y se aplica al FINAL de cada linea en vez de en cada pieza,
+    para que una pieza nueva no se pueda quedar fuera.
+    """
+    return GREY(ANSI_RE.sub("", texto)) if r.get("faltante") and texto else texto
+
+
 def main_line(r, show_account=False):
     """Linea principal coloreada, con las columnas alineadas por ancho VISIBLE."""
     num = CYAN(BOLD(f"[{r['num']:>2}]"))
@@ -1579,7 +1598,8 @@ def main_line(r, show_account=False):
     # Y tampoco si vive en tmux: ahi SI se puede llegar, aunque no este en ninguna
     # ventana de iTerm ahora mismo.
     warn = "" if r["ventana"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
-    return f"{num} {name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}"
+    return gris_si_falta(
+        r, f"{num} {name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}")
 
 
 def detail_line(r, width=None):
@@ -1597,7 +1617,7 @@ def detail_line(r, width=None):
         note = " ".join(str(note).split())
         quoted = DIM('"') + note + DIM('"')
         out = f"{out}{DIM(' · ')}{quoted}" if out else quoted
-    return clip(out, width) if width else out
+    return gris_si_falta(r, clip(out, width) if width else out)
 
 
 # ─────────────────────────── vista de tabla ───────────────────────────
@@ -1672,7 +1692,7 @@ def table_line(r, width=100, show_account=False):
     # el ⚠ se descuenta ANTES de recortar: si no, la fila de una sesion sin ventana
     # sobresalia dos columnas justo cuando ya iba al limite
     resto = max(0, width - sum(a for _, a in columnas) - 2 - vis(warn))
-    return clip(fijas + clip(cola, resto) + warn, width)
+    return gris_si_falta(r, clip(fijas + clip(cola, resto) + warn, width))
 
 
 def render(rows, tabla=False):
@@ -1912,8 +1932,13 @@ def read_key(timeout=None):
 class Feed:
     """Refresca las sesiones en segundo plano para que la interfaz no se congele."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, fuente=None):
         self.rows = rows
+        # de donde salen las filas en cada refresco; None = `collect()`.
+        # Se resuelve al llamar y no como valor por defecto: con
+        # `fuente=collect` en la firma, parchear `ccl.collect` en los
+        # tests no surtiria efecto.
+        self.fuente = fuente
         self.lock = threading.Lock()
         self.stamp = 0
         self.last_input = time.time()
@@ -1934,7 +1959,7 @@ class Feed:
             if self._stop.is_set():
                 return
             try:
-                fresh = collect()
+                fresh = self.fuente() if self.fuente else collect()
             except Exception:
                 continue  # un fallo puntual no debe tumbar el panel
             with self.lock:
@@ -2021,6 +2046,7 @@ HELP_EN = [
         ("",           "Ctrl-O again goes back to the live ones"),
         ("",           "outside the panel: ccl --recent"),
         ("",           "before a terminal reset: ccl --save, then ccl --restore"),
+        ("",           "ccl --saved shows the ones not back yet, in grey"),
     ]),
     ("table view", [
         ("Ctrl-T",     "one line per session, in columns, with a state column"),
@@ -2101,6 +2127,7 @@ HELP_ES = [
         ("",           "Ctrl-O otra vez vuelve a las vivas"),
         ("",           "fuera del panel: ccl --recent"),
         ("",           "antes de reiniciar el terminal: ccl --save, y luego ccl --restore"),
+        ("",           "ccl --saved enseña en gris las que aún no han vuelto"),
     ]),
     ("vista de tabla", [
         ("Ctrl-T",     "una línea por sesión, en columnas, con columna de estado"),
@@ -2817,6 +2844,50 @@ def procesos_claude():
 RECENT_MAX = 200
 
 
+def fila_de_disco(sid, cfg, estado, cwd=None, nombre=None):
+    """
+    Una fila de sesion que NO esta corriendo, montada desde su transcript. None si no se
+    puede reanudar (sin directorio no hay `cd` posible).
+
+    La comparten `--recent` y las que faltan de una foto guardada: las dos son sesiones
+    muertas que se reanudan con Enter, y montarlas en dos sitios era garantizar que un dia
+    divergieran.
+    """
+    notas_sesion, notas_repo, pausadas, spaces = estado
+    info = read_transcript(sid, cfg)
+    cwd = cwd or info.get("cwd")
+    if not cwd:
+        return None
+    fila = {
+        "num": 0,     # quien llama numera, segun lo que se vea
+        "name": sin_control(nombre or info.get("title") or sid[:8]),
+        "account": sin_control(account_label(cfg) if cfg and len(config_dirs()) > 1
+                               else ""),
+        "repo": sin_control(os.path.basename(cwd)),
+        "cwd": cwd,
+        "kind": "interactive",
+        "status": "idle",
+        "sessionId": sid,
+        "pid": 0,
+        "tty": "",
+        "ventana": None,
+        "ts": info.get("ts"),
+        "branch": sin_control(info.get("branch")),
+        "model": short_model(info.get("model")),
+        "effort": info.get("effort"),
+        "title": sin_control(info.get("title")),
+        "prompt": sin_control(info.get("prompt")),
+        "note": "",
+        "paused": sid in pausadas,
+        "space": spaces.get(sid),
+        "recoverable": True,
+        "_cfg": cfg,
+        "startedAt": 0,
+    }
+    fila["note"] = note_for(fila, notas_sesion, notas_repo)
+    return fila
+
+
 def recent_rows(limite=RECENT_MAX):
     """
     Sesiones que YA NO CORREN pero se pueden reanudar, de la mas reciente hacia atras.
@@ -2854,38 +2925,11 @@ def recent_rows(limite=RECENT_MAX):
     filas = []
     # Se leen mas de los que se van a enseñar porque el mtime miente un poco: asi el
     # recorte final por `ts` de verdad tiene de donde elegir.
+    estado = (notas_sesion, notas_repo, pausadas, spaces)
     for _, sid, cfg in candidatos[:limite * 3]:
-        info = read_transcript(sid, cfg)
-        cwd = info.get("cwd")
-        if not cwd:
-            continue      # sin directorio no se puede reanudar: no sirve de nada enseñarla
-        fila = {
-            "num": 0,     # se numeran abajo, por orden de lo que se ve
-            "name": sin_control(info.get("title") or sid[:8]),
-            "account": sin_control(account_label(cfg) if len(config_dirs()) > 1 else ""),
-            "repo": sin_control(os.path.basename(cwd)),
-            "cwd": cwd,
-            "kind": "interactive",
-            "status": "idle",
-            "sessionId": sid,
-            "pid": 0,
-            "tty": "",
-            "ventana": None,
-            "ts": info.get("ts"),
-            "branch": sin_control(info.get("branch")),
-            "model": short_model(info.get("model")),
-            "effort": info.get("effort"),
-            "title": sin_control(info.get("title")),
-            "prompt": sin_control(info.get("prompt")),
-            "note": "",
-            "paused": sid in pausadas,
-            "space": spaces.get(sid),
-            "recoverable": True,
-            "_cfg": cfg,
-            "startedAt": 0,
-        }
-        fila["note"] = note_for(fila, notas_sesion, notas_repo)
-        filas.append(fila)
+        fila = fila_de_disco(sid, cfg, estado)
+        if fila:
+            filas.append(fila)
 
     filas.sort(key=sort_key, reverse=True)
     filas = filas[:limite]
@@ -3070,6 +3114,40 @@ def plan_de_restauracion(snapshot, vivas):
     return [(g[0].get("space"), g) for g in ventanas + sueltas], ya, sin_dir
 
 
+def faltantes(snapshot, rows):
+    """
+    Las sesiones de la foto que todavia NO han vuelto, como filas para el panel.
+
+    Llevan `faltante` para pintarse en gris y en su propio grupo, al final, y
+    `recoverable` para que Enter las reanude (y para que no lleven el ⚠ ni cuenten como
+    esperando). El escritorio es el de la foto, leido de la ventana al guardar — no el
+    aprendido, que solo existe para las que visitaste.
+
+    Se numeran a continuacion de las vivas: asi teclear un numero sigue llevando a una sola
+    sesion, sin chocar con las de verdad.
+    """
+    vivas = {r["sessionId"] for r in rows}
+    estado = load_state()
+    siguiente = max([r.get("num") or 0 for r in rows] + [0])
+    filas = []
+    for ses in snapshot.get("sesiones", []):
+        if ses["sessionId"] in vivas or not os.path.isdir(ses["cwd"]):
+            continue
+        fila = fila_de_disco(ses["sessionId"], ses.get("cfg"), estado,
+                             cwd=ses["cwd"], nombre=ses.get("name"))
+        if fila:
+            siguiente += 1
+            fila.update({"num": siguiente, "faltante": True,
+                         "space": ses.get("space") or fila.get("space")})
+            filas.append(fila)
+    return filas
+
+
+def con_faltantes(rows):
+    """Las vivas mas las que faltan de la foto. Es la fuente del Feed en `--saved`."""
+    return rows + faltantes(cargar_snapshot(), rows)
+
+
 def abrir_ventana_con_pestañas(ordenes, space=None):
     """
     Una ventana nueva de iTerm con una pestaña por orden, en su escritorio. 0 si fue bien.
@@ -3162,7 +3240,7 @@ def parse_args(argv):
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
             "version": False, "table": False, "recent": None, "save": False,
-            "restore": False}
+            "restore": False, "saved": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3178,6 +3256,8 @@ def parse_args(argv):
             opts["save"] = True
         elif a == "--restore":
             opts["restore"] = True
+        elif a == "--saved":
+            opts["saved"] = True
         elif a == "--recent":
             nxt = argv[i + 1] if i + 1 < len(argv) else None
             if nxt is not None and nxt.isdigit():
@@ -3248,6 +3328,26 @@ def main():
             return 1
         return restaurar_sesiones(snapshot, {r["sessionId"] for r in rows},
                                   solo_mirar=opts["list"])
+
+    if opts["saved"]:
+        # El panel de siempre, mas las de la foto que aun no han vuelto, en gris. Va antes
+        # del "no hay sesiones" por lo mismo que `--restore`: tras un reset puede no quedar
+        # ninguna viva, y ese es el momento en que esta vista sirve.
+        if not cargar_snapshot()["sesiones"]:
+            print(t("sin_snapshot"))
+            return 1
+        rows = con_faltantes(rows)
+        if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
+            render(rows, opts["table"])
+            return 0
+        # La fuente del Feed recalcula las que faltan en CADA refresco: segun vas
+        # reanudando, cada una pasa de gris a su grupo de verdad sin tocar nada.
+        feed = Feed(rows, fuente=lambda: con_faltantes(collect()))
+        try:
+            interactive(feed, opts["table"])
+        finally:
+            feed.stop()
+        return 0
 
     if opts["recent"] is not None:
         # Tambien antes del "no hay sesiones", y por el mismo motivo elevado al cuadrado:
