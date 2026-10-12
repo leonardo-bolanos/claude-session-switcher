@@ -248,6 +248,28 @@ class TestGuardarYRestaurar(unittest.TestCase):
         modo = stat.S_IMODE(os.stat(ccl.SNAPSHOT_FILE).st_mode)
         self.assertEqual(modo & 0o077, 0)
 
+    def test_un_id_que_no_es_un_id_se_descarta(self):
+        """
+        El sessionId acaba dentro de una ruta (`projects/*/<id>.jsonl`): en una foto
+        editada a mano, un `../` o un `*` leerian otro archivo.
+        """
+        ccl.escribir_json(ccl.SNAPSHOT_FILE, {"sesiones": [
+            {"sessionId": "../../etc/passwd", "cwd": "/x"},
+            {"sessionId": "*", "cwd": "/x"},
+            {"sessionId": "2d5cf78c-1a2b-4c3d-9e8f-001122334455", "cwd": "/x"}]})
+        self.assertEqual([x["sessionId"] for x in ccl.cargar_snapshot()["sesiones"]],
+                         ["2d5cf78c-1a2b-4c3d-9e8f-001122334455"])
+
+    def test_lo_que_se_imprime_de_la_foto_va_saneado(self):
+        """La foto se puede editar: un `\\033[2A` en un nombre moveria el cursor."""
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida):
+            ccl.restaurar_sesiones({"sesiones": [
+                self._ses("a", "100", 1, 3) | {"name": "malo\033[2Aaqui"}]}, [],
+                solo_mirar=True)
+        self.assertNotIn("\033[2A", salida.getvalue())
+        self.assertIn("maloaqui", salida.getvalue())
+
     def test_una_foto_rota_no_revienta(self):
         ccl.escribir_json(ccl.SNAPSHOT_FILE, {"sesiones": ["basura", {"sin": "id"},
                                                           {"sessionId": "a", "cwd": "/x"}]})
@@ -2697,6 +2719,39 @@ class TestLecturaDeTeclas(unittest.TestCase):
         for data, esperado in ((b"\x1b[D", "left"), (b"\x1b[C", "right"),
                                (b"\x1b[H", "home"), (b"\x1b[F", "end")):
             self.assertEqual(self._pulsar(data), esperado, repr(data))
+
+    def test_ninguna_tecla_conocida_se_disfraza_de_esc(self):
+        """
+        EL FALLO, en su forma general: antes se leia UN byte tras el corchete y lo que no
+        estaba en la tabla salia como "esc" — que cancela la nota y, sin filtro, cierra
+        ccl. El arreglo de las flechas solo tapo `C`/`D`/`H`/`F`; Supr, Ctrl-← o Inicio en
+        su otra forma seguian cerrando el panel.
+        """
+        for data, esperado in ((b"\x1b[3~", "delete"), (b"\x1b[1;5D", "left"),
+                               (b"\x1b[1;5C", "right"), (b"\x1b[1~", "home"),
+                               (b"\x1b[4~", "end"), (b"\x1bOH", "home"),
+                               (b"\x1bOF", "end"), (b"\x1bOD", "left")):
+            self.assertEqual(self._pulsar(data), esperado, repr(data))
+
+    def test_las_secuencias_se_leen_enteras(self):
+        """
+        Leyendo hasta el byte FINAL y no un solo byte: lo que quedaba en el buffer lo veia
+        la lectura siguiente como texto. Supr dejaba un `~` que arrancaba un filtro.
+        """
+        for data in (b"\x1b[3~", b"\x1b[1;5D", b"\x1b[15~", b"\x1bOH"):
+            _, sobra = self._pulsar(data, n=2, ultimo_timeout=0.3)
+            self.assertIsNone(sobra, f"quedó basura tras {data!r}: {sobra!r}")
+
+    def test_una_secuencia_desconocida_no_es_esc(self):
+        """F5 (`ESC[15~`) no la usa nadie: tiene que ser inocua, no "sal del panel"."""
+        self.assertEqual(self._pulsar(b"\x1b[15~"), "desconocida")
+
+    def test_option_mas_letra_no_es_esc(self):
+        """
+        Con «Left Option: Esc+» —que hace falta para ⌥1-9— ⌥b llega como ESC + b. Era
+        "esc": cerraba ccl al teclear con Option.
+        """
+        self.assertEqual(self._pulsar(b"\x1bb"), "desconocida")
 
     def test_pgup_pgdn_no_dejan_la_tilde_en_el_buffer(self):
         """

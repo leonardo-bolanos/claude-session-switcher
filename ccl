@@ -1757,6 +1757,57 @@ def _mouse_event(boton, fila):
     return "mouse-otro"
 
 
+# Lo que significa cada secuencia CSI que se reconoce. Por el byte FINAL, y para las que
+# acaban en `~`, por su primer parametro. Los modificadores no cambian la tecla: Ctrl-← es
+# `ESC[1;5D`, y sigue siendo izquierda.
+_CSI_FINAL = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
+_CSI_TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn",
+              "3": "delete", "2": "insert"}
+
+
+def _read_csi(fd):
+    """
+    Una secuencia CSI entera (`ESC [`, ya leidos), hasta su byte FINAL, y su nombre.
+
+    **Una que no se reconoce devuelve "desconocida", nunca "esc".** Antes se leia un solo
+    byte tras el corchete y lo que no estaba en la tabla salia como "esc", con dos efectos
+    destructivos —en el editor de notas cancela, en el panel sin filtro sale de ccl— y uno
+    sucio: el resto de la secuencia se quedaba en el buffer. Supr (`ESC[3~`) dejaba un `~`
+    que arrancaba un filtro; Ctrl-← (`ESC[1;5D`) dejaba `;5D`.
+
+    Se lee hasta el byte final (0x40-0x7E) porque es lo unico que dice donde ACABA la
+    secuencia, sea cual sea su longitud. Con tope, para que basura sin final no se coma
+    para siempre lo que venga detras.
+    """
+    if not select.select([fd], [], [], 0.05)[0]:
+        return "esc"
+    primero = os.read(fd, 1).decode("utf-8", "ignore")
+    if primero == "<":
+        return _read_mouse_sgr(fd)
+    if primero == "M":
+        return _read_mouse_x10(fd)
+    cuerpo = primero
+    for _ in range(16):
+        if "@" <= cuerpo[-1] <= "~" and not ("0" <= cuerpo[-1] <= "?"):
+            break   # byte final: 0x40-0x7E, que no es de parametro (0x30-0x3F)
+        if not select.select([fd], [], [], 0.05)[0]:
+            return "desconocida"
+        cuerpo += os.read(fd, 1).decode("utf-8", "ignore")
+    else:
+        return "desconocida"
+    final, params = cuerpo[-1], cuerpo[:-1]
+    if final == "~":
+        return _CSI_TILDE.get(params.split(";")[0], "desconocida")
+    return _CSI_FINAL.get(final, "desconocida")
+
+
+def _read_ss3(fd):
+    """`ESC O x`: las flechas e Inicio/Fin en modo "aplicacion". Mismo criterio que CSI."""
+    if not select.select([fd], [], [], 0.05)[0]:
+        return "desconocida"
+    return _CSI_FINAL.get(os.read(fd, 1).decode("utf-8", "ignore"), "desconocida")
+
+
 def _read_mouse_sgr(fd):
     """
     Modo SGR (1006): ESC [ < boton ; columna ; fila (M|m).
@@ -1870,30 +1921,17 @@ def _read_key(timeout=None):
             if not select.select([fd], [], [], 0.05)[0]:
                 return "esc"
             # Byte a byte, no os.read(fd, 2): hay que decidir con el primero si es una
-            # secuencia CSI ('[') o un Alt-<digito>, que no lleva corchete.
+            # secuencia CSI ('['), una SS3 ('O') o un Alt-<digito>, que no lleva corchete.
             nxt = os.read(fd, 1).decode("utf-8", "ignore")
             if nxt.isdigit():
                 return "alt-" + nxt   # Option-N (con "Esc+") o Cmd-N remapeado en iTerm
+            if nxt == "O":
+                return _read_ss3(fd)
             if nxt != "[":
-                return "esc"
-            if not select.select([fd], [], [], 0.05)[0]:
-                return "esc"
-            rest = os.read(fd, 1).decode("utf-8", "ignore")
-            if rest == "<":
-                return _read_mouse_sgr(fd)
-            if rest == "M":
-                return _read_mouse_x10(fd)
-            # `C`/`D` (derecha/izquierda) tienen que salir con nombre propio. Cayendo
-            # en el "esc" de por defecto pasaban dos cosas malas: en el editor de notas
-            # cancelaban lo escrito, y en el panel sin filtro **cerraban ccl**.
-            key = {"A": "up", "B": "down", "C": "right", "D": "left",
-                   "H": "home", "F": "end", "5": "pgup", "6": "pgdn"}.get(rest, "esc")
-            # PgUp/PgDn son ESC [ 5 ~ / ESC [ 6 ~ : hay que comerse la tilde. Sin esto
-            # quedaba en el buffer y la lectura siguiente la veia como un '~' escrito,
-            # que arrancaba un filtro por "~" al pulsar PgDn.
-            if key in ("pgup", "pgdn") and select.select([fd], [], [], 0.05)[0]:
-                os.read(fd, 1)
-            return key
+                # ⌥ + letra con «Left Option: Esc+» —que hace falta para ⌥1-9— llega como
+                # ESC + letra. Era "esc": cancelaba la nota y, sin filtro, CERRABA ccl.
+                return "desconocida"
+            return _read_csi(fd)
         if ch in ("\r", "\n"):
             return "enter"
         if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
@@ -2490,8 +2528,9 @@ def interactive(feed, tabla=False):
             k = read_key(timeout=0.4)  # corto: detecta el refresco de fondo sin frenar teclas
             if k is None:
                 continue
-            if k.startswith("mouse-"):
-                continue   # soltar el boton, o un boton que no usamos: ni repintar
+            if k.startswith("mouse-") or k == "desconocida":
+                continue   # soltar el boton, un boton que no usamos o una tecla sin uso: ni
+                           # repintar, ni borrar el aviso que hubiera en la cabecera
             if not mouse and (k.startswith("click:") or k in ("wheelup", "wheeldn")):
                 continue   # CCL_MOUSE=0 significa sin raton, aunque algo los mande igual
             dirty = True   # cualquier tecla cambia algo que hay que repintar
@@ -2523,6 +2562,9 @@ def interactive(feed, tabla=False):
                     editando_pos = 0
                 elif k == "end":
                     editando_pos = len(editando)
+                elif k == "delete":
+                    # Supr: borra lo que hay DETRAS del cursor (el ⌫ borra lo de delante)
+                    editando = editando[:editando_pos] + editando[editando_pos + 1:]
                 elif k == "back":
                     # borra lo de DELANTE del cursor, no el ultimo caracter del texto
                     if editando_pos:
@@ -3078,8 +3120,12 @@ def guardar_sesiones(rows):
 def cargar_snapshot():
     """La foto guardada, saneada. Un archivo roto o a mano no puede tumbar nada."""
     datos = leer_json(SNAPSHOT_FILE, {})
+    # El sessionId acaba DENTRO de una ruta (`projects/*/<id>.jsonl`) y de un comando: en
+    # una foto editada a mano, un `../` o un `*` leerian otro archivo. Los de Claude Code
+    # son UUID; se admite cualquier cosa de letras, digitos y guiones, y nada mas.
     sesiones = [x for x in (datos.get("sesiones") or [])
                 if isinstance(x, dict) and isinstance(x.get("sessionId"), str)
+                and re.fullmatch(r"[A-Za-z0-9_-]+", x["sessionId"])
                 and isinstance(x.get("cwd"), str)]
     return {"guardado": datos.get("guardado") if isinstance(datos.get("guardado"), str)
             else None, "sesiones": sesiones}
@@ -3192,8 +3238,10 @@ def restaurar_sesiones(snapshot, vivas, solo_mirar=False):
             n=len(snapshot.get("sesiones", []))))
     fallos = 0
     for space, grupo in plan:
+        # sin_control: la foto es un archivo que se puede editar, y lo que se pinta viene
+        # de fuera — la misma regla que en el panel
         print(t("restaurando_ventana", space=space or "?", n=len(grupo),
-                nombres=", ".join(x["name"] for x in grupo)))
+                nombres=", ".join(sin_control(str(x.get("name"))) for x in grupo)))
         if not solo_mirar and abrir_ventana_con_pestañas(
                 [orden_reanudar(x) for x in grupo], space) != 0:
             fallos += 1
@@ -3201,7 +3249,7 @@ def restaurar_sesiones(snapshot, vivas, solo_mirar=False):
         print(t("ya_vivas", n=len(ya)))
     if sin_dir:
         print(t("sin_directorio", n=len(sin_dir),
-                rutas=", ".join(x["cwd"] for x in sin_dir)))
+                rutas=", ".join(sin_control(x["cwd"]) for x in sin_dir)))
     if not solo_mirar and total:
         print(t("restaurado_resumen", n=total, v=len(plan)))
     return 1 if fallos else 0

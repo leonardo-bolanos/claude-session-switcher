@@ -976,6 +976,25 @@ class TestNotas(unittest.TestCase):
             p.enviar(b"\x7f", b"\r")         # borrar la X, no la f
             self.assertIn("✎ abcdef", p.ultima())
 
+    def test_supr_borra_lo_de_detras_del_cursor(self):
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"abcXdef")
+            p.enviar(b"\033[D" * 4)          # cursor justo DELANTE de la X
+            p.enviar(b"\033[3~", b"\r")      # Supr: se va la X
+            self.assertIn("✎ abcdef", p.ultima())
+
+    def test_ninguna_tecla_rara_cancela_la_nota(self):
+        """
+        El mismo fallo que la flecha, en su forma general: lo que no estaba en la tabla
+        salia como "esc". Supr, Ctrl-←, ⌥b, F5… cada una tiraba lo escrito.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"no me borres")
+            for tecla in (b"\033[1;5D", b"\033b", b"\033[15~", b"\033OH"):
+                p.enviar(tecla)
+            self.assertIn("nota de", p.barra(), "una tecla rara cerró el editor")
+            self.assertIn("no me borres", p.barra().replace("▏", ""))
+
     def test_inicio_y_fin(self):
         with con_panel() as p:
             p.enviar(b"\x0e", b"mundo")
@@ -1090,6 +1109,15 @@ class TestVistaDeTabla(unittest.TestCase):
             p.enviar(b"\033[D")
             p.enviar(b"\033[B")              # si murió, esto lanza OSError
             self.assertEqual(p.cursor(), "beta")
+
+    def test_ninguna_tecla_rara_cierra_el_panel(self):
+        """Supr sin filtro cerraba ccl entero, igual que la flecha: llegaba como "esc"."""
+        with con_panel() as p:
+            for tecla in (b"\033[3~", b"\033[1;5D", b"\033b", b"\033[15~"):
+                p.enviar(tecla)
+            p.enviar(b"\033[B")              # si murió, esto lanza OSError
+            self.assertEqual(p.cursor(), "beta")
+            self.assertNotIn("filtro:", p.barra(), "quedó basura que arrancó un filtro")
 
     def test_ctrl_t_vuelve_a_la_vista_de_dos_lineas(self):
         with con_panel() as p:

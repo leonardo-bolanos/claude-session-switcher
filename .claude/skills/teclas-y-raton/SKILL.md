@@ -1,6 +1,6 @@
 ---
 name: teclas-y-raton
-description: Diseño de la entrada del panel TUI de ccl. Por qué ninguna acción puede colgar de una letra suelta (se comería el filtrado), por qué Cmd no existe para un programa de terminal y el salto a la N-ésima es ⌥1..9, por qué tty.setraw se llama con termios.TCSANOW (con TCSAFLUSH de 5 teclas sobrevivía 1), cómo se sintetiza el doble clic y por qué hay que descartar el release, por qué el mapa fila→sesión se construye pintando y no calculando, el apagado del ratón antes de soltar la pantalla alternativa, y por qué la ayuda se pagina. Usar al añadir una tecla o acción, al tocar read_key, el parseo de secuencias de escape, el soporte de ratón o la ayuda.
+description: Diseño de la entrada del panel TUI de ccl. Por qué ninguna acción puede colgar de una letra suelta (se comería el filtrado), por qué Cmd no existe para un programa de terminal y el salto a la N-ésima es ⌥1..9, por qué tty.setraw se llama con termios.TCSANOW (con TCSAFLUSH de 5 teclas sobrevivía 1), cómo se sintetiza el doble clic y por qué hay que descartar el release, por qué el mapa fila→sesión se construye pintando y no calculando, el apagado del ratón antes de soltar la pantalla alternativa, por qué la ayuda se pagina, y por qué una secuencia desconocida es "desconocida" y nunca "esc" (Supr, Ctrl-← o ⌥+letra cerraban el panel). Usar al añadir una tecla o acción, al tocar read_key, el parseo de secuencias de escape, el soporte de ratón o la ayuda.
 ---
 
 ## Las teclas que NO pueden ser letras
@@ -77,6 +77,21 @@ sobra se va por el borde SUPERIOR: se pierde el principio y **no hay ningun avis
 algo. Si añades secciones, `TestAyuda` comprueba que ninguna pagina desborde la altura y que al
 partir no se pierda ninguna linea. Los tests que buscan un texto en la ayuda tienen que recorrer
 **todas** las paginas (`_texto_completo`), no solo `render_help(...)`.
+
+**Una secuencia que no se reconoce es `"desconocida"`, NUNCA `"esc"`.** `esc` es destructivo en
+los dos sitios donde llega: en el editor de notas cancela, en el panel sin filtro **sale de ccl**.
+Mientras lo no mapeado salia como `esc`, la flecha izquierda tiraba la nota, y despues —con las
+flechas ya arregladas— Supr, Ctrl-← (`ESC[1;5D`), Inicio (`ESC[1~`, `ESC O H`) y ⌥+letra seguian
+cerrando el panel. Arreglar tecla a tecla se quedo corto; lo que lo cierra es que el valor por
+defecto sea inocuo. Las tablas son `_CSI_FINAL` y `_CSI_TILDE`.
+
+**Y una CSI se lee hasta su byte FINAL** (0x40-0x7E), en `_read_csi()`: leyendo un solo byte tras
+el corchete, el resto se quedaba en el buffer y la lectura siguiente lo veia como texto —Supr
+dejaba un `~` que arrancaba un filtro—. Mismo fallo que ya habia tenido PgDn, en general.
+
+**⌥+letra con «Left Option: Esc+» llega como `ESC` + letra.** Esa opcion hace falta para ⌥1-9,
+asi que quien use ⌥1 tiene Option convertido en Esc para todo lo demas: cualquier ⌥+letra pasa
+por aqui.
 
 **Al parsear una secuencia de escape hay que leer byte a byte.** Antes hacia `os.read(fd, 2)`
 de golpe, lo que impedia distinguir `ESC`+digito (sin corchete) de `ESC[`. De paso: `PgUp`/`PgDn`

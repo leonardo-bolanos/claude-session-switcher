@@ -269,9 +269,20 @@ mientras `C`/`D` no estuvieron en la tabla, la flecha izquierda tiraba la nota q
 escribiendo y, fuera del editor, **cerraba ccl entero** — reportado como "le doy a la flecha y se
 sale".
 
-La leccion no es de esas dos teclas: **cualquier tecla que no se mapee acaba disfrazada de `esc`**.
-Si añades soporte para una nueva (F1, Insert, `ESC[1;5D` de Ctrl-←), o la mapeas o hereda ese
-comportamiento.
+La leccion no era de esas dos teclas, y el primer arreglo lo demostro al quedarse corto: mapeo
+`C`/`D`/`H`/`F` y dejo Supr, Ctrl-←, Inicio en su otra forma y ⌥+letra cerrando el panel igual.
+Lo encontro la revision del cierre. El arreglo de verdad esta en `_read_csi()`:
+
+- **Se lee hasta el byte FINAL** (0x40-0x7E), no un solo byte tras el corchete. Es lo unico que
+  dice donde acaba la secuencia: leyendo uno, el resto quedaba en el buffer — Supr (`ESC[3~`)
+  dejaba un `~` que arrancaba un filtro, Ctrl-← (`ESC[1;5D`) dejaba `;5D`.
+- **Lo que no se reconoce es `"desconocida"`, nunca `"esc"`**, y el bucle la ignora sin repintar.
+  `esc` es destructivo en los dos sitios donde llega; una tecla sin uso tiene que ser inocua.
+- **⌥+letra llega como `ESC` + letra** con «Left Option: Esc+», que hace falta para ⌥1-9. Tambien
+  era `esc`: cerraba ccl al escribir con Option.
+- **`ESC O x` (SS3)** es como mandan flechas e Inicio/Fin en modo aplicacion; se mapea igual.
+
+Si añades una tecla, se añade a `_CSI_FINAL` / `_CSI_TILDE` y ya; lo que no este ahi es inocuo.
 
 El cursor del editor se pinta **donde esta** (`editando[:pos] + "▏" + editando[pos:]`), no siempre
 al final: si no, moverlo no se ve y parece que la tecla no hace nada.
@@ -349,6 +360,13 @@ por delante de v25.10.0. Sin esto, `ccl -w` fallaba desde el atajo global y func
 terminal, que es el peor sintoma posible — parece cosa del atajo y no lo es. La alternativa
 (`zsh -ic`) costaba ~0,7 s por pulsacion; `zsh -lc` no sirve, porque nvm se carga en `.zshrc` y
 un shell de login no lo lee.
+
+**`claude --resume <id>` conserva el sessionId.** Es la premisa entera de `--saved` y
+`--restore`: si una sesion reanudada naciera con un id nuevo, la foto nunca la veria volver —
+`--restore` la duplicaria cada vez y `--saved` la dejaria en gris para siempre. Verificado el
+2026-10-12 en Claude Code 2.1.292: cuatro sesiones de la foto arrancaron DESPUES de guardarla
+(`startedAt` posterior) con el mismo id. Si algun dia cambia, el sintoma es ese: grises que no se
+van tras reanudar. (Existe `--fork-session` para lo contrario; `ccl` no lo usa.)
 
 **Una actualizacion de Claude Code VACIA el registro de sesiones.** Verificado el 2026-08-06 al
 pasar de 2.1.220 a 2.1.224: tres sesiones seguian corriendo, `claude agents --json` devolvia `[]`,
