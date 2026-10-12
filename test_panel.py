@@ -1145,22 +1145,23 @@ class TestVistaDeTabla(unittest.TestCase):
             self.assertIn("estado", p.ultima())
             self.assertNotIn("ESPERANDO (4)", p.ultima())
 
-    @unittest.skipUnless(hasattr(termios, "VSTATUS"), "VSTATUS solo existe en BSD/macOS")
     def test_ctrl_t_no_se_lo_queda_el_terminal(self):
         """
-        EL FALLO, que cazo el runner de macOS del CI: Ctrl-T es el caracter STATUS del
-        terminal en BSD. `read_key` entra en modo raw en CADA lectura y lo restaura al
-        salir, asi que entre lectura y lectura el tty esta en modo normal y la disciplina
-        de linea se comia la tecla — imprimiendo ademas su "load: 0.60 cmd: python…"
-        encima del panel. Es una carrera: en una maquina rapida casi siempre se acierta.
+        EL FALLO, que cazo el runner de macOS del CI dos veces: `read_key` entra en modo
+        raw en CADA lectura y lo restaura al salir, asi que entre lectura y lectura la
+        disciplina de linea procesa las teclas. Ctrl-T (VSTATUS) se perdia imprimiendo su
+        "load: 0.60 cmd: python…" encima del panel; Ctrl-O (VDISCARD) se perdia y ademas
+        congelaba la pantalla. Es una carrera: en una maquina rapida casi siempre se acierta.
 
         Se comprueba el AJUSTE y no la carrera: el maestro del pty ve los atributos del
-        esclavo, y un test que dependiera del momento exacto seria intermitente.
+        esclavo, y un test que dependiera del momento exacto seria intermitente. Que el
+        ajuste baste lo prueba `TestEntreLecturas`, sin carrera.
         """
         with con_panel() as p:
-            cc = termios.tcgetattr(p.fd)[6]
-            self.assertEqual(cc[termios.VSTATUS], b"\xff",
-                             "el panel deberia desactivar Ctrl-T como tecla de status")
+            lflag = termios.tcgetattr(p.fd)[3]
+            for bandera in ("ICANON", "IEXTEN", "ECHO"):
+                self.assertFalse(lflag & getattr(termios, bandera),
+                                 f"el panel deberia apagar {bandera} mientras dura")
             p.enviar(b"\x14")
             self.assertNotIn("load:", p.bruto, "el kernel contesto al Ctrl-T")
 
@@ -1170,12 +1171,12 @@ class TestVistaDeTabla(unittest.TestCase):
         antes = termios.tcgetattr(p.fd)[6][:]
         p.enviar(b"q")
         p._drenar(0.5 * FACTOR_ESPERA)
-        despues = termios.tcgetattr(p.fd)[6][:]
+        despues = termios.tcgetattr(p.fd)
         p.cerrar()
-        self.assertEqual(antes[termios.VINTR], despues[termios.VINTR])
-        if hasattr(termios, "VSTATUS"):
-            self.assertNotEqual(despues[termios.VSTATUS], b"\xff",
-                                "el panel dejo Ctrl-T desactivado al salir")
+        self.assertEqual(antes[termios.VINTR], despues[6][termios.VINTR])
+        for bandera in ("ICANON", "IEXTEN", "ECHO"):
+            self.assertTrue(despues[3] & getattr(termios, bandera),
+                            f"el panel dejo {bandera} apagado al salir")
 
     def test_no_cambia_de_vista_mientras_escribes_la_nota(self):
         """El editor se queda el teclado: `Ctrl-T` no puede cambiar la vista debajo."""

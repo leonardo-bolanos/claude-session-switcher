@@ -1850,42 +1850,50 @@ def _read_mouse_x10(fd):
     return _mouse_event(boton & 0x43, fila)
 
 
-def _sin_tecla_status():
+def _preparar_tty(fd=None):
     """
-    Desactiva Ctrl-T como caracter STATUS del terminal mientras dura el panel.
+    Apaga la edicion de linea del terminal (ICANON, IEXTEN, ECHO) mientras dura el panel.
 
-    En macOS y los BSD, Ctrl-T es `VSTATUS`: la disciplina de linea lo intercepta, imprime
-    su `load: 0.60  cmd: python…` y manda SIGINFO. Nunca llega al programa.
+    `read_key` entra en raw en CADA lectura y lo restaura al salir, asi que entre lectura y
+    lectura —mientras el panel repinta o refresca— el tty esta en modo normal, y ahi la
+    disciplina de linea procesa las teclas al llegar, antes de que nadie las lea. Medido en
+    un pty, una tecla que cae en esa ventana:
 
-    Y no basta con el modo raw, porque `read_key` entra en raw en CADA lectura y lo
-    restaura al salir: entre lectura y lectura el tty esta en modo normal, y una tecla que
-    caiga en esa ventana se la come el kernel — encima escribiendo su linea sobre el panel.
-    Es una carrera, no un fallo determinista: en una maquina rapida se acierta casi
-    siempre. La cazo el runner de macOS del CI, que es mas lento y por eso caia siempre.
+    - `Ctrl-O` es VDISCARD: se la come Y DESCARTA TODA LA SALIDA hasta el siguiente Ctrl-O.
+      El panel se queda congelado en el ultimo repintado, como si ccl se hubiera colgado.
+    - `Ctrl-T` es VSTATUS: imprime `load: 0.60  cmd: python…` encima del panel.
+    - `Ctrl-R` es VREPRINT: escribe `^R` encima. Retroceso, Ctrl-W y Ctrl-U editan la linea
+      del kernel y no llegan; Ctrl-U borra ademas lo tecleado antes que el.
+    - Con ECHO, cualquier letra se pinta sobre el panel.
 
-    Devuelve los atributos previos para restaurarlos al salir, o None si no habia nada que
-    tocar (Linux no tiene VSTATUS, y la salida puede no ser un terminal).
+    Es una carrera: en una maquina rapida casi siempre se acierta. La cazo dos veces el
+    runner de macOS del CI, que es mas lento — primero con Ctrl-T y luego con Ctrl-O.
+    Apagar las teclas una a una (lo que se hizo con VSTATUS) se quedo corto por eso mismo.
+
+    ISIG se queda: Ctrl-C y Ctrl-Z entre lecturas siguen siendo señales, como siempre.
+
+    Devuelve los atributos previos para `_restaurar_tty`, o None si no es un terminal.
     """
-    if not hasattr(termios, "VSTATUS") or not sys.stdin.isatty():
-        return None
+    if fd is None:
+        if not sys.stdin.isatty():
+            return None
+        fd = sys.stdin.fileno()
     try:
-        previos = termios.tcgetattr(sys.stdin.fileno())
-        nuevos = termios.tcgetattr(sys.stdin.fileno())
-        nuevos[6] = list(nuevos[6])
-        # 0xff es _POSIX_VDISABLE en BSD/macOS: el valor que apaga un caracter especial.
-        nuevos[6][termios.VSTATUS] = b"\xff"
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, nuevos)
+        previos = termios.tcgetattr(fd)
+        nuevos = termios.tcgetattr(fd)
+        nuevos[3] &= ~(termios.ICANON | termios.IEXTEN | termios.ECHO)
+        termios.tcsetattr(fd, termios.TCSANOW, nuevos)
         return previos
     except (termios.error, ValueError):
-        return None   # sin poder tocarlo se sigue: se pierde Ctrl-T, no el panel
+        return None   # sin poder tocarlo se sigue: vuelve la carrera, no se pierde el panel
 
 
-def _restaurar_tty(attrs):
-    """Deshace `_sin_tecla_status`. Con None no hay nada que hacer."""
+def _restaurar_tty(attrs, fd=None):
+    """Deshace `_preparar_tty`. Con None no hay nada que hacer."""
     if attrs is None:
         return
     try:
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, attrs)
+        termios.tcsetattr(sys.stdin.fileno() if fd is None else fd, termios.TCSANOW, attrs)
     except (termios.error, ValueError):
         pass
 
@@ -2344,7 +2352,7 @@ def interactive(feed, tabla=False):
     mouse = os.environ.get("CCL_MOUSE", "1") != "0"
     _log("panel arranca", "ccl", __version__, "pid", os.getpid(),
          "TERM=%s" % os.environ.get("TERM"), "raton" if mouse else "sin raton")
-    attrs_previos = _sin_tecla_status()
+    attrs_previos = _preparar_tty()
     sys.stdout.write("\033[?1049h\033[?25l")  # pantalla alternativa, sin cursor
     if mouse:
         sys.stdout.write(MOUSE_ON)

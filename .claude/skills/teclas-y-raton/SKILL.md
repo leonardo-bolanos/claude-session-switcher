@@ -1,6 +1,6 @@
 ---
 name: teclas-y-raton
-description: Diseño de la entrada del panel TUI de ccl. Por qué ninguna acción puede colgar de una letra suelta (se comería el filtrado), por qué Cmd no existe para un programa de terminal y el salto a la N-ésima es ⌥1..9, por qué tty.setraw se llama con termios.TCSANOW (con TCSAFLUSH de 5 teclas sobrevivía 1), cómo se sintetiza el doble clic y por qué hay que descartar el release, por qué el mapa fila→sesión se construye pintando y no calculando, el apagado del ratón antes de soltar la pantalla alternativa, por qué la ayuda se pagina, y por qué una secuencia desconocida es "desconocida" y nunca "esc" (Supr, Ctrl-← o ⌥+letra cerraban el panel). Usar al añadir una tecla o acción, al tocar read_key, el parseo de secuencias de escape, el soporte de ratón o la ayuda.
+description: Diseño de la entrada del panel TUI de ccl. Por qué ninguna acción puede colgar de una letra suelta (se comería el filtrado), por qué Cmd no existe para un programa de terminal y el salto a la N-ésima es ⌥1..9, por qué tty.setraw se llama con termios.TCSANOW (con TCSAFLUSH de 5 teclas sobrevivía 1), por qué el panel apaga ICANON/IEXTEN/ECHO mientras dura (entre lecturas el kernel se comía Ctrl-O congelando la pantalla, Ctrl-T pintaba `load:` encima), cómo se sintetiza el doble clic y por qué hay que descartar el release, por qué el mapa fila→sesión se construye pintando y no calculando, el apagado del ratón antes de soltar la pantalla alternativa, por qué la ayuda se pagina, y por qué una secuencia desconocida es "desconocida" y nunca "esc" (Supr, Ctrl-← o ⌥+letra cerraban el panel). Usar al añadir una tecla o acción, al tocar read_key, el parseo de secuencias de escape, el soporte de ratón o la ayuda.
 ---
 
 ## Las teclas que NO pueden ser letras
@@ -16,14 +16,20 @@ Las ocupadas hasta ahora: `Ctrl-R` refrescar, `Ctrl-N` nota, `Ctrl-P` pausar, `C
 (`test_ninguna_accion_es_una_letra_suelta`), asi que documentar la tecla y añadirla es el mismo
 gesto: una accion sin fila en `HELP_EN`/`HELP_ES` no la vigila nadie.
 
-**Antes de elegir una tecla de control, mira si el terminal ya la usa** (`stty -a`). `Ctrl-T` es
-`VSTATUS` en macOS/BSD: la disciplina de linea lo intercepta, escribe su `load: 0.60  cmd: python…`
-encima del panel y manda SIGINFO, y la tecla no llega nunca. El modo raw NO basta, porque
-`read_key` entra en raw en cada lectura y lo restaura al salir: entre lectura y lectura el tty
-esta en modo normal. Por eso `interactive()` desactiva `VSTATUS` mientras dura el panel
-(`_sin_tecla_status`) y lo restaura al salir. Y ojo con como se prueba: es una carrera, asi que un
-test que dependa del momento exacto sale intermitente — se comprueba el AJUSTE leyendo los
-atributos desde el maestro del pty, que ve los del esclavo.
+**Las teclas de control son del kernel entre lectura y lectura.** El modo raw NO basta, porque
+`read_key` entra en raw en cada lectura y lo restaura al salir: mientras el panel repinta, el tty
+esta en modo normal y la disciplina de linea procesa lo que llega. En macOS cuatro de las teclas
+del panel son caracteres especiales (`stty -a`): `Ctrl-T` VSTATUS (pinta `load:` encima),
+`Ctrl-O` VDISCARD (se la come y **congela la salida**), `Ctrl-R` VREPRINT, y el retroceso VERASE.
+Por eso `interactive()` llama a `_preparar_tty()`, que apaga ICANON, IEXTEN y ECHO mientras dura
+el panel, y no a una lista de teclas: la lista ya se quedo corta una vez (solo apagaba VSTATUS y
+cayo `Ctrl-O`). Una tecla nueva no necesita nada mas, pero si va a ser una de control, que no sea
+`Ctrl-C`/`Ctrl-Z`/`Ctrl-\`: ISIG sigue encendido entre lecturas y esas son señales.
+
+Y ojo con como se prueba: en el panel es una carrera, asi que un test que dependa del momento
+exacto sale intermitente. `TestEntreLecturas` la quita escribiendo las teclas ANTES de leer, que
+es justo la ventana; y tiene que DRENAR el maestro, porque el eco del caso de control llena la
+cola de salida y el `TCSADRAIN` de `read_key` espera a que salga, para siempre.
 
 **La barra de estado se recorta al ancho.** Cada atajo nuevo la alarga; sin `clip` se envolvia en
 ventanas estrechas y empujaba el panel una linea hacia arriba en cada repintado. Si añades uno

@@ -87,14 +87,22 @@ las columnas a la vez las vuelve ilegibles antes de que sobre sitio.
 **La antiguedad ocupa 13, no 9.** Una sesion vieja pone `03-aug 17:52`, doce columnas; con nueve
 se recortaba a `03-aug 1`, que no dice ni el dia entero ni la hora.
 
-**`Ctrl-T` hay que quitarselo al terminal, no basta con el modo raw.** En macOS y los BSD es
-`VSTATUS`: la disciplina de linea lo intercepta, imprime su `load: 0.60  cmd: python…` **encima
-del panel** y manda SIGINFO. Nunca llega al programa. Y `read_key` entra en raw en CADA lectura y
-lo restaura al salir, asi que entre lectura y lectura el tty esta en modo normal — una tecla que
-caiga en esa ventana se la come el kernel. Es una CARRERA: en una maquina rapida se acierta casi
-siempre, y por eso paso en local y fallo en el CI, cuyo runner de macOS es mas lento y caia
-siempre. `_sin_tecla_status()` lo desactiva mientras dura el panel y `_restaurar_tty()` lo
-devuelve. Si añades una tecla, mira antes si el terminal ya la usa (`stty -a`).
+**Entre lectura y lectura el kernel edita la linea, y hay que quitarselo.** `read_key` entra en
+raw en CADA lectura y lo restaura al salir, asi que mientras el panel repinta o refresca el tty
+esta en modo normal, y una tecla que cae en esa ventana la procesa la disciplina de linea antes de
+que nadie la lea. Medido en un pty: `Ctrl-T` (VSTATUS) imprime su `load: 0.60  cmd: python…`
+encima del panel; `Ctrl-R` (VREPRINT) pinta un `^R`; el retroceso, `Ctrl-W` y `Ctrl-U` editan la
+linea del kernel y no llegan; con ECHO cualquier letra se pinta sobre el panel. Y el peor,
+**`Ctrl-O` es VDISCARD: se come la tecla y DESCARTA TODA LA SALIDA** hasta el siguiente `Ctrl-O`
+— el panel se queda congelado y parece que ccl se ha colgado.
+
+Es una CARRERA: en una maquina rapida se acierta casi siempre, y por eso pasaba en local y la
+cazo dos veces el runner de macOS del CI, que es mas lento — primero con `Ctrl-T` y luego con
+`Ctrl-O`. El primer arreglo apagaba solo VSTATUS, y se quedo corto por lo mismo que se quedaron
+cortas las flechas: tecla a tecla siempre falta una. `_preparar_tty()` apaga ICANON, IEXTEN y
+ECHO mientras dura el panel (ISIG se queda: Ctrl-C y Ctrl-Z siguen siendo señales) y
+`_restaurar_tty()` lo devuelve. `TestEntreLecturas` lo prueba SIN carrera: escribe las teclas
+antes de leer, que es justo esa ventana, y lleva su caso de control.
 
 **El fondo de la fila del cursor hay que REARMARLO tras cada reset.** El texto ya viene
 coloreado y `c()` cierra cada trozo con `\033[0m`, que apaga tambien el fondo: sin rearmarlo, la

@@ -19,9 +19,11 @@ import io
 import json
 import os
 import re
+import select
 import signal
 import stat
 import tempfile
+import termios
 import threading
 import time
 import unittest
@@ -2842,6 +2844,88 @@ class TestLecturaDeTeclas(unittest.TestCase):
 
 
 # ────────────────────────── ayuda y teclas reservadas ──────────────────────────
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestEntreLecturas(unittest.TestCase):
+    """
+    Lo que se teclea MIENTRAS el panel repinta cae con el tty fuera de raw: `read_key`
+    entra en raw al leer y lo deshace al salir. Ahi la disciplina de linea procesa cada
+    tecla al llegar. En el panel es una carrera; aqui se escribe ANTES de leer a proposito,
+    que es exactamente esa ventana, y el resultado deja de depender del momento.
+    """
+
+    ESPERADAS = ["recuperables", "refresh", "table", "x", "back"]
+
+    def _teclear_entre_lecturas(self, preparar):
+        """Las teclas que `read_key` acaba viendo, y lo que llega a la pantalla despues."""
+        def drenar():
+            # Sin vaciar el maestro, el eco del kernel se queda en la cola de salida y el
+            # TCSADRAIN con que `read_key` restaura el modo espera a que salga: para siempre.
+            salida = b""
+            while select.select([maestro], [], [], 0.3)[0]:
+                salida += os.read(maestro, 4096)
+            return salida
+
+        maestro, esclavo = os.openpty()
+        stdin_real = ccl.sys.stdin
+        try:
+            if preparar:
+                ccl._preparar_tty(esclavo)
+            os.write(maestro, b"\x0f\x12\x14x\x7f")    # Ctrl-O, Ctrl-R, Ctrl-T, x, retroceso
+            time.sleep(0.1)
+            pantalla = drenar()
+            ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
+            leidas = []
+            while True:
+                k = ccl.read_key(timeout=0.3)
+                if k is None:
+                    break
+                leidas.append(k)
+            os.write(esclavo, b"REPINTADO")
+            return leidas, pantalla + drenar()
+        finally:
+            if ccl.sys.stdin is not stdin_real:
+                ccl.sys.stdin.close()
+            ccl.sys.stdin = stdin_real
+            os.close(maestro)
+            os.close(esclavo)
+
+    def test_sin_preparar_el_kernel_se_las_come(self):
+        """
+        El control: sin esto, el test de abajo podria pasar sin medir nada. En macOS no
+        llega ninguna; en Linux, donde Ctrl-T y Ctrl-O no son especiales, llegan algunas.
+        """
+        leidas, _ = self._teclear_entre_lecturas(preparar=False)
+        self.assertNotEqual(leidas, self.ESPERADAS)
+
+    def test_preparado_llegan_todas_y_la_pantalla_queda_limpia(self):
+        """
+        EL FALLO, que cazo el runner de macOS del CI: Ctrl-O es VDISCARD, y ademas de
+        comerse la tecla DESCARTA LA SALIDA — el panel se quedaba congelado en el
+        repintado anterior. Ctrl-T escribia su `load:` encima y Ctrl-R un `^R`.
+        """
+        leidas, pantalla = self._teclear_entre_lecturas(preparar=True)
+        self.assertEqual(leidas, self.ESPERADAS)
+        self.assertEqual(pantalla, b"REPINTADO",
+                         "el kernel pinto algo encima, o se trago la salida")
+
+    def test_restaurar_lo_deja_como_estaba(self):
+        maestro, esclavo = os.openpty()
+        try:
+            antes = termios.tcgetattr(esclavo)
+            previos = ccl._preparar_tty(esclavo)
+            self.assertFalse(termios.tcgetattr(esclavo)[3] & termios.ICANON)
+            ccl._restaurar_tty(previos, esclavo)
+            despues = termios.tcgetattr(esclavo)
+            # lflag entero no: al quitar ICANON el kernel de macOS enciende PENDIN por su
+            # cuenta, y ese bit no es nuestro.
+            tocados = termios.ICANON | termios.IEXTEN | termios.ECHO | termios.ISIG
+            self.assertEqual(despues[3] & tocados, antes[3] & tocados)
+            self.assertEqual(despues[:3] + despues[4:], antes[:3] + antes[4:])
+        finally:
+            os.close(maestro)
+            os.close(esclavo)
 
 
 class TestAyuda(unittest.TestCase):
