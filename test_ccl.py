@@ -156,6 +156,37 @@ class TestNumeracion(unittest.TestCase):
         n = ccl.assign_numbers(self.s("a"))
         self.assertEqual(n["a"], 1)
 
+    # ── la misma conversacion en dos procesos ──
+
+    @staticmethod
+    def dos_procesos():
+        """`claude --resume` sobre una conversacion que seguia abierta: mismo sessionId."""
+        return [{"sessionId": "x", "pid": 200, "startedAt": 2000},   # la copia, listada antes
+                {"sessionId": "x", "pid": 100, "startedAt": 1000}]
+
+    def test_dos_procesos_con_el_mismo_id_llevan_numeros_distintos(self):
+        """
+        EL FALLO: salian los dos con el mismo numero, y el cursor —que sigue a la
+        identidad— al bajar a la segunda encontraba la primera y no pasaba de ahi.
+        """
+        sesiones = ccl._marcar_claves(self.dos_procesos())
+        n = ccl.assign_numbers(sesiones)
+        self.assertEqual(len({n[ccl.clave_de(s)] for s in sesiones}), 2)
+
+    def test_la_original_se_queda_el_id_a_secas(self):
+        """
+        La mas antigua por `startedAt`, no la primera de la lista: asi su numero no se
+        mueve cuando aparece la copia, y sin duplicados nada cambia.
+        """
+        original, copia = sorted(ccl._marcar_claves(self.dos_procesos()),
+                                 key=lambda s: s["startedAt"])
+        self.assertEqual(ccl.clave_de(original), "x")
+        self.assertEqual(ccl.clave_de(copia), "x@200")
+
+    def test_sin_duplicados_la_clave_es_el_id(self):
+        sesiones = ccl._marcar_claves([{"sessionId": "a", "pid": 1}, {"sessionId": "b", "pid": 2}])
+        self.assertEqual([ccl.clave_de(s) for s in sesiones], ["a", "b"])
+
 
 # ────────────────────── parseo de la salida de iTerm ──────────────────────
 
@@ -244,6 +275,14 @@ class TestGuardarYRestaurar(unittest.TestCase):
         muerta["recoverable"] = True
         datos = ccl.guardar_sesiones([self._fila("a", "100", 1), muerta])
         self.assertEqual([x["sessionId"] for x in datos["sesiones"]], ["a"])
+
+    def test_una_conversacion_abierta_dos_veces_se_guarda_una(self):
+        """Guardando las dos, `--restore` la reabriria dos veces y recrearia el duplicado."""
+        original, copia = self._fila("a", "100", 1), self._fila("a", "200", 1)
+        original["_clave"], copia["_clave"] = "a", "a@99"
+        datos = ccl.guardar_sesiones([copia, original])
+        self.assertEqual([(x["sessionId"], x["ventana"]) for x in datos["sesiones"]],
+                         [("a", "100")])
 
     def test_el_archivo_no_queda_legible_por_otros(self):
         ccl.guardar_sesiones([self._fila("a", "100", 1)])

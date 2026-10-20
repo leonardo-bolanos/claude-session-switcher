@@ -95,6 +95,14 @@ def coleccionar():
     filas = [dict(f) for f in FIJAS]
     if _MATAR and os.path.exists(_MATAR):
         filas = [f for f in filas if f["name"] != _MUERTA]
+    if os.environ.get("CCL_TEST_DUPLICADA"):
+        # `claude --resume` sobre `beta` mientras seguia abierta: OTRO proceso con el MISMO
+        # sessionId. Un poco mas vieja de actividad, para que salga justo debajo.
+        copia = fila(5, "copia", 2.5)
+        copia.update({{"sessionId": "sid-beta", "cwd": "/x/compartido", "startedAt": 99}})
+        filas.append(copia)
+    # Lo que hace `get_sessions` en la vida real, y que `collect` parcheado se salta.
+    ccl._marcar_claves(filas)
     for f in filas:
         f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
         f["paused"] = f["sessionId"] in pausadas
@@ -259,7 +267,7 @@ class Panel:
         """El nombre de la sesion marcada con ▌ en el ultimo repintado."""
         for linea in self.ultima().split("\n"):
             if "▌" in linea:
-                for nombre in NOMBRES:
+                for nombre in NOMBRES + ["copia"]:
                     if nombre in linea:
                         return nombre
         return None
@@ -336,6 +344,22 @@ class TestTeclado(unittest.TestCase):
             self.assertEqual(p.enviar(b"\033[B").cursor(), "beta")
         with con_panel() as p:
             self.assertEqual(p.enviar(b"\033[B", b"\033[B").cursor(), "gamma")
+
+    def test_baja_por_dos_procesos_de_la_misma_conversacion(self):
+        """
+        EL FALLO, reportado con captura: dos filas con el mismo numero [18] y "al bajar
+        con flechas no me deja pasar". Eran dos procesos con el MISMO sessionId, y el
+        cursor —que lo seguia— al bajar a la segunda volvia a encontrar la primera.
+        """
+        entorno = {"CCL_TEST_DUPLICADA": "1"}
+        with con_panel(entorno=entorno) as p:
+            self.assertEqual(p.enviar(b"\033[B", b"\033[B").cursor(), "copia")
+        with con_panel(entorno=entorno) as p:
+            self.assertEqual(p.enviar(b"\033[B", b"\033[B", b"\033[B").cursor(), "gamma")
+        with con_panel(entorno=entorno) as p:
+            # hacia arriba: alfa → delta → gamma → copia. Con el fallo caia en `beta`,
+            # porque resolver el sessionId de la copia encontraba primero la original.
+            self.assertEqual(p.enviar(b"\033[A", b"\033[A", b"\033[A").cursor(), "copia")
 
     def test_arriba_desde_la_primera_da_la_vuelta(self):
         with con_panel() as p:

@@ -52,8 +52,16 @@ nada, quemando CPU. En reposo debe consumir 0 %.
 `REFRESH_IDLE` (20 s) tras `IDLE_AFTER` (120 s) sin teclear. Cada ciclo cuesta ~0,2 s de CPU
 entre `claude agents` y `osascript`; a 4 s fijos serían ~5 % de un núcleo indefinidamente.
 
-**El cursor sigue al `sessionId`, no al índice.** La lista se reordena por actividad en cada
+**El cursor sigue a la sesión, no al índice.** La lista se reordena por actividad en cada
 refresco; si el cursor fuera posicional, saltaría solo.
+
+**Y la identidad de una fila es el PROCESO, no el `sessionId`** (`clave_de()`). `claude --resume`
+sobre una conversación que sigue abierta en otra pestaña no crea una nueva: dos procesos con el
+mismo sessionId. Con el sessionId como identidad salían con el mismo número y el cursor, al bajar
+a la segunda, volvía a encontrar la primera — "al bajar con flechas no me deja pasar". Ahora
+`_marcar_claves()` (en `get_sessions`) deja el sessionId a secas a la más antigua y
+`sessionId@pid` a las demás; la numeración, el cursor y `--save` van por esa clave. Lo que es de
+la conversación —nota, pausa, escritorio— sigue por sessionId, y es correcto: es la misma.
 
 ## Pausadas y vista de tabla
 

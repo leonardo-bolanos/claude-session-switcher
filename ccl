@@ -724,7 +724,36 @@ def get_sessions():
             if primero:
                 raise
         primero = False
-    return todas
+    return _marcar_claves(todas)
+
+
+def _marcar_claves(sessions):
+    """
+    Pone a cada sesion su `_clave`: el sessionId, o `sessionId@pid` si ya habia otra.
+
+    **Dos procesos pueden tener el MISMO sessionId**: `claude --resume` sobre una
+    conversacion que sigue abierta en otra pestaña no crea una nueva, se engancha a la
+    misma. Verificado en vivo, con nombres distintos (`defybots-svn-91` y `-ea`). Con el
+    sessionId como identidad, el panel las fundia: el mismo numero en las dos, y el cursor
+    —que sigue al sessionId— al bajar a la segunda encontraba la primera y no pasaba de
+    ahi. La identidad de una FILA es el proceso.
+
+    La mas antigua se queda el sessionId a secas, para que nada cambie cuando no hay
+    duplicados (el caso de siempre) y el numero de la original no se mueva al aparecer la
+    copia. Lo que es de la CONVERSACION —notas, pausa, escritorio— sigue yendo por
+    sessionId: las dos filas son la misma conversacion.
+    """
+    vistos = set()
+    for s in sorted(sessions, key=lambda s: s.get("startedAt") or 0):
+        sid = s["sessionId"]
+        s["_clave"] = sid if sid not in vistos else "{}@{}".format(sid, s.get("pid"))
+        vistos.add(sid)
+    return sessions
+
+
+def clave_de(fila):
+    """La identidad de una fila del panel. Las recuperables no tienen proceso: su sessionId."""
+    return fila.get("_clave") or fila["sessionId"]
 
 
 # Los nombres de shell que cuenta `get_procesos`. Un login shell sale como "-zsh", con
@@ -1162,15 +1191,20 @@ def escribir_json(ruta, datos):
 
 
 def assign_numbers(sessions):
-    """sessionId -> numero fijo. Recicla los numeros de sesiones muertas."""
+    """
+    clave -> numero fijo. Recicla los numeros de sesiones muertas.
+
+    Por `clave_de` y no por sessionId: dos procesos sobre la misma conversacion salian
+    los dos con el mismo numero, y teclearlo solo podia llevar a uno.
+    """
     index = leer_json(INDEX_FILE, {})
 
-    live = {s["sessionId"] for s in sessions}
+    live = {clave_de(s) for s in sessions}
     index = {sid: n for sid, n in index.items() if sid in live}  # purgar muertas
     used = set(index.values())
 
     for s in sessions:
-        sid = s["sessionId"]
+        sid = clave_de(s)
         if sid not in index:
             n = 1
             while n in used:
@@ -1417,7 +1451,8 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
         info = read_transcript(s["sessionId"], s.get("_cfg"))
         tty = ttys.get(s["pid"], "")
         rows.append({
-            "num": numbers[s["sessionId"]],
+            "num": numbers[clave_de(s)],
+            "_clave": clave_de(s),   # la identidad de la FILA; ver `_marcar_claves`
             "name": sin_control(s["name"]),
             "account": sin_control(s.get("_account", "")),
             "_cfg": s.get("_cfg"),   # para reanudarla con su cuenta, no con la principal
@@ -2323,7 +2358,7 @@ def interactive(feed, tabla=False):
     rows, stamp = feed.snapshot()
     lines = vista(rows, cols0, tabla)  # query vacia al arrancar
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
-    sel_id = lines[pickable[0]][2]["sessionId"] if pickable else None
+    sel_id = clave_de(lines[pickable[0]][2]) if pickable else None
     typed, top, flash, query = "", 0, "", ""
     # El editor recuerda a QUE SESION pertenece la nota, no en que fila estaba. `lines[cl]`
     # se resuelve en cada vuelta del bucle: si la sesion que estabas anotando muere y el
@@ -2366,8 +2401,8 @@ def interactive(feed, tabla=False):
                 shown = [r for r in rows if matches(r, query)]
                 lines = vista(shown, now_cols, tabla)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
-                if pickable and not any(lines[i][2]["sessionId"] == sel_id for i in pickable):
-                    sel_id = lines[pickable[0]][2]["sessionId"]  # el filtro dejo fuera al cursor
+                if pickable and not any(clave_de(lines[i][2]) == sel_id for i in pickable):
+                    sel_id = clave_de(lines[pickable[0]][2])  # el filtro dejo fuera al cursor
                 # Si la sesion que estabas anotando ya no existe, se cancela la edicion. Sin
                 # esto el texto se quedaba en curso mientras el cursor saltaba a otra fila, y
                 # el Enter lo guardaba en una sesion que no era la tuya.
@@ -2419,7 +2454,7 @@ def interactive(feed, tabla=False):
 
             # el cursor sigue a la MISMA sesion aunque la lista se reordene
             cur = next((i for i, li in enumerate(pickable)
-                        if lines[li][2]["sessionId"] == sel_id), 0)
+                        if clave_de(lines[li][2]) == sel_id), 0)
             by_num = {r["num"]: r for r in rows}
 
             cols, term_rows = os.get_terminal_size()
@@ -2594,14 +2629,14 @@ def interactive(feed, tabla=False):
             elif k == "q" and not query:
                 return  # con filtro activo, 'q' es texto que se busca
             elif k == "up":
-                sel_id = lines[pickable[(cur - 1) % len(pickable)]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[(cur - 1) % len(pickable)]][2]); typed = ""
             elif k == "down":
-                sel_id = lines[pickable[(cur + 1) % len(pickable)]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[(cur + 1) % len(pickable)]][2]); typed = ""
             elif k == "pgup":
-                sel_id = lines[pickable[max(0, cur - body // 2)]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[max(0, cur - body // 2)]][2]); typed = ""
             elif k == "pgdn":
                 i = min(len(pickable) - 1, cur + body // 2)
-                sel_id = lines[pickable[i]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[i]][2]); typed = ""
             elif k == "back":
                 if typed:
                     typed = typed[:-1]
@@ -2653,15 +2688,15 @@ def interactive(feed, tabla=False):
                     else:
                         # el cursor tiene que saltar a la lista nueva: su sessionId de
                         # antes no existe aqui, y quedaria apuntando a nada
-                        sel_id = filas_recent[0]["sessionId"]
+                        sel_id = clave_de(filas_recent[0])
                         flash = t("modo_recent", n=len(filas_recent))
                 else:
                     flash = t("modo_vivas")
                 # el filtro y el numero a medio teclear son de la otra lista
                 query, typed, top, requery = "", "", 0, True
             elif k == "table":
-                # Ctrl-T: la misma lista en columnas. El cursor sigue al sessionId, asi
-                # que cambiar de vista no lo mueve de sesion.
+                # Ctrl-T: la misma lista en columnas. El cursor sigue a la sesion (su
+                # clave), asi que cambiar de vista no lo mueve.
                 tabla, requery = not tabla, True
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
@@ -2669,10 +2704,10 @@ def interactive(feed, tabla=False):
                 feed.force()
                 flash = t("actualizando")
             elif k == "wheelup":
-                sel_id = lines[pickable[max(0, cur - 1)]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[max(0, cur - 1)]][2]); typed = ""
             elif k == "wheeldn":
                 i = min(len(pickable) - 1, cur + 1)
-                sel_id = lines[pickable[i]][2]["sessionId"]; typed = ""
+                sel_id = clave_de(lines[pickable[i]][2]); typed = ""
             elif k.startswith("click:"):
                 # El terminal NO reporta dobles clics, solo clics sueltos: el doble hay
                 # que sintetizarlo por tiempo y fila. Simple selecciona, doble abre.
@@ -2687,12 +2722,12 @@ def interactive(feed, tabla=False):
                 if tocada is None:
                     dirty = False   # cabecera o hueco: no hay nada que elegir ni repintar
                 elif doble:
-                    sel_id = tocada["sessionId"]
+                    sel_id = clave_de(tocada)
                     flash = abrir(tocada, f"→ {tocada['name']}")
                     # que un triple clic no cuente como un segundo doble
                     last_click = (0, 0.0)
                 else:
-                    sel_id, typed = tocada["sessionId"], ""
+                    sel_id, typed = clave_de(tocada), ""
             elif k.startswith("alt-"):
                 # Option-N: salta a la N-esima ESPERANDO. Cuenta sobre `rows` (la lista
                 # completa), no sobre las filtradas: el sentido de la tecla es "sacame
@@ -2723,7 +2758,7 @@ def interactive(feed, tabla=False):
                 else:
                     target = lines[cl][2]
                 if target:
-                    sel_id = target["sessionId"]
+                    sel_id = clave_de(target)
                     flash = abrir(target, f"→ {target['name']}")
     finally:
         # apagar el raton ANTES de soltar la pantalla alternativa: si se queda activo,
@@ -2825,15 +2860,15 @@ def try_focus(row, exito):
 
 def jump_waiting(rows, n):
     """
-    (sessionId, aviso) para saltar a la n-esima sesion esperando.
+    (clave, aviso) para saltar a la n-esima sesion esperando.
 
-    Devuelve tambien el sessionId para que quien llama mueva el cursor: la copia que no
-    lo hacia dejaba el cursor donde estuviera, con el panel enfocando otra ventana.
+    Devuelve tambien la clave de la fila para que quien llama mueva el cursor: la copia
+    que no lo hacia dejaba el cursor donde estuviera, con el panel enfocando otra ventana.
     """
     target, aviso = pick_waiting(rows, n)
     if aviso:
         return None, "⚠ " + aviso
-    return target["sessionId"], try_focus(target, t("esperando_ordinal", n=n,
+    return clave_de(target), try_focus(target, t("esperando_ordinal", n=n,
                                                     name=target["name"]))
 
 
@@ -3102,7 +3137,9 @@ def guardar_sesiones(rows):
     saltando: asi sale el de todas aunque no hayas visitado ninguna. Sin Hammerspoon se usa
     lo aprendido, y si tampoco hay, queda vacio y se abrira donde caiga.
     """
-    vivas = [r for r in rows if not r.get("recoverable")]
+    # Una conversacion abierta en dos procesos se guarda UNA vez: guardar las dos haria que
+    # --restore la reabriera dos veces, recreando el duplicado (ver `_marcar_claves`).
+    vivas = [r for r in rows if not r.get("recoverable") and clave_de(r) == r["sessionId"]]
     if not vivas:
         return None
     por_ventana = spaces_de_ventanas()
