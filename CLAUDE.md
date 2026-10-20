@@ -60,8 +60,14 @@ sobre una conversación que sigue abierta en otra pestaña no crea una nueva: do
 mismo sessionId. Con el sessionId como identidad salían con el mismo número y el cursor, al bajar
 a la segunda, volvía a encontrar la primera — "al bajar con flechas no me deja pasar". Ahora
 `_marcar_claves()` (en `get_sessions`) deja el sessionId a secas a la más antigua y
-`sessionId@pid` a las demás; la numeración, el cursor y `--save` van por esa clave. Lo que es de
+`sessionId@pid` a las demás; la numeración y el cursor van por esa clave. Lo que es de
 la conversación —nota, pausa, escritorio— sigue por sessionId, y es correcto: es la misma.
+
+**La clave de una copia es pegajosa.** Si se cierra la ORIGINAL —que es lo que pide el aviso
+rojo—, la copia pasaría a ser `sessionId` a secas: heredaría el número de la otra y el cursor, que
+la seguía por su clave, saltaría arriba. `assign_numbers()` le conserva `sessionId@pid` mientras
+siga en el índice. Por lo mismo `--save` deduplica por sessionId y no por clave: filtrando por
+"clave == sessionId", una copia superviviente no se guardaba.
 
 Y se **avisa en rojo** (`marcar_duplicadas()`, al final de `build`): las dos escriben en el mismo
 transcript y casi nunca es lo que quieres. Va en las DOS filas, no solo en la copia, y con el

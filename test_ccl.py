@@ -183,6 +183,19 @@ class TestNumeracion(unittest.TestCase):
         self.assertEqual(ccl.clave_de(original), "x")
         self.assertEqual(ccl.clave_de(copia), "x@200")
 
+    def test_si_se_cierra_la_original_la_copia_no_cambia_de_numero(self):
+        """
+        Lo que pide el aviso rojo es cerrar una. Si se cerraba la ORIGINAL, la copia pasaba
+        a ser `x` a secas: heredaba el numero de la otra y el cursor, que la seguia por su
+        clave, saltaba al principio de la lista.
+        """
+        sesiones = ccl._marcar_claves(self.dos_procesos())
+        antes = ccl.assign_numbers(sesiones)["x@200"]
+        copia = ccl._marcar_claves([{"sessionId": "x", "pid": 200, "startedAt": 2000}])
+        n = ccl.assign_numbers(copia)
+        self.assertEqual((ccl.clave_de(copia[0]), n[ccl.clave_de(copia[0])]),
+                         ("x@200", antes))
+
     def test_sin_duplicados_la_clave_es_el_id(self):
         sesiones = ccl._marcar_claves([{"sessionId": "a", "pid": 1}, {"sessionId": "b", "pid": 2}])
         self.assertEqual([ccl.clave_de(s) for s in sesiones], ["a", "b"])
@@ -283,6 +296,13 @@ class TestGuardarYRestaurar(unittest.TestCase):
         datos = ccl.guardar_sesiones([copia, original])
         self.assertEqual([(x["sessionId"], x["ventana"]) for x in datos["sesiones"]],
                          [("a", "100")])
+
+    def test_una_copia_que_sobrevivio_a_su_original_se_guarda(self):
+        """Su clave ya no es el sessionId a secas: filtrando por clave se perdia entera."""
+        copia = self._fila("a", "200", 1)
+        copia["_clave"] = "a@99"
+        datos = ccl.guardar_sesiones([copia])
+        self.assertEqual([x["sessionId"] for x in datos["sesiones"]], ["a"])
 
     def test_el_archivo_no_queda_legible_por_otros(self):
         ccl.guardar_sesiones([self._fila("a", "100", 1)])

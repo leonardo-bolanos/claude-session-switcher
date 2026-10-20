@@ -1201,6 +1201,15 @@ def assign_numbers(sessions):
     """
     index = leer_json(INDEX_FILE, {})
 
+    # Una copia que sobrevive a su original sigue siendo `sid@pid`. Si no, al cerrar la
+    # original —justo lo que pide el aviso rojo— la copia pasaria a ser `sid` a secas:
+    # heredaria el numero de la otra y el cursor, que la seguia por su clave, saltaria
+    # al principio de la lista.
+    for s in sessions:
+        pegajosa = "{}@{}".format(s["sessionId"], s.get("pid"))
+        if clave_de(s) == s["sessionId"] and pegajosa in index:
+            s["_clave"] = pegajosa
+
     live = {clave_de(s) for s in sessions}
     index = {sid: n for sid, n in index.items() if sid in live}  # purgar muertas
     used = set(index.values())
@@ -3173,8 +3182,15 @@ def guardar_sesiones(rows):
     lo aprendido, y si tampoco hay, queda vacio y se abrira donde caiga.
     """
     # Una conversacion abierta en dos procesos se guarda UNA vez: guardar las dos haria que
-    # --restore la reabriera dos veces, recreando el duplicado (ver `_marcar_claves`).
-    vivas = [r for r in rows if not r.get("recoverable") and clave_de(r) == r["sessionId"]]
+    # --restore la reabriera dos veces, recreando el duplicado (ver `_marcar_claves`). Se
+    # deduplica por sessionId y no por clave, prefiriendo la original: una copia que
+    # sobrevivio a la suya no tiene la clave a secas, y filtrando por ella se perderia.
+    vivas, vistos = [], set()
+    for r in sorted((r for r in rows if not r.get("recoverable")),
+                    key=lambda r: clave_de(r) != r["sessionId"]):
+        if r["sessionId"] not in vistos:
+            vistos.add(r["sessionId"])
+            vivas.append(r)
     if not vivas:
         return None
     por_ventana = spaces_de_ventanas()
