@@ -3116,6 +3116,41 @@ class TestMainLine(unittest.TestCase):
         linea = ccl.main_line(self.r(name="x" * 200))
         self.assertLess(ccl.vis(linea), 120)
 
+    # ── la misma conversacion abierta dos veces ──
+
+    def gemelas(self):
+        """Dos procesos con el mismo sessionId (ver `_marcar_claves`) y una sesion normal."""
+        filas = [self.r(num=18, name="original"), self.r(num=26, name="copia"),
+                 self.r(num=3, name="otra", sessionId="s3")]
+        return ccl.marcar_duplicadas(filas)
+
+    def test_cada_gemela_apunta_a_la_otra(self):
+        original, copia, otra = self.gemelas()
+        self.assertEqual((original["duplicada"], copia["duplicada"], otra["duplicada"]),
+                         ([26], [18], []))
+
+    def test_el_nombre_de_una_duplicada_va_en_rojo(self):
+        original, _, otra = self.gemelas()
+        self.assertIn(ccl.RED("original"), ccl.main_line(original))
+        self.assertIn(ccl.RED("original"), ccl.table_line(original, 140))
+        self.assertNotIn(ccl.RED("otra"), ccl.main_line(otra))
+
+    def test_dice_con_cual_esta_duplicada(self):
+        """El rojo solo no basta: sin color (`--list | pbcopy`) no se ve, y no dice cual."""
+        original, copia, otra = self.gemelas()
+        aviso = ccl.t("duplicada", nums="[26]")
+        self.assertTrue(ccl.ANSI_RE.sub("", ccl.detail_line(original)).startswith(aviso),
+                        "va PRIMERO: al final se lo comeria el recorte")
+        self.assertIn(aviso, ccl.ANSI_RE.sub("", ccl.table_line(original, 140)))
+        self.assertNotIn(ccl.t("duplicada", nums="")[:10],
+                         ccl.ANSI_RE.sub("", ccl.detail_line(otra)))
+
+    def test_una_recuperable_no_cuenta_como_gemela(self):
+        """En Ctrl-O la lista es de disco: que su id coincida con una viva no es un duplicado."""
+        viva, muerta = self.r(num=1), self.r(num=2, recoverable=True)
+        ccl.marcar_duplicadas([viva, muerta])
+        self.assertEqual((viva["duplicada"], muerta["duplicada"]), ([], []))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

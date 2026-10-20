@@ -473,6 +473,7 @@ Cuando una sesión muere, su número se libera y se recicla.
 | `effort` | amarillo solo en `xhigh` / `max` |
 | ⚠ rojo | La sesión no está en una ventana de iTerm |
 | `⚡2` | Esa sesión tiene 2 comandos de Bash corriendo ahora mismo |
+| nombre en rojo, `misma conversación que [26]` | La misma conversación está abierta en dos procesos (un `claude --resume` mientras seguía abierta); las dos escriben en el mismo transcript, así que cierra una |
 | fila seleccionada | barra `▌` cian y una banda gris oscura en toda la fila |
 
 La banda es un fondo de la paleta de 256, que se lee bien en un tema oscuro y mal en uno claro.

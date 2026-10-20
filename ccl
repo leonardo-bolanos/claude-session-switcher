@@ -209,6 +209,7 @@ TEXTOS = {
         "grupo_idle": "WAITING",
         "grupo_pausa": "PAUSED",
         "grupo_faltan": "NOT BACK YET",
+        "duplicada": "same conversation as {nums}",
         "grupo_recuperables": "RECOVERABLE",
         "grupo_bg": "BACKGROUND",
         # cabeceras de la vista de tabla
@@ -320,6 +321,7 @@ TEXTOS = {
         "grupo_idle": "ESPERANDO",
         "grupo_pausa": "PAUSADAS",
         "grupo_faltan": "POR VOLVER",
+        "duplicada": "misma conversación que {nums}",
         "grupo_recuperables": "RECUPERABLES",
         "grupo_bg": "BACKGROUND",
         "col_estado": "estado",
@@ -1486,7 +1488,34 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             rows[-1]["tmux"] = (destino, sesion)
             rows[-1]["ventana"] = ventanas.get(cliente) if cliente else None
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
+    return marcar_duplicadas(rows)
+
+
+def marcar_duplicadas(rows):
+    """
+    `duplicada`: los numeros de las OTRAS filas vivas con el mismo sessionId, o [].
+
+    Es la misma conversacion abierta en dos procesos (ver `_marcar_claves`), y las dos
+    escriben en el mismo transcript: casi nunca es lo que quieres. Se marca en las dos
+    filas, no solo en la copia, y con el numero de la gemela, que es lo que hace falta
+    para decidir cual cerrar.
+    """
+    por_sid = {}
+    for r in rows:
+        if not r.get("recoverable"):
+            por_sid.setdefault(r["sessionId"], []).append(r)
+    for r in rows:
+        gemelas = por_sid.get(r["sessionId"], []) if not r.get("recoverable") else []
+        r["duplicada"] = sorted(g["num"] for g in gemelas if g is not r)
     return rows
+
+
+def marca_duplicada(r):
+    """`misma conversacion que [26]` en rojo, o "" si la sesion no esta abierta dos veces."""
+    gemelas = r.get("duplicada")
+    if not gemelas:
+        return ""
+    return RED(t("duplicada", nums=" ".join(f"[{n}]" for n in gemelas)))
 
 
 def sort_key(r):
@@ -1623,7 +1652,8 @@ def gris_si_falta(r, texto):
 def main_line(r, show_account=False):
     """Linea principal coloreada, con las columnas alineadas por ancho VISIBLE."""
     num = CYAN(BOLD(f"[{r['num']:>2}]"))
-    name = pad(BOLD(r["name"][:36]), 38)
+    # En rojo si la conversacion esta abierta dos veces: la linea de detalle dice con cual.
+    name = pad((RED if r.get("duplicada") else BOLD)(r["name"][:36]), 38)
     repo = pad(MAGENTA(r["repo"][:15]), 17)
     # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
     # seria una columna vacia en todas las filas.
@@ -1642,7 +1672,9 @@ def detail_line(r, width=None):
     # La nota va PRIMERA y en su propio color: es lo unico de la linea que escribiste tu,
     # y puesta al final la habria comido el recorte cuando el prompt es largo.
     nota = NOTE("✎ " + r["note"]) if r.get("note") else ""
-    meta = [x for x in (nota,
+    # Y por delante de ella el aviso de duplicada: es un problema que resolver ya, y al
+    # final de la linea se lo comeria el recorte igual que a la nota.
+    meta = [x for x in (marca_duplicada(r), nota,
                         GREY(r["branch"]) if r["branch"] else "",
                         color_model(r["model"]),
                         color_effort(r["effort"])) if x]
@@ -1703,7 +1735,7 @@ def table_line(r, width=100, show_account=False):
     celda = {
         "num": CYAN(BOLD(f"[{r['num']:>2}]")),
         "estado": color(etiqueta),
-        "name": BOLD(r["name"]),
+        "name": (RED if r.get("duplicada") else BOLD)(r["name"]),
         "account": GREY(r.get("account") or ""),
         "repo": MAGENTA(r["repo"]),
         "branch": GREY(r["branch"] or ""),
@@ -1720,6 +1752,9 @@ def table_line(r, width=100, show_account=False):
     shells = marca_shells(r).strip()
     if shells:
         cola = f"{shells} {cola}" if cola else shells
+    duplicada = marca_duplicada(r)
+    if duplicada:
+        cola = f"{duplicada} {cola}" if cola else duplicada
     prompt = " ".join(str(r["prompt"] or r["title"] or "").split())
     if prompt:
         entrecomillado = DIM('"') + prompt + DIM('"')

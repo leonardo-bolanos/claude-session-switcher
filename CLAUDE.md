@@ -63,6 +63,11 @@ a la segunda, volvía a encontrar la primera — "al bajar con flechas no me dej
 `sessionId@pid` a las demás; la numeración, el cursor y `--save` van por esa clave. Lo que es de
 la conversación —nota, pausa, escritorio— sigue por sessionId, y es correcto: es la misma.
 
+Y se **avisa en rojo** (`marcar_duplicadas()`, al final de `build`): las dos escriben en el mismo
+transcript y casi nunca es lo que quieres. Va en las DOS filas, no solo en la copia, y con el
+número de la gemela (`misma conversación que [26]`), que es lo que hace falta para decidir cuál
+cerrar; el rojo solo no se ve en `--list | pbcopy`. Las recuperables no cuentan como gemelas.
+
 ## Pausadas y vista de tabla
 
 **Pausada es una marca del usuario, no un estado que dé Claude Code.** El JSON solo trae

@@ -469,6 +469,7 @@ a session dies its number is freed and recycled.
 | `effort` | yellow only on `xhigh` / `max` |
 | red ⚠ | The session isn't in an iTerm window |
 | `⚡2` | That session has 2 Bash commands running right now |
+| red name, `same conversation as [26]` | The same conversation is open in two processes (a `claude --resume` while it was still open); both write to one transcript, so close one |
 | selected row | cyan `▌` bar plus a dark grey band across the whole row |
 
 The band is a 256-colour background, which reads well on a dark theme and badly on a light one.

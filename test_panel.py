@@ -101,8 +101,9 @@ def coleccionar():
         copia = fila(5, "copia", 2.5)
         copia.update({{"sessionId": "sid-beta", "cwd": "/x/compartido", "startedAt": 99}})
         filas.append(copia)
-    # Lo que hace `get_sessions` en la vida real, y que `collect` parcheado se salta.
+    # Lo que hacen `get_sessions` y `build` en la vida real, y `collect` parcheado se salta.
     ccl._marcar_claves(filas)
+    ccl.marcar_duplicadas(filas)
     for f in filas:
         f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
         f["paused"] = f["sessionId"] in pausadas
@@ -360,6 +361,14 @@ class TestTeclado(unittest.TestCase):
             # hacia arriba: alfa → delta → gamma → copia. Con el fallo caia en `beta`,
             # porque resolver el sessionId de la copia encontraba primero la original.
             self.assertEqual(p.enviar(b"\033[A", b"\033[A", b"\033[A").cursor(), "copia")
+
+    def test_las_dos_gemelas_dicen_con_cual(self):
+        """Pedido tras el fallo: que se vea en rojo, en las dos, y con el numero de la otra."""
+        with con_panel(entorno={"CCL_TEST_DUPLICADA": "1"}) as p:
+            pantalla = p.ultima()
+            self.assertIn("misma conversación que [5]", pantalla)   # en beta
+            self.assertIn("misma conversación que [2]", pantalla)   # en la copia
+            self.assertIn("\033[31mbeta", p.bruto, "el nombre no sale en rojo")
 
     def test_arriba_desde_la_primera_da_la_vuelta(self):
         with con_panel() as p:
