@@ -11,7 +11,13 @@ jobs:
     # Los tests son logica pura (iTerm y `claude` van mockeados), asi que corren en
     # Linux — mas rapido y gratis. La matriz cubre desde el minimo declarado (3.7)
     # hasta la version actual, porque `datetime.fromisoformat` es lo que fija el suelo.
-    runs-on: ubuntu-latest
+    #
+    # Fijado en 24.04 y no `ubuntu-latest`: este paso a Ubuntu 26.04 en octubre de 2026 y
+    # `setup-python` no tiene 3.9 para el, asi que el job fallaba sin llegar a los tests.
+    # 3.9 no se puede quitar de la matriz: es el `python3` que trae macOS (3.9.6), el que
+    # usa `ccl` en un Mac sin Homebrew. Cuando retiren la 24.04 habra que decidir si se
+    # sube el minimo declarado en el README.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
