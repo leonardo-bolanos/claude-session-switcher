@@ -3212,12 +3212,13 @@ class TestLecturaDeTeclas(unittest.TestCase):
 
     def test_las_teclas_de_accion_llegan_con_su_nombre(self):
         """
-        Ctrl-N, Ctrl-P y Ctrl-T. Van en teclas de control y no en letras porque
+        Ctrl-N, Ctrl-P, Ctrl-T y Ctrl-G. Van en teclas de control y no en letras porque
         cualquier letra empieza a filtrar; que `read_key` las traduzca es lo que hace
         que el bucle del panel no tenga que saber de bytes.
         """
         for data, esperado in ((b"\x0e", "note"), (b"\x10", "pause"),
-                               (b"\x14", "table"), (b"\x0f", "recuperables")):
+                               (b"\x14", "table"), (b"\x0f", "recuperables"),
+                               (b"\x07", "proyectos")):
             self.assertEqual(self._pulsar(data), esperado, repr(data))
 
     def test_ctrl_r_y_digitos(self):
@@ -3238,7 +3239,7 @@ class TestEntreLecturas(unittest.TestCase):
     que es exactamente esa ventana, y el resultado deja de depender del momento.
     """
 
-    ESPERADAS = ["recuperables", "refresh", "table", "x", "back"]
+    ESPERADAS = ["recuperables", "refresh", "table", "proyectos", "x", "back"]
 
     def _teclear_entre_lecturas(self, preparar):
         """Las teclas que `read_key` acaba viendo, y lo que llega a la pantalla despues."""
@@ -3255,7 +3256,8 @@ class TestEntreLecturas(unittest.TestCase):
         try:
             if preparar:
                 ccl._preparar_tty(esclavo)
-            os.write(maestro, b"\x0f\x12\x14x\x7f")    # Ctrl-O, Ctrl-R, Ctrl-T, x, retroceso
+            # Ctrl-O, Ctrl-R, Ctrl-T, Ctrl-G, x, retroceso
+            os.write(maestro, b"\x0f\x12\x14\x07x\x7f")
             time.sleep(0.1)
             pantalla = drenar()
             ccl.sys.stdin = open(esclavo, "rb", buffering=0, closefd=False)
@@ -3333,7 +3335,7 @@ class TestAyuda(unittest.TestCase):
 
     def test_render_documenta_las_teclas_de_accion(self):
         plano = self._texto_completo()
-        for tecla in ("Ctrl-R", "Ctrl-N", "Ctrl-P", "Ctrl-T", "Ctrl-O",
+        for tecla in ("Ctrl-R", "Ctrl-N", "Ctrl-P", "Ctrl-T", "Ctrl-G", "Ctrl-O",
                       "?", "enter", "esc"):
             self.assertIn(tecla, plano, f"{tecla} deberia estar documentada")
 

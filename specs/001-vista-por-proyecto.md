@@ -100,10 +100,10 @@ es lo correcto.
 |---|---|
 | R1 | `Ctrl-G` alterna la agrupación: **por estado** (la de hoy) ↔ **por proyecto**. Es independiente de `Ctrl-T`: las cuatro combinaciones (dos líneas o tabla × estado o proyecto) existen. |
 | R2 | `ccl -p` / `ccl --projects` arranca agrupado por proyecto. Se combina con `--list`, `--table`, `--recent` y `--saved`. |
-| R3 | Cabecera de cada grupo: nombre, total y resumen por estado con sus colores, omitiendo los ceros: `support_agent (6) · 2 working · 3 waiting · 1 paused`. |
+| R3 | Cabecera de cada grupo: nombre, total y resumen por estado con sus colores, omitiendo los ceros: `support_agent (7) · working 2 · waiting 5`. Etiqueta y luego número: `1 pausadas` no se puede decir en español y `pausadas 1` sí, sin claves nuevas para el plural. |
 | R4 | Orden de los grupos: **alfabético**, sin mayúsculas ni acentos; desempata la ruta de la raíz. Un proyecto cuyas filas son **todas** `faltante` (`--saved`) va al final. |
 | R5 | Orden dentro de un grupo: el de `grouped()` aplicado a las filas de ese proyecto — estado y, dentro, actividad. Se reutiliza `grouped()`, no se reimplementa el orden. |
-| R6 | Cada fila dice su estado, con la etiqueta y el color de `estado_de()`. En la tabla ya hay columna; en la vista de dos líneas se añade a la línea principal, que debe seguir cabiendo en 80 columnas sin perder la antigüedad. |
+| R6 | Cada fila dice su estado, con la etiqueta y el color de `estado_de()`. En la tabla ya hay columna; en la vista de dos líneas se añade a la línea principal, que debe seguir cabiendo en 80 columnas sin perder la antigüedad ni el ⚠ que va detrás (el nombre baja de 36 a 27). |
 | R7 | En la vista por proyecto, el campo `repo` sale **vacío si `cwd` es la raíz** y con `basename(cwd)` si no: el nombre del worktree o de la subcarpeta. Repetir el proyecto seis veces bajo su propia cabecera es ruido; lo informativo es la excepción. |
 | R8 | El filtro (`matches`) busca también por el nombre del proyecto, **en las dos agrupaciones**: escribir `emaus` encuentra una sesión cuyo `cwd` es `emaus/.claude/worktrees/offline-mode`. |
 | R9 | La cabecera del panel añade `· N projects` en la vista por proyecto. |
@@ -131,7 +131,7 @@ scroll y la cabecera fija funcionan sin enterarse, igual que pasó con la tabla
 | `_read_key` | `"\x07"` (`Ctrl-G`) → `"proyectos"`. |
 | `interactive` | Parámetro `por_proyecto`; la rama `k == "proyectos"` lo alterna y pone `requery`, como `Ctrl-T`. Cabecera con el número de proyectos (R9) y `^G` en la barra (R10). |
 | `parse_args`, `main` | `-p`/`--projects`, propagado a las tres llamadas a `interactive` y a las de `render`. |
-| `TEXTOS` | Claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra, la cabecera, el aviso al cambiar de vista y los resúmenes de estado si no se reutilizan las etiquetas existentes. |
+| `TEXTOS` | Dos claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra (`barra_proyectos`) y la cabecera (`proyectos_n`). El resumen reutiliza las etiquetas de los grupos, y no hay aviso al cambiar: como con `Ctrl-T`, el cambio se ve solo. |
 
 ## Invariantes que no se pueden romper
 

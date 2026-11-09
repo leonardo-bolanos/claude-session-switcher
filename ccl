@@ -8,6 +8,7 @@ Uso:
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
+    ccl --projects   agrupadas por proyecto en vez de por estado (Ctrl-G en vivo)
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
@@ -78,6 +79,7 @@ Usage:
     ccl <n>          jump straight to session number <n>
     ccl -w <n>       jump to the <n>th WAITING session (the first one by default)
     ccl --table      one line per session, in columns (Ctrl-T toggles it live)
+    ccl --projects   grouped by project instead of by state (Ctrl-G toggles it live)
     ccl --recent     sessions that died with your terminal, and resume them
     ccl --recent --list   just look at them, no panel, nothing touched
     ccl --save       save the open sessions, before you reset your terminal
@@ -129,6 +131,7 @@ Uso:
     ccl <n>          salta directo a la sesion numero <n>
     ccl -w <n>       salta a la <n>-esima sesion ESPERANDO (por defecto, la primera)
     ccl --table      una linea por sesion, en columnas (Ctrl-T lo cambia en vivo)
+    ccl --projects   agrupadas por proyecto en vez de por estado (Ctrl-G en vivo)
     ccl --recent     las que murieron con tu terminal, y las reanuda
     ccl --recent --list   solo verlas, sin panel y sin tocar nada
     ccl --save       guarda las sesiones abiertas, antes de reiniciar el terminal
@@ -269,6 +272,7 @@ TEXTOS = {
         # panel
         "cabecera": " sessions · ",
         "cabecera_recent": " resumable · read from disk",
+        "proyectos_n": " · {n} projects",
         "modo_recent": "↻ {n} sessions you can resume",
         "modo_vivas": "← back to the live ones",
         "barra_recuperables": " resumable  ",
@@ -306,6 +310,7 @@ TEXTOS = {
         "barra_nota": " note  ",
         "barra_pausa": " pause  ",
         "barra_tabla": " table  ",
+        "barra_proyectos": " projects  ",
         "barra_escribe": "type",
         "barra_filtrar": " filter  ",
         "barra_ayuda": " help",
@@ -377,6 +382,7 @@ TEXTOS = {
         "no_se_pudo_enfocar": "No se pudo enfocar: {error}",
         "cabecera": " sesiones · ",
         "cabecera_recent": " recuperables · leídas de disco",
+        "proyectos_n": " · {n} proyectos",
         "modo_recent": "↻ {n} sesiones que puedes reanudar",
         "modo_vivas": "← de vuelta a las vivas",
         "barra_recuperables": " recuperar  ",
@@ -413,6 +419,7 @@ TEXTOS = {
         "barra_nota": " nota  ",
         "barra_pausa": " pausa  ",
         "barra_tabla": " tabla  ",
+        "barra_proyectos": " proyectos  ",
         "barra_escribe": "escribe",
         "barra_filtrar": " filtrar  ",
         "barra_ayuda": " ayuda",
@@ -2203,6 +2210,12 @@ def _read_key(timeout=None):
             return "pause"
         if ch == "\x14":            # Ctrl-T: cambiar entre lista y tabla
             return "table"
+        if ch == "\x07":            # Ctrl-G: agrupar por proyecto o por estado
+            # G de *group*, y libre: no es caracter especial del tty. Descartadas a
+            # proposito Ctrl-S/Ctrl-Q, que son control de flujo (IXON, que el panel no
+            # apaga: congelaria la salida entre lecturas), y Ctrl-Y, que en macOS es
+            # VDSUSP: con ISIG encendido, una señal de suspension.
+            return "proyectos"
         if ch == "\x7f":
             return "back"
         return ch
@@ -2349,8 +2362,15 @@ HELP_EN = [
         ("",           "off on a narrow window"),
         ("ccl --table", "start that way (ccl --list --table also works)"),
     ]),
+    ("by project", [
+        ("Ctrl-G",     "group by project instead of by state, and back"),
+        ("",           "a repo's worktrees and subfolders go with it"),
+        ("",           "works in both the list and the table view"),
+        ("",           "⌥1-9 still counts over the WAITING queue"),
+        ("ccl -p",     "start that way (also --projects, with --list too)"),
+    ]),
     ("filtering", [
-        ("any letter", "starts filtering by name, repo, branch, account or note"),
+        ("any letter", "filters by name, repo, project, branch, account or note"),
         ("",           "ignores case and accents; several terms combine"),
         ("⌫",          "delete the last letter"),
         ("esc",        "clear the filter"),
@@ -2430,8 +2450,15 @@ HELP_ES = [
         ("",           "si la ventana es estrecha"),
         ("ccl --table", "arrancar así (también vale ccl --list --table)"),
     ]),
+    ("por proyecto", [
+        ("Ctrl-G",     "agrupar por proyecto en vez de por estado, y volver"),
+        ("",           "los worktrees y subcarpetas de un repo van con él"),
+        ("",           "vale en la vista de lista y en la de tabla"),
+        ("",           "⌥1-9 sigue contando sobre la cola de ESPERANDO"),
+        ("ccl -p",     "arrancar así (también --projects, y con --list)"),
+    ]),
     ("filtrar", [
-        ("cualquier letra", "empieza a filtrar por nombre, repo, rama, cuenta o nota"),
+        ("cualquier letra", "filtra por nombre, repo, proyecto, rama, cuenta o nota"),
         ("",           "ignora mayúsculas y acentos; varios términos se combinan"),
         ("⌫",          "borrar la última letra"),
         ("esc",        "limpiar el filtro"),
@@ -2716,12 +2743,17 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 y = 1
                 busy_n = sum(1 for r in rows if r["status"] == "busy")
                 more = DIM(" ↕") if len(lines) > body else ""
+                # Cuantos proyectos, sobre `rows` y no sobre lo filtrado: igual que el
+                # numero de sesiones de al lado.
+                n_proy = (DIM(t("proyectos_n", n=len({proyecto_de(r.get("cwd") or "")[0]
+                                                       for r in rows})))
+                          if por_proyecto else "")
                 if modo_recent:
                     head = (DIM("  ") + BOLD(str(len(rows)))
-                            + DIM(t("cabecera_recent")) + more)
+                            + DIM(t("cabecera_recent")) + n_proy + more)
                 else:
                     head = (DIM("  ") + BOLD(str(len(rows))) + DIM(t("cabecera"))
-                            + GREEN(t("activas", n=busy_n)) + more)
+                            + GREEN(t("activas", n=busy_n)) + n_proy + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
                 y += 1
 
@@ -2764,6 +2796,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
                             + CYAN("^N") + DIM(t("barra_nota"))
                             + CYAN("^P") + DIM(t("barra_pausa"))
                             + CYAN("^T") + DIM(t("barra_tabla"))
+                            + CYAN("^G") + DIM(t("barra_proyectos"))
                             + CYAN("^O") + DIM(t("barra_volver" if modo_recent
                                                  else "barra_recuperables"))
                             + DIM(t("barra_escribe")) + t("barra_filtrar")
@@ -2923,6 +2956,11 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # Ctrl-T: la misma lista en columnas. El cursor sigue a la sesion (su
                 # clave), asi que cambiar de vista no lo mueve.
                 tabla, requery = not tabla, True
+            elif k == "proyectos":
+                # Ctrl-G: agrupar por proyecto o por estado. Independiente de Ctrl-T, y por
+                # lo mismo que alli el cursor no se mueve: sigue a la sesion, no a la fila.
+                # `⌥N` NO cambia: cuenta sobre la cola ESPERANDO en cualquier agrupacion.
+                por_proyecto, requery = not por_proyecto, True
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra

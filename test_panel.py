@@ -1252,6 +1252,98 @@ class TestVistaDeTabla(unittest.TestCase):
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestVistaPorProyecto(unittest.TestCase):
+    """
+    Con las filas fijas, `alfa` y `beta` comparten `/x/compartido` y `gamma` y `delta`
+    tienen el suyo: por proyecto salen `compartido` (alfa, beta), `delta` y `gamma`, en
+    orden alfabetico. Es otro orden que el de ESPERANDO (alfa, beta, gamma, delta), y eso
+    es lo que permite distinguir que manda la vista y que no.
+    """
+
+    def fila_de(self, pantalla, num):
+        """La fila de la terminal de la sesion `[num]`, buscada por su NUMERO: el nombre
+        tambien aparece en la cabecera de su proyecto (`delta (1)`)."""
+        return next(i for i, l in enumerate(pantalla.split("\n"), 1) if f"[ {num}]" in l)
+
+    def test_ctrl_g_agrupa_por_proyecto_y_vuelve(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            pantalla = p.ultima()
+            for cabecera in ("compartido (2)", "delta (1)", "gamma (1)"):
+                self.assertIn(cabecera, pantalla)
+            self.assertNotIn("ESPERANDO (4)", pantalla, "sigue la cabecera de estado")
+            self.assertIn("3 proyectos", pantalla.split("\n")[0])
+            p.enviar(b"\x07")
+            self.assertIn("ESPERANDO (4)", p.ultima())
+            self.assertNotIn("proyectos", p.ultima().split("\n")[0])
+
+    def test_el_cursor_se_queda_en_la_misma_sesion(self):
+        with con_panel() as p:
+            p.enviar(b"\033[B", b"\033[B")     # alfa → beta → gamma
+            p.enviar(b"\x07")                 # gamma pasa a ser la ultima
+            self.assertEqual(p.cursor(), "gamma")
+
+    def test_las_flechas_siguen_el_orden_de_la_vista(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(b"\033[B", b"\033[B")     # alfa → beta → delta (no gamma)
+            self.assertEqual(p.cursor(), "delta")
+
+    def test_alt_n_sigue_contando_sobre_esperando(self):
+        """⌥3 es la tercera de la cola ESPERANDO (gamma), no la tercera que se ve (delta)."""
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(b"\0333")
+            self.assertEqual(p.cursor(), "gamma")
+
+    def test_un_clic_cae_en_la_fila_correcta_en_las_dos_disposiciones(self):
+        """El mapa fila → sesion se construye pintando: con otra geometria, otra prueba."""
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(press(self.fila_de(p.ultima(), 4)))
+            self.assertEqual(p.cursor(), "delta")
+            p.enviar(b"\x14")
+            p.enviar(press(self.fila_de(p.ultima(), 3)))
+            self.assertEqual(p.cursor(), "gamma")
+
+    def test_un_clic_en_la_cabecera_del_proyecto_no_mueve_el_cursor(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            fila = next(i for i, l in enumerate(p.ultima().split("\n"), 1)
+                        if "delta (1)" in l)
+            p.enviar(press(fila))
+            self.assertEqual(p.cursor(), "alfa")
+
+    def test_en_tabla_lleva_columnas_y_proyectos_sin_desbordar(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\x14")
+            pantalla = p.ultima()
+            self.assertIn("estado", pantalla, "falta la cabecera de columnas")
+            self.assertIn("compartido (2)", pantalla)
+            for linea in pantalla.split("\n"):
+                self.assertLessEqual(len(linea.rstrip("\r")), Panel.COLUMNAS,
+                                     f"linea demasiado ancha: {linea!r}")
+
+    def test_arranca_por_proyecto_con_la_bandera(self):
+        with con_panel(entorno={"CCL_TEST_ARGS": "--projects"}) as p:
+            self.assertIn("compartido (2)", p.ultima())
+            self.assertNotIn("ESPERANDO (4)", p.ultima())
+
+    def test_el_filtro_encuentra_por_proyecto(self):
+        """`repo` es "repo" en todas: solo el proyecto puede casar con "compartido"."""
+        with con_panel() as p:
+            p.enviar(b"compartido")
+            self.assertIn("2 coinciden", p.barra())
+
+    def test_no_cambia_de_agrupacion_mientras_escribes_la_nota(self):
+        """El editor se queda el teclado: `Ctrl-G` no puede reagrupar debajo."""
+        with con_panel() as p:
+            p.enviar(b"\x0e", b"sin", b"\x07", b" agrupar", b"\r")
+            self.assertIn("ESPERANDO (4)", p.ultima(), "Ctrl-G actuó desde el editor")
+            self.assertIn("✎ sin agrupar", p.ultima())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestGeneradorDelDemo(unittest.TestCase):
     """
     `make_demo.py` graba el panel y escribe demo.svg. Cada comprobacion de aqui es un
