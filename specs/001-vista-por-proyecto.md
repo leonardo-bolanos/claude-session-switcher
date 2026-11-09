@@ -111,6 +111,31 @@ es lo correcto.
 | R11 | No cambia: la numeración, `⌥1…9` y `-w` (cola ESPERANDO global, ver Invariantes), `Enter`, clic y doble clic, notas, pausa, `Ctrl-O`. |
 | R12 | La agrupación **no se recuerda** entre ejecuciones. Misma postura que la tabla en `TODO.md`: la bandera o un alias lo resuelven sin inventar una regla de precedencia. |
 
+### Pestañas (← →)
+
+Añadido el 2026-11-09, ya implementadas las fases 1 y 2, a petición del usuario: «¿se puede con
+tabs, si oprimo flechas izq der se mueve?». Va en esta spec y no en otra porque sale en la misma
+versión: así la documentación se escribe una vez.
+
+```
+  22 sesiones · 4 activas · 7 proyectos
+  ‹ emaus 3 │ Luna 1 │ ▐NewCariAI 4▌ │ support_agent 7 │ system 1 ›
+
+  ESPERANDO (4)
+  [10] N8N interface flux Cari     ...
+```
+
+| # | Requisito |
+|---|---|
+| R13 | En la vista por proyecto, una **barra de pestañas** bajo la cabecera del panel: **Todas** primero y luego una por proyecto, en el orden de los grupos (R4), cada una con su número de sesiones. La activa va resaltada. Solo existe con `Ctrl-G`: sin agrupar por proyecto no hay barra ni línea de más. |
+| R14 | `←` / `→` cambian de pestaña, **en círculo** como `↑↓`: `→` en la última vuelve a Todas. Sin la vista por proyecto siguen sin hacer nada, como hoy. |
+| R15 | **Todas** es la vista por proyecto de R1-R12. Una pestaña de proyecto enseña solo ese proyecto, **agrupado por estado**: dentro de un proyecto lo que distingue una sesión de otra es si trabaja o te espera. Vale en las dos disposiciones (`Ctrl-T`). |
+| R16 | La barra **se desplaza sola** si no cabe: la pestaña activa siempre se ve, y `‹` / `›` avisan de que hay más a cada lado. Con los 7 proyectos vivos del 2026-11-09 ocupa ~115 columnas; en `--recent` son 24 proyectos. |
+| R17 | El filtro de texto se combina con la pestaña (las dos condiciones a la vez). Las pestañas y sus números salen de **todas** las filas, no de las filtradas: la barra no baila mientras escribes. Una pestaña sin coincidencias enseña «sin resultados» y desde ahí `← →` siguen funcionando. |
+| R18 | Si el proyecto de la pestaña activa desaparece (se cerraron sus sesiones), se vuelve a **Todas**. `Ctrl-G` y `Ctrl-O` también la devuelven a Todas: la lista de pestañas cambia entera. |
+| R19 | No cambia: teclear un número lleva a la sesión aunque esté en otra pestaña (`by_num` va sobre todas las filas), y `⌥1…9` / `-w` cuentan sobre la cola ESPERANDO entera. Si la sesión elegida no está en la pestaña activa, el cursor cae en la primera fila: lo que ya pasa hoy con el filtro. |
+| R20 | `←→` aparece en la barra de estado y en la ayuda **solo con la vista por proyecto**, que es cuando hacen algo. |
+
 ## Dónde se toca
 
 Todo en `ccl`. La idea entera es que **la vista por proyecto es otra lista de grupos con la misma
@@ -131,7 +156,10 @@ scroll y la cabecera fija funcionan sin enterarse, igual que pasó con la tabla
 | `_read_key` | `"\x07"` (`Ctrl-G`) → `"proyectos"`. |
 | `interactive` | Parámetro `por_proyecto`; la rama `k == "proyectos"` lo alterna y pone `requery`, como `Ctrl-T`. Cabecera con el número de proyectos (R9) y `^G` en la barra (R10). |
 | `parse_args`, `main` | `-p`/`--projects`, propagado a las tres llamadas a `interactive` y a las de `render`. |
-| `TEXTOS` | Dos claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra (`barra_proyectos`) y la cabecera (`proyectos_n`). El resumen reutiliza las etiquetas de los grupos, y no hay aviso al cambiar: como con `Ctrl-T`, el cambio se ve solo. |
+| `TEXTOS` | Dos claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra (`barra_proyectos`) y la cabecera (`proyectos_n`). El resumen reutiliza las etiquetas de los grupos, y no hay aviso al cambiar: como con `Ctrl-T`, el cambio se ve solo. Las pestañas añaden `pestaña_todas` y `barra_pestañas`. |
+| `_proyectos(rows)` | **Nueva** (pestañas). `[(raíz, etiqueta, color, filas)]`: lo que hoy calcula `agrupar_por_proyecto` por dentro, con la raíz a la vista. `agrupar_por_proyecto` pasa a ser una vista de esto, y la lista de pestañas también: así las pestañas y los grupos no pueden salir en distinto orden ni con distinta etiqueta. |
+| `barra_pestañas(pestañas, activa, ancho)` | **Nueva**, pura. La línea de pestañas recortada a `ancho`, con la activa siempre dentro de la ventana y `‹ ›` cuando sobran. Pura para probar el desplazamiento sin pty. |
+| `interactive` (pestañas) | Estado `pestaña` (la **raíz** del proyecto, o `None` para Todas: la clave es la ruta, nunca el nombre). Al reconstruir, filtra `shown` por pestaña y pide `vista(…, por_proyecto=pestaña is None)` (R15). La barra se pinta entre la cabecera y la cabecera de grupo fija, y **resta una línea a `body` antes de calcular el scroll**: si se resta al pintar, la fila del cursor puede quedar fuera por abajo. `← →` en el bucle principal y en la rama de lista vacía (R17). |
 
 ## Invariantes que no se pueden romper
 
@@ -160,6 +188,10 @@ Todas están en `CLAUDE.md` o en los skills; se listan porque esta vista toca ju
   la ignora; aun así lleva su test, como cada tecla de acción (skill `pruebas`).
 - **Cero subprocesos nuevos y repintado solo con `dirty`.** `proyecto_de` hace `stat` y como mucho
   una lectura de 4 KB por `cwd` distinto, cacheada.
+- **`← →` son del editor de notas mientras escribes** (mueven el cursor del texto). El editor va
+  primero en el manejo de teclas, así que no cambian de pestaña debajo; lleva su test igual.
+- **La línea de pestañas no entra en el mapa fila → sesión.** Un clic en ella no selecciona nada,
+  igual que en una cabecera. Como el mapa se construye pintando, basta con no registrarla.
 
 ## Criterios de aceptación
 
@@ -179,6 +211,13 @@ Todas están en `CLAUDE.md` o en los skills; se listan porque esta vista toca ju
 | CA12 | Dos raíces con el mismo nombre salen como dos grupos con etiqueta desambiguada. | `test_ccl.py`. |
 | CA13 | Un nombre de directorio con `\033[2A` no mueve el cursor del terminal al pintar la cabecera. | `test_ccl.py`, como los de `sin_control`. |
 | CA14 | Las dos suites en verde, también en el entorno del CI sin locale. | `env -u LANG -u LC_ALL -u LC_MESSAGES python3 test_ccl.py` y lo mismo con `test_panel.py`. |
+| CA15 | Con `Ctrl-G`, `→` pasa de Todas al primer proyecto y enseña solo sus sesiones agrupadas por estado; `←` desde Todas va al último. | `test_panel.py`. |
+| CA16 | `barra_pestañas` nunca pasa de `ancho` y siempre contiene la activa, con 1 y con 24 proyectos, en cualquier posición, a 40, 80 y 100 columnas; `‹ ›` salen solo si hay pestañas ocultas a ese lado. | `test_ccl.py`. |
+| CA17 | Sin `Ctrl-G`, `← →` no cambian nada (el cursor sigue en su sitio y el panel vivo). | `test_panel.py`. |
+| CA18 | Un clic en una sesión dentro de una pestaña la selecciona; uno en la línea de pestañas no mueve el cursor. | `test_panel.py`. |
+| CA19 | Filtro y pestaña a la vez; desde «sin resultados» `←` sigue cambiando de pestaña. | `test_panel.py`. |
+| CA20 | Si muere la última sesión del proyecto de la pestaña activa, el panel vuelve a Todas. | `test_panel.py`, con `CCL_TEST_MATAR` y refresco corto. |
+| CA21 | Escribiendo una nota, `←` mueve el cursor del texto y no cambia de pestaña. | `test_panel.py`. |
 
 ## Plan
 
@@ -205,10 +244,17 @@ de cada tanda las tareas son pequeñas y del mismo archivo; no compensa repartir
 - T10. Tests de panel: alternar con cursor estable, clic en las dos disposiciones, `⌥1`, el editor
   se queda `Ctrl-G`, arranque con `CCL_TEST_ARGS=--projects`. (CA6, CA7, CA8, CA11)
 
+**Fase 2b — pestañas** (`ccl` + las dos suites)
+
+- T15. `_proyectos` y `barra_pestañas`, con sus tests de lógica pura. (CA16)
+- T16. `interactive`: estado `pestaña`, filtrado, barra, `← →`, vuelta a Todas. (CA15, CA18-CA20)
+- T17. `TEXTOS`, ayuda y barra de estado en los dos idiomas. (R20)
+- T18. Tests de panel. (CA15, CA17-CA21)
+
 **Fase 3 — documentación y cierre**
 
-- T11. `README.md` y `README.es.md` **en paralelo**: tecla, bandera, la sección «Two views» pasa a
-  hablar de las dos agrupaciones.
+- T11. `README.md` y `README.es.md` **en paralelo**: tecla, bandera, pestañas; la sección «Two
+  views» pasa a hablar de las dos agrupaciones.
 - T12. `CLAUDE.md`: una sección corta con las trampas que queden (el tope en `HOME`, derivar en vez
   de almacenar, `⌥N` global). Skill `teclas-y-raton`: añadir `Ctrl-G` a las ocupadas y las
   descartadas con su motivo.
@@ -219,7 +265,11 @@ de cada tanda las tareas son pequeñas y del mismo archivo; no compensa repartir
 
 - **Ver la ventana y pestaña de iTerm** de cada sesión (`W2 · T3`). El dato existe (`ventana` en
   `build`), pero es otra columna con otro debate de ancho.
-- **Plegar y desplegar grupos**, y saltar al proyecto siguiente con una tecla.
+- **Plegar y desplegar grupos.** Las pestañas cubren lo de «ver solo un proyecto».
+- **Cambiar de pestaña con un clic.** El evento de ratón solo trae la fila (`_mouse_event` descarta
+  la columna), así que habría que cambiar cómo se lee el ratón y sus tests. Las flechas no tocan
+  nada de eso.
+- **Elegir la pestaña desde la línea de comandos** (`ccl -p emaus`) y recordarla entre ejecuciones.
 - **Nota por proyecto en la cabecera.** Las notas `por_repo` van por `cwd` exacto, no por raíz;
   mezclarlas pide decidir qué nota manda cuando un worktree tiene la suya.
 - **Jerarquía proyecto › worktree.** Un nivel de grupos; el worktree se ve en el campo `repo` (R7).
@@ -231,8 +281,8 @@ de cada tanda las tareas son pequeñas y del mismo archivo; no compensa repartir
 
 ## Decisiones
 
-Cerradas el 2026-11-09. D1 y D2 las confirmó el usuario; D3-D5 se quedan con la recomendación,
-que se le presentó como suficiente sin objeción. Se conservan las alternativas: son lo que se
+Cerradas el 2026-11-09. D1, D2 y D6-D9 las confirmó el usuario; D3-D5 se quedan con la
+recomendación, que se le presentó como suficiente sin objeción. Se conservan las alternativas: son lo que se
 descartó y por qué.
 
 | # | Pregunta | Decidido | Descartado |
@@ -242,6 +292,10 @@ descartó y por qué.
 | D3 | ¿Qué tecla? | **`Ctrl-G`** (*group*): libre, sin significado para el tty. | Tab: no es letra, pero en muchas TUI es «siguiente campo». |
 | D4 | ¿Un worktree es su propio proyecto o va con su repo? | **Con su repo** (es lo que deshace los 9 nombres de `emaus`), y su nombre visible en el campo `repo` (R7). | Proyecto propio: agrupar por `basename(cwd)` como hoy, sin función nueva — pero no arregla las subcarpetas. |
 | D5 | En la tabla por proyecto, al hacer scroll la cabecera fija muestra el proyecto y la fila de nombres de columna se va. | **Aceptarlo en v1**: con grupos, los nombres de columna importan menos que saber en qué proyecto estás. | Fijar las dos: toca la lógica de la cabecera fija de `interactive`, que hoy pinta solo la `head` más cercana por encima del cursor. |
+| D6 | ¿Pestañas siempre o solo con `Ctrl-G`? | **Solo con `Ctrl-G`** (R13): son parte de la vista por proyecto. | Siempre: una línea más en el panel para quien no las usa. |
+| D7 | Dentro de la pestaña de un proyecto, ¿cómo se agrupa? | **Por estado** (R15). | Lista plana por actividad. |
+| D8 | ¿`→` en la última pestaña? | **Vuelve a Todas** (R14), como `↑↓` dan la vuelta. | Quedarse en la última. |
+| D9 | ¿Cambiar de pestaña con un clic? | **Después** (Fuera de alcance). | Ahora: obliga a leer la columna del ratón. |
 
 ## Riesgos
 
