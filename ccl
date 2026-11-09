@@ -37,6 +37,7 @@ MIT License
 """
 
 import datetime
+import functools
 import glob
 import json
 import os
@@ -1534,15 +1535,17 @@ def sort_key(r):
 
 def matches(row, query):
     """
-    Coincidencia laxa: sin acentos, sin mayusculas, sobre nombre, repo, rama, cuenta y
+    Coincidencia laxa: sin acentos, sin mayusculas, sobre nombre, repo, rama, cuenta,
     **tu nota** — que es media razon para escribirla: poner "facturacion" a un repo que
-    se llama `web-app` y poder encontrarlo por esa palabra.
+    se llama `web-app` y poder encontrarlo por esa palabra — y el proyecto, en las dos
+    agrupaciones: `emaus` tiene que encontrar la sesion de un worktree de emaus aunque su
+    `repo` diga `offline-mode`.
     """
     if not query:
         return True
-    heno = strip_accents(" ".join(str(row.get(k) or "")
-                                  for k in ("name", "repo", "branch", "account",
-                                            "note")).lower())
+    campos = [str(row.get(k) or "") for k in ("name", "repo", "branch", "account", "note")]
+    campos.append(proyecto_de(row.get("cwd") or "")[1])
+    heno = strip_accents(" ".join(campos).lower())
     return all(t in heno for t in strip_accents(query.lower()).split())
 
 
@@ -1641,6 +1644,155 @@ def estado_de(row):
     return t("grupo_idle"), YELLOW
 
 
+# ─────────────────────────── vista por proyecto ───────────────────────────
+#
+# La otra forma de AGRUPAR (Ctrl-G, --projects): por proyecto en vez de por estado. Es
+# independiente de la DISPOSICION (Ctrl-T): las cuatro combinaciones existen. Lo que lo hace
+# barato es que `agrupar_por_proyecto` devuelve la misma forma que `grouped`, asi que el
+# cursor, el clic, el scroll y la cabecera fija no se enteran. Diseño en
+# specs/001-vista-por-proyecto.md.
+
+
+@functools.lru_cache(maxsize=1024)
+def proyecto_de(cwd):
+    """
+    (raiz, nombre) del proyecto al que pertenece `cwd`.
+
+    La columna `repo` es `basename(cwd)` y miente con subcarpetas y worktrees: los doce
+    directorios de un mismo repo salian con nueve nombres (`web`, `api`, `offline-mode`…).
+    Se sube hasta encontrar `.git` o `.svn`, y el `.git` ARCHIVO de un worktree vinculado se
+    sigue hasta su repo principal. Sin ninguna marca, la raiz es el propio `cwd`.
+
+    Sin subprocesos, a proposito: `git rev-parse` seria uno por directorio, fallaria con los
+    worktrees ya borrados —justo los de `--recent`— y no sabe nada de SVN. Esto son unos
+    `stat`: 200 directorios reales en ~5 ms. Y funciona con rutas que ya no existen, porque
+    `isdir` de algo inexistente es False y se sigue subiendo hasta el repo que si existe.
+
+    NO sube hasta `HOME` ni mira su `.git`: quien versiona su `HOME` (dotfiles con `~/.git`)
+    veria todas las sesiones sin repo propio fundidas en un grupo con su nombre.
+
+    Se deriva del `cwd` aqui y no es un campo que rellene `build`: las filas nacen tambien en
+    `fila_de_disco` y en el arnes de los tests, y un campo de `build` saldria vacio en esos
+    dos sin que nada fallara. La cache es porque el filtro la llama en cada tecla.
+    """
+    if not cwd:
+        return "", ""
+    cwd = os.path.normpath(cwd)
+    raiz = cwd
+    d = cwd
+    while d != HOME and d != os.path.dirname(d):   # lo segundo es "/"
+        git = os.path.join(d, ".git")
+        if os.path.isdir(git) or os.path.isdir(os.path.join(d, ".svn")):
+            raiz = d
+            break
+        if os.path.isfile(git):
+            raiz = _raiz_de_worktree(d, git) or d
+            break
+        d = os.path.dirname(d)
+    return raiz, sin_control(os.path.basename(raiz) or raiz)
+
+
+def _raiz_de_worktree(d, git):
+    """
+    La raiz del repo principal si `git` (un `.git` archivo) es de un worktree vinculado, o
+    None.
+
+    Un worktree dice `gitdir: <R>/.git/worktrees/<nombre>`, y su proyecto es `R`. Un
+    submodulo tambien tiene un `.git` archivo, pero apunta a `<super>/.git/modules/<x>`: ese
+    si es su propio proyecto, asi que solo se sigue la forma de worktree. El contenido viene
+    de fuera: se lee acotado y solo se usa para calcular una ruta, nunca se ejecuta.
+    """
+    try:
+        with open(git, encoding="utf-8", errors="replace") as fh:
+            primera = (fh.read(4096).splitlines() or [""])[0]
+    except OSError:
+        return None
+    if not primera.startswith("gitdir:"):
+        return None
+    gitdir = os.path.normpath(os.path.join(d, primera[len("gitdir:"):].strip()))
+    worktrees = os.path.dirname(gitdir)
+    punto_git = os.path.dirname(worktrees)
+    if os.path.basename(worktrees) == "worktrees" and os.path.basename(punto_git) == ".git":
+        return os.path.dirname(punto_git)
+    return None
+
+
+def donde(r):
+    """
+    Lo que va en la columna `repo` en la vista por proyecto: vacio si la sesion esta en la
+    raiz, y el nombre del worktree o de la subcarpeta si no. Repetir el proyecto seis veces
+    bajo su propia cabecera es ruido; lo que informa es la excepcion.
+    """
+    cwd = r.get("cwd") or ""
+    return "" if os.path.normpath(cwd) == proyecto_de(cwd)[0] else r["repo"]
+
+
+def _etiquetas_de_proyecto(raices):
+    """
+    {raiz: etiqueta}. La CLAVE del grupo es la raiz; el nombre solo se enseña. Si dos raices
+    distintas se llaman igual (`~/cariai/api` y `~/personal/api`), las dos llevan sus dos
+    ultimos componentes: con el nombre a secas saldrian dos grupos indistinguibles.
+    """
+    nombres = {r: sin_control(os.path.basename(r) or r) for r in raices}
+    repetidos = {n for n in nombres.values()
+                 if sum(1 for m in nombres.values() if m == n) > 1}
+    return {r: (sin_control(os.path.join(os.path.basename(os.path.dirname(r)), n))
+                if n in repetidos else n)
+            for r, n in nombres.items()}
+
+
+def agrupar_por_proyecto(rows):
+    """
+    [(etiqueta, color, filas)] por proyecto — la MISMA forma que `grouped`.
+
+    Los proyectos van en orden alfabetico, sin mayusculas ni acentos: asi no bailan entre
+    refrescos y se aprende donde esta cada uno (la misma razon por la que los anchos de la
+    tabla no se ajustan al contenido). Uno cuyas filas son TODAS de las que faltan de una
+    foto va al final, por lo mismo que su grupo en `grouped`: arriba empujaria fuera de
+    pantalla lo que si esta.
+
+    Dentro de cada proyecto, el orden es el de `grouped` aplicado a sus filas — estado y
+    luego actividad —, reutilizado y no reimplementado. De paso hereda que los grupos sean
+    excluyentes: cada fila sale una sola vez.
+    """
+    por_raiz = {}
+    for r in rows:
+        por_raiz.setdefault(proyecto_de(r.get("cwd") or "")[0], []).append(r)
+    etiquetas = _etiquetas_de_proyecto(por_raiz)
+
+    def solo_faltan(raiz):
+        return all(f.get("faltante") for f in por_raiz[raiz])
+
+    orden = sorted(por_raiz, key=lambda raiz: (
+        solo_faltan(raiz), strip_accents(etiquetas[raiz]).lower(), raiz))
+    return [(etiquetas[raiz], GREY if solo_faltan(raiz) else MAGENTA,
+             [f for _, _, items in grouped(por_raiz[raiz]) for f in items])
+            for raiz in orden]
+
+
+def grupos(rows, por_proyecto=False):
+    """El unico sitio que elige la agrupacion. Las dos devuelven la misma forma."""
+    return agrupar_por_proyecto(rows) if por_proyecto else grouped(rows)
+
+
+def cabecera_grupo(etiqueta, color, filas, por_proyecto=False, ancho=None):
+    """
+    `ETIQUETA (n)`, y en la vista por proyecto ademas el resumen de estados con sus
+    colores, sin los que estan a cero: `support_agent (6) · working 2 · waiting 3`.
+
+    Etiqueta y luego numero, no al reves: `1 pausadas` no se puede decir en español y
+    `pausadas 1` si, sin claves de traduccion nuevas para el plural.
+
+    Se recorta AQUI porque el panel no recorta las lineas `head` al pintar: una cabecera
+    de proyecto con su resumen se salia del ancho y envolvia, descolocando el panel entero.
+    """
+    texto = color(BOLD(f"{etiqueta} ({len(filas)})"))
+    if por_proyecto:
+        for lbl, col, items in grouped(filas):
+            texto += DIM(" · ") + col(f"{lbl.lower()} {len(items)}")
+    return clip(texto, ancho) if ancho else texto
+
+
 def marca_shells(r):
     """` ⚡N` si la sesion tiene N comandos de Bash corriendo, o "" si no."""
     n = r.get("shells") or 0
@@ -1658,12 +1810,26 @@ def gris_si_falta(r, texto):
     return GREY(ANSI_RE.sub("", texto)) if r.get("faltante") and texto else texto
 
 
-def main_line(r, show_account=False):
-    """Linea principal coloreada, con las columnas alineadas por ancho VISIBLE."""
+def main_line(r, show_account=False, por_proyecto=False):
+    """
+    Linea principal coloreada, con las columnas alineadas por ancho VISIBLE.
+
+    Agrupando por proyecto, la cabecera ya no dice el estado, asi que lo dice la fila, con
+    la etiqueta y el color de la columna de la tabla; el nombre cede nueve columnas para que
+    la linea siga cabiendo en 80 (el panel la recorta a 76) sin perder la antiguedad ni el
+    ⚠ que va detras: con ocho, una sesion vieja y sin ventana llegaba a 77 y el recorte se
+    comia el aviso. Y `repo` pasa a ser `donde`.
+    """
     num = CYAN(BOLD(f"[{r['num']:>2}]"))
+    estado = ""
+    if por_proyecto:
+        etiqueta, color = estado_de(r)
+        estado = pad(clip(color(etiqueta), 10), 11)
     # En rojo si la conversacion esta abierta dos veces: la linea de detalle dice con cual.
-    name = pad((RED if r.get("duplicada") else BOLD)(r["name"][:36]), 38)
-    repo = pad(MAGENTA(r["repo"][:15]), 17)
+    ancho_nombre = 27 if por_proyecto else 36
+    name = pad((RED if r.get("duplicada") else BOLD)(r["name"][:ancho_nombre]),
+               ancho_nombre + 2)
+    repo = pad(MAGENTA((donde(r) if por_proyecto else r["repo"])[:15]), 17)
     # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
     # seria una columna vacia en todas las filas.
     acct = pad(GREY(r.get("account") or ""), 11) if show_account else ""
@@ -1673,7 +1839,7 @@ def main_line(r, show_account=False):
     # ventana de iTerm ahora mismo.
     warn = "" if r["ventana"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
     return gris_si_falta(
-        r, f"{num} {name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}")
+        r, f"{num} {estado}{name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}")
 
 
 def detail_line(r, width=None):
@@ -1738,15 +1904,15 @@ def table_head(width=100, show_account=False):
     return DIM(clip(fijas + t("col_nota"), width))
 
 
-def table_line(r, width=100, show_account=False):
-    """Una sesion en una sola linea, en columnas."""
+def table_line(r, width=100, show_account=False, por_proyecto=False):
+    """Una sesion en una sola linea, en columnas. Por proyecto, `repo` pasa a ser `donde`."""
     etiqueta, color = estado_de(r)
     celda = {
         "num": CYAN(BOLD(f"[{r['num']:>2}]")),
         "estado": color(etiqueta),
         "name": (RED if r.get("duplicada") else BOLD)(r["name"]),
         "account": GREY(r.get("account") or ""),
-        "repo": MAGENTA(r["repo"]),
+        "repo": MAGENTA(donde(r) if por_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),
         "model": color_model(r["model"]),
         "ts": color_age(r["ts"]),
@@ -1774,23 +1940,27 @@ def table_line(r, width=100, show_account=False):
     return gris_si_falta(r, clip(fijas + clip(cola, resto) + warn, width))
 
 
-def render(rows, tabla=False):
+def render(rows, tabla=False, por_proyecto=False):
     """Listado estatico (para --list y terminales sin TTY)."""
     width = (os.get_terminal_size().columns if sys.stdout.isatty() else 110)
     multi = multi_account(rows)
     print()
     if tabla:
         print("  " + table_head(width - 2, multi))
-        for _, _, items in grouped(rows):
+        for label, color, items in grupos(rows, por_proyecto):
+            # la tabla por estado no lleva cabeceras de grupo: el estado es una columna.
+            # Por proyecto si, porque el proyecto no lo es.
+            if por_proyecto:
+                print("  " + cabecera_grupo(label, color, items, True, width - 2))
             for r in items:
-                print("  " + table_line(r, width - 2, multi))
+                print("  " + table_line(r, width - 2, multi, por_proyecto))
         print()
         return
-    for label, color, items in grouped(rows):
-        print(color(BOLD(f"  {label} ({len(items)})")))
+    for label, color, items in grupos(rows, por_proyecto):
+        print("  " + cabecera_grupo(label, color, items, por_proyecto, width - 2))
         print()
         for r in items:
-            print("  " + main_line(r, multi))
+            print("  " + main_line(r, multi, por_proyecto))
             d = detail_line(r, width - 9)
             if d:
                 print("       " + d)
@@ -2347,7 +2517,7 @@ def render_help(cols, term_rows, pagina=0, paginas=None):
     return "".join(buf)
 
 
-def build_display(rows, width=100):
+def build_display(rows, width=100, por_proyecto=False):
     """
     Lista plana de (rol, texto, fila). Roles:
       'head'   cabecera de grupo, no seleccionable
@@ -2357,10 +2527,12 @@ def build_display(rows, width=100):
     """
     lines = []
     multi = multi_account(rows)
-    for label, color, items in grouped(rows):
-        lines.append(("head", color(BOLD(f"{label} ({len(items)})")), None))
+    for label, color, items in grupos(rows, por_proyecto):
+        # a `width - 4`, como la tabla: el panel no recorta las `head` al pintar
+        lines.append(("head", cabecera_grupo(label, color, items, por_proyecto,
+                                             max(20, width - 4)), None))
         for r in items:
-            lines.append(("main", main_line(r, multi), r))
+            lines.append(("main", main_line(r, multi, por_proyecto), r))
             d = detail_line(r, width - 9)
             if d:
                 lines.append(("sub", d, r))
@@ -2368,7 +2540,7 @@ def build_display(rows, width=100):
     return lines
 
 
-def build_table_display(rows, width=100):
+def build_table_display(rows, width=100, por_proyecto=False):
     """
     Lo mismo que `build_display`, en tabla: cabecera de columnas y una linea por sesion.
 
@@ -2382,25 +2554,34 @@ def build_table_display(rows, width=100):
     ancho = max(40, width - 4)
     multi = multi_account(rows)
     lines = [("head", table_head(ancho, multi), None)]
-    for _, _, items in grouped(rows):
+    for label, color, items in grupos(rows, por_proyecto):
+        # Por estado, la tabla no lleva cabeceras de grupo: el estado es una columna. Por
+        # proyecto si, porque el proyecto no lo es.
+        if por_proyecto:
+            lines.append(("head", cabecera_grupo(label, color, items, True, ancho), None))
         for r in items:
-            lines.append(("main", table_line(r, ancho, multi), r))
+            lines.append(("main", table_line(r, ancho, multi, por_proyecto), r))
     return lines
 
 
-def vista(rows, width, tabla):
-    """El constructor de lineas que toca segun la vista activa."""
-    return build_table_display(rows, width) if tabla else build_display(rows, width)
+def vista(rows, width, tabla, por_proyecto=False):
+    """
+    El constructor de lineas que toca. Disposicion (`tabla`, Ctrl-T) y agrupacion
+    (`por_proyecto`, Ctrl-G) son independientes: las cuatro combinaciones existen.
+    """
+    if tabla:
+        return build_table_display(rows, width, por_proyecto)
+    return build_display(rows, width, por_proyecto)
 
 
-def interactive(feed, tabla=False):
+def interactive(feed, tabla=False, por_proyecto=False):
     """
     Panel vivo: flechas, numero o clic para elegir; Enter o doble clic para saltar.
     NO se cierra al saltar — sigue abierto y refrescandose hasta que pulses esc/q.
     """
     cols0 = os.get_terminal_size().columns if sys.stdout.isatty() else 100
     rows, stamp = feed.snapshot()
-    lines = vista(rows, cols0, tabla)  # query vacia al arrancar
+    lines = vista(rows, cols0, tabla, por_proyecto)  # query vacia al arrancar
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = clave_de(lines[pickable[0]][2]) if pickable else None
     typed, top, flash, query = "", 0, "", ""
@@ -2443,7 +2624,7 @@ def interactive(feed, tabla=False):
                 stamp, last_cols, requery = new_stamp, now_cols, False
                 rows = filas_recent if modo_recent else fresh
                 shown = [r for r in rows if matches(r, query)]
-                lines = vista(shown, now_cols, tabla)
+                lines = vista(shown, now_cols, tabla, por_proyecto)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
                 if pickable and not any(clave_de(lines[i][2]) == sel_id for i in pickable):
                     sel_id = clave_de(lines[pickable[0]][2])  # el filtro dejo fuera al cursor
@@ -3384,7 +3565,7 @@ def parse_args(argv):
     """
     opts = {"list": False, "num": None, "waiting": None, "help": False,
             "version": False, "table": False, "recent": None, "save": False,
-            "restore": False, "saved": False}
+            "restore": False, "saved": False, "projects": False}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -3396,6 +3577,8 @@ def parse_args(argv):
             opts["list"] = True
         elif a in ("-t", "--table"):
             opts["table"] = True
+        elif a in ("-p", "--projects"):
+            opts["projects"] = True
         elif a == "--save":
             opts["save"] = True
         elif a == "--restore":
@@ -3482,13 +3665,13 @@ def main():
             return 1
         rows = con_faltantes(rows)
         if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
-            render(rows, opts["table"])
+            render(rows, opts["table"], opts["projects"])
             return 0
         # La fuente del Feed recalcula las que faltan en CADA refresco: segun vas
         # reanudando, cada una pasa de gris a su grupo de verdad sin tocar nada.
         feed = Feed(rows, fuente=lambda: con_faltantes(collect()))
         try:
-            interactive(feed, opts["table"])
+            interactive(feed, opts["table"], opts["projects"])
         finally:
             feed.stop()
         return 0
@@ -3501,9 +3684,9 @@ def main():
             print(t("sin_recuperables"))
             return 0
         if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
-            render(recuperables, opts["table"])
+            render(recuperables, opts["table"], opts["projects"])
             return 0
-        interactive(FeedFijo(recuperables), opts["table"])
+        interactive(FeedFijo(recuperables), opts["table"], opts["projects"])
         return 0
 
     if not rows:
@@ -3527,12 +3710,12 @@ def main():
 
     # Sin TTY (pipe, script) o --list: salida estatica, sin interaccion
     if opts["list"] or not sys.stdin.isatty() or not sys.stdout.isatty():
-        render(rows, opts["table"])
+        render(rows, opts["table"], opts["projects"])
         return 0
 
     feed = Feed(rows)
     try:
-        interactive(feed, opts["table"])
+        interactive(feed, opts["table"], opts["projects"])
     finally:
         feed.stop()
     return 0

@@ -969,7 +969,7 @@ class TestParseoDeArgumentos(unittest.TestCase):
         self.assertEqual(opts, {"list": False, "num": None, "waiting": None,
                                 "help": False, "version": False, "table": False,
                                 "recent": None, "save": False, "restore": False,
-                                "saved": False})
+                                "saved": False, "projects": False})
 
     def test_numero_suelto_es_ir_a_esa_sesion(self):
         opts, err = ccl.parse_args(["7"])
@@ -1011,6 +1011,15 @@ class TestParseoDeArgumentos(unittest.TestCase):
         opts, err = ccl.parse_args(["--recent", "5"])
         self.assertIsNone(err)
         self.assertIsNone(opts["num"])
+
+    def test_projects(self):
+        self.assertTrue(ccl.parse_args(["--projects"])[0]["projects"])
+        self.assertTrue(ccl.parse_args(["-p"])[0]["projects"])
+        # es una agrupacion, no una disposicion: se combina con la tabla y con las demas
+        for otras in (["--list", "--table"], ["--recent"], ["--saved"]):
+            opts, err = ccl.parse_args(["-p"] + otras)
+            self.assertIsNone(err, otras)
+            self.assertTrue(opts["projects"], otras)
 
     def test_saved(self):
         self.assertTrue(ccl.parse_args(["--saved"])[0]["saved"])
@@ -1331,6 +1340,308 @@ class TestTabla(unittest.TestCase):
         for ancho in (80, 100, 128):
             for _, texto, _ in ccl.build_table_display(self.filas(), width=ancho):
                 self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
+
+
+# ────────────────────────── vista por proyecto ──────────────────────────
+
+
+class TestProyectoDe(unittest.TestCase):
+    """
+    `proyecto_de` sube por el sistema de archivos, asi que los casos se montan en un
+    directorio temporal que hace de HOME. Y se vacia la cache en cada test: las rutas son
+    distintas cada vez, pero un test que creara el `.git` despues de preguntar veria el
+    resultado viejo.
+    """
+
+    def setUp(self):
+        self.home = os.path.realpath(tempfile.mkdtemp())
+        self._home = ccl.HOME
+        ccl.HOME = self.home
+        ccl.proyecto_de.cache_clear()
+
+    def tearDown(self):
+        ccl.HOME = self._home
+        ccl.proyecto_de.cache_clear()
+
+    def dir(self, *partes):
+        ruta = os.path.join(self.home, *partes)
+        os.makedirs(ruta, exist_ok=True)
+        return ruta
+
+    def archivo(self, ruta, contenido):
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        with open(ruta, "w") as fh:
+            fh.write(contenido)
+
+    def test_la_raiz_y_sus_subcarpetas_son_el_mismo_proyecto(self):
+        repo = self.dir("code", "emaus")
+        self.dir("code", "emaus", ".git")
+        web = self.dir("code", "emaus", "apps", "web")
+        self.assertEqual(ccl.proyecto_de(repo), (repo, "emaus"))
+        self.assertEqual(ccl.proyecto_de(web), (repo, "emaus"))
+
+    def test_un_worktree_vinculado_va_con_su_repo(self):
+        """El `.git` de un worktree es un ARCHIVO que apunta a <R>/.git/worktrees/<n>."""
+        repo = self.dir("code", "NewCariAI")
+        self.dir("code", "NewCariAI", ".git", "worktrees", "Colsanitas")
+        wt = self.dir("worktrees", "Colsanitas")
+        self.archivo(os.path.join(wt, ".git"),
+                     f"gitdir: {repo}/.git/worktrees/Colsanitas\n")
+        self.assertEqual(ccl.proyecto_de(wt), (repo, "NewCariAI"))
+        self.assertEqual(ccl.proyecto_de(self.dir("worktrees", "Colsanitas", "src")),
+                         (repo, "NewCariAI"))
+
+    def test_el_gitdir_relativo_tambien_vale(self):
+        repo = self.dir("code", "api")
+        self.dir("code", "api", ".git", "worktrees", "wt")
+        wt = self.dir("code", "wt")
+        self.archivo(os.path.join(wt, ".git"), "gitdir: ../api/.git/worktrees/wt\n")
+        self.assertEqual(ccl.proyecto_de(wt)[0], repo)
+
+    def test_un_worktree_ya_borrado_sube_hasta_el_repo(self):
+        """Los de `--recent`: el directorio no existe, pero su repo si."""
+        repo = self.dir("code", "emaus")
+        self.dir("code", "emaus", ".git")
+        muerto = os.path.join(repo, ".claude", "worktrees", "offline-mode", "apps", "web")
+        self.assertFalse(os.path.exists(muerto))
+        self.assertEqual(ccl.proyecto_de(muerto), (repo, "emaus"))
+
+    def test_un_submodulo_es_su_propio_proyecto(self):
+        """Tambien tiene un `.git` archivo, pero apunta a .git/modules, no a worktrees."""
+        self.dir("code", "super", ".git", "modules", "lib")
+        sub = self.dir("code", "super", "lib")
+        self.archivo(os.path.join(sub, ".git"), "gitdir: ../.git/modules/lib\n")
+        self.assertEqual(ccl.proyecto_de(sub), (sub, "lib"))
+
+    def test_svn_y_un_checkout_anidado(self):
+        """SVN >= 1.7 deja `.svn` solo en la raiz; uno anidado es OTRO checkout."""
+        raiz = self.dir("code", "defybots_svn")
+        self.dir("code", "defybots_svn", ".svn")
+        anidado = self.dir("code", "defybots_svn", "phalcore_svn")
+        self.dir("code", "defybots_svn", "phalcore_svn", ".svn")
+        self.assertEqual(ccl.proyecto_de(self.dir("code", "defybots_svn", "a", "b"))[0],
+                         raiz)
+        self.assertEqual(ccl.proyecto_de(os.path.join(anidado, "x"))[0], anidado)
+
+    def test_sin_control_de_versiones_es_el_propio_directorio(self):
+        notas = self.dir("Documents", "Leo", "Salud")
+        self.assertEqual(ccl.proyecto_de(notas), (notas, "Salud"))
+
+    def test_no_sube_hasta_un_home_versionado(self):
+        """Con dotfiles en ~/.git, todo lo que no tenga repo propio acabaria en un grupo."""
+        self.dir(".git")
+        notas = self.dir("Documents", "notas")
+        self.assertEqual(ccl.proyecto_de(notas)[0], notas)
+        self.assertEqual(ccl.proyecto_de(self.home)[0], self.home)
+
+    def test_un_git_raro_no_revienta(self):
+        """Un `.git` archivo sin `gitdir:` deja la raiz donde esta: no se adivina mas."""
+        d = self.dir("code", "raro")
+        self.archivo(os.path.join(d, ".git"), "esto no es un gitdir\n")
+        self.assertEqual(ccl.proyecto_de(self.dir("code", "raro", "x"))[0], d)
+        vacio = self.dir("code", "vacio")
+        self.archivo(os.path.join(vacio, ".git"), "")
+        self.assertEqual(ccl.proyecto_de(vacio)[0], vacio)
+
+    def test_un_git_ilegible_no_revienta(self):
+        if os.geteuid() == 0:
+            self.skipTest("root lee cualquier cosa")
+        d = self.dir("code", "cerrado")
+        self.archivo(os.path.join(d, ".git"), "gitdir: /x/.git/worktrees/y\n")
+        os.chmod(os.path.join(d, ".git"), 0)
+        try:
+            self.assertEqual(ccl.proyecto_de(d)[0], d)
+        finally:
+            os.chmod(os.path.join(d, ".git"), 0o600)
+
+    def test_el_nombre_viene_de_fuera_y_se_sanea(self):
+        """Un `\\033[2A` en el nombre del directorio reescribiria la fila de otra sesion."""
+        _, nombre = ccl.proyecto_de("/no/existe/malo\033[2Anombre")
+        self.assertNotIn("\033", nombre)
+
+    def test_sin_cwd(self):
+        self.assertEqual(ccl.proyecto_de(""), ("", ""))
+
+
+def en(cwd, num, sid, status="idle", **kw):
+    """Una fila de `row` en un directorio concreto, con su `repo` como lo pone `build`."""
+    r = row(num, sid, status, **kw)
+    r["cwd"], r["repo"] = cwd, os.path.basename(cwd)
+    return r
+
+
+class TestAgruparPorProyecto(unittest.TestCase):
+    """Rutas que no existen: caen al ultimo paso, el propio `cwd` es la raiz."""
+
+    def setUp(self):
+        ccl.proyecto_de.cache_clear()
+
+    def test_cada_fila_sale_una_sola_vez(self):
+        """Los grupos son excluyentes tambien aqui, con todos los estados mezclados."""
+        rows = [en("/x/a", 1, "busy", "busy"), en("/x/a", 2, "idle"),
+                en("/x/b", 3, "pausada", paused=True), en("/x/b", 4, "bg", kind="background"),
+                en("/x/b", 5, "pausada-busy", "busy", paused=True),
+                en("/x/c", 6, "recuperable"), en("/x/c", 7, "falta")]
+        rows[5]["recoverable"] = True
+        rows[6].update({"recoverable": True, "faltante": True})
+        vistas = [r["sessionId"] for _, _, items in ccl.agrupar_por_proyecto(rows)
+                  for r in items]
+        self.assertEqual(sorted(vistas), sorted(r["sessionId"] for r in rows))
+
+    def test_misma_forma_que_grouped(self):
+        """Es lo que hace que el cursor, el clic y el scroll no se enteren."""
+        for etiqueta, color, items in ccl.agrupar_por_proyecto([en("/x/a", 1, "a")]):
+            self.assertIsInstance(etiqueta, str)
+            self.assertTrue(callable(color))
+            self.assertIsInstance(items, list)
+
+    def test_orden_alfabetico_sin_mayusculas_ni_acentos(self):
+        rows = [en("/x/beta", 1, "b", ts=iso(minutes=1)),
+                en("/x/alfa", 2, "a", ts=iso(days=9)),
+                en("/x/Álamo", 3, "al", ts=iso(days=3))]
+        self.assertEqual([lbl for lbl, _, _ in ccl.agrupar_por_proyecto(rows)],
+                         ["Álamo", "alfa", "beta"])
+
+    def test_dentro_de_cada_proyecto_manda_el_orden_de_grouped(self):
+        """Lo que corre primero, luego lo que espera por actividad: `grouped`, reutilizado."""
+        rows = [en("/x/a", 1, "vieja", ts=iso(days=2)),
+                en("/x/a", 2, "nueva", ts=iso(minutes=1)),
+                en("/x/a", 3, "corre", "busy", ts=iso(days=5))]
+        (_, _, items), = ccl.agrupar_por_proyecto(rows)
+        self.assertEqual([r["sessionId"] for r in items], ["corre", "nueva", "vieja"])
+
+    def test_un_proyecto_que_solo_tiene_faltantes_va_al_final(self):
+        falta = en("/x/aaa", 1, "falta")
+        falta.update({"recoverable": True, "faltante": True})
+        rows = [falta, en("/x/zzz", 2, "viva")]
+        self.assertEqual([lbl for lbl, _, _ in ccl.agrupar_por_proyecto(rows)],
+                         ["zzz", "aaa"])
+
+    def test_dos_raices_con_el_mismo_nombre_no_se_funden(self):
+        rows = [en("/x/cariai/api", 1, "a"), en("/x/personal/api", 2, "b")]
+        g = ccl.agrupar_por_proyecto(rows)
+        self.assertEqual([lbl for lbl, _, _ in g], ["cariai/api", "personal/api"])
+        self.assertEqual([len(items) for _, _, items in g], [1, 1])
+
+    def test_grupos_elige_la_agrupacion(self):
+        rows = [en("/x/a", 1, "a", "busy"), en("/x/b", 2, "b")]
+        self.assertEqual(ccl.grupos(rows), ccl.grouped(rows))
+        self.assertEqual(ccl.grupos(rows, True), ccl.agrupar_por_proyecto(rows))
+
+    def test_w_y_alt_n_no_dependen_de_la_agrupacion(self):
+        """
+        ⌥1 es la esperando mas reciente aunque en la vista por proyecto no sea la primera
+        amarilla que se ve: el mismo atajo no puede llevar a sitios distintos segun la vista.
+        """
+        rows = [en("/x/aaa", 1, "vieja", ts=iso(days=2)),
+                en("/x/zzz", 2, "nueva", ts=iso(minutes=1))]
+        primera_visible = ccl.agrupar_por_proyecto(rows)[0][2][0]
+        self.assertEqual(primera_visible["sessionId"], "vieja")
+        self.assertEqual(ccl.pick_waiting(rows, 1)[0]["sessionId"], "nueva")
+
+
+class TestVistaPorProyecto(unittest.TestCase):
+    def setUp(self):
+        ccl.proyecto_de.cache_clear()
+
+    def filas(self):
+        return [en("/x/support_agent", 1, "a", "busy", ts=iso(minutes=1)),
+                en("/x/support_agent", 2, "b", ts=iso(minutes=2)),
+                en("/x/support_agent", 3, "c", ts=iso(minutes=3), paused=True),
+                en("/x/emaus", 4, "d", ts=iso(days=40))]
+
+    def plano(self, texto):
+        return ccl.ANSI_RE.sub("", texto)
+
+    def test_la_cabecera_resume_los_estados_sin_los_ceros(self):
+        _, color, items = next(g for g in ccl.agrupar_por_proyecto(self.filas())
+                               if g[0] == "support_agent")
+        cab = self.plano(ccl.cabecera_grupo("support_agent", color, items, True))
+        self.assertTrue(cab.startswith("support_agent (3)"), cab)
+        for clave, n in (("grupo_busy", 1), ("grupo_idle", 1), ("grupo_pausa", 1)):
+            self.assertIn(f"{ccl.t(clave).lower()} {n}", cab)
+        self.assertNotIn(ccl.t("grupo_bg").lower(), cab)
+
+    def test_por_estado_la_cabecera_no_cambia(self):
+        cab = ccl.cabecera_grupo(ccl.t("grupo_idle"), ccl.YELLOW, [row(1, "a")])
+        self.assertEqual(self.plano(cab), f"{ccl.t('grupo_idle')} (1)")
+
+    def test_la_cabecera_se_recorta_al_construirla(self):
+        """El panel no recorta las `head` al pintar: si se sale, envuelve."""
+        rows = [en("/x/" + "n" * 90, 1, "a", "busy"), en("/x/" + "n" * 90, 2, "b")]
+        for ancho in (80, 100):
+            for rol, texto, _ in ccl.build_display(rows, ancho, por_proyecto=True):
+                if rol == "head":
+                    self.assertLessEqual(ccl.vis(texto), ancho - 4, f"ancho={ancho}")
+
+    def test_ninguna_linea_desborda_en_ninguna_disposicion(self):
+        for ancho in (80, 100, 200):
+            for tabla in (False, True):
+                for rol, texto, _ in ccl.vista(self.filas(), ancho, tabla, True):
+                    limite = ancho - 4 if rol == "head" or tabla else ancho
+                    self.assertLessEqual(ccl.vis(texto), limite,
+                                         f"ancho={ancho} tabla={tabla}: {texto!r}")
+
+    def test_la_linea_principal_cabe_en_80_sin_perder_la_antiguedad(self):
+        """
+        El panel pinta la `main` recortada a cols - 4, y la antiguedad y el ⚠ van al final:
+        con el caso mas largo (fecha completa y sin ventana) tienen que caber los dos.
+        """
+        r = en("/x/a", 1, "a", ts=iso(days=40))
+        r["name"] = "un nombre de sesion larguisimo que no cabe ni de broma"
+        linea = self.plano(ccl.main_line(r, por_proyecto=True))
+        self.assertLessEqual(len(linea), 76, linea)
+        self.assertTrue(linea.endswith(self.plano(ccl.color_age(r["ts"])) + " ⚠"), linea)
+
+    def test_cada_fila_dice_su_estado_tambien_en_dos_lineas(self):
+        plano = {f["sessionId"]: self.plano(txt)
+                 for rol, txt, f in ccl.build_display(self.filas(), 120, True)
+                 if rol == "main"}
+        self.assertIn(ccl.t("grupo_busy"), plano["a"])
+        self.assertIn(ccl.t("grupo_idle"), plano["b"])
+        self.assertIn(ccl.t("grupo_pausa"), plano["c"])
+
+    def test_por_estado_la_linea_principal_no_cambia(self):
+        r = en("/x/a", 1, "a", ts=iso(minutes=1))
+        self.assertNotIn(ccl.t("grupo_idle"), self.plano(ccl.main_line(r)))
+
+    def test_repo_vacio_en_la_raiz_y_el_worktree_si_no(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(tmp, "emaus", ".git"))
+        raiz = en(os.path.join(tmp, "emaus"), 1, "raiz")
+        wt = en(os.path.join(tmp, "emaus", ".claude", "worktrees", "offline-mode"), 2, "wt")
+        self.assertEqual(ccl.donde(raiz), "")
+        self.assertEqual(ccl.donde(wt), "offline-mode")
+        for linea in (ccl.main_line(wt, por_proyecto=True),
+                      ccl.table_line(wt, 120, por_proyecto=True)):
+            self.assertIn("offline-mode", self.plano(linea))
+
+    def test_la_tabla_por_proyecto_lleva_una_cabecera_por_proyecto(self):
+        lines = ccl.build_table_display(self.filas(), 120, por_proyecto=True)
+        self.assertEqual([r for r, _, _ in lines],
+                         ["head", "head", "main", "head", "main", "main", "main"])
+        self.assertIn("emaus (1)", self.plano(lines[1][1]))
+
+    def test_las_cuatro_combinaciones_usan_los_mismos_roles(self):
+        for tabla in (False, True):
+            for por_proyecto in (False, True):
+                lineas = ccl.vista(self.filas(), 120, tabla, por_proyecto)
+                self.assertLessEqual({rol for rol, _, _ in lineas},
+                                     {"head", "main", "sub", "blank"})
+                self.assertEqual(sorted(f["sessionId"] for rol, _, f in lineas
+                                        if rol == "main"), ["a", "b", "c", "d"])
+
+    def test_el_nombre_de_un_directorio_no_mueve_el_cursor(self):
+        rows = [en("/x/malo\033[2Anombre", 1, "a")]
+        for rol, texto, _ in ccl.build_display(rows, 100, True):
+            self.assertNotIn("\033[2A", texto)
+
+    def test_el_filtro_encuentra_por_proyecto(self):
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(tmp, "emaus", ".git"))
+        wt = en(os.path.join(tmp, "emaus", ".claude", "worktrees", "offline-mode"), 1, "wt")
+        self.assertTrue(ccl.matches(wt, "emaus"))
+        self.assertFalse(ccl.matches(wt, "support"))
 
 
 class TestTmux(unittest.TestCase):
@@ -2094,6 +2405,19 @@ class TestListadoEstatico(unittest.TestCase):
         for vista in (self._render(True), self._render(False)):
             for n in ("[ 1]", "[ 2]", "[ 3]"):
                 self.assertIn(n, vista)
+
+    def test_por_proyecto_en_las_dos_disposiciones(self):
+        """`ccl --list --projects`, con y sin `--table`: cabecera del proyecto y las tres."""
+        ccl.proyecto_de.cache_clear()
+        for tabla in (False, True):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ccl.render([row(1, "a", "busy", ts=iso(minutes=1)),
+                            row(2, "b", "idle", ts=iso(minutes=2))], tabla, True)
+            salida = ccl.ANSI_RE.sub("", buf.getvalue())
+            self.assertIn("x (2)", salida, f"tabla={tabla}")
+            for n in ("[ 1]", "[ 2]"):
+                self.assertIn(n, salida)
 
 
 # ────────────────────── errores al consultar `claude` ──────────────────────
