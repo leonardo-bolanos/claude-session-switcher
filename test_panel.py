@@ -1351,9 +1351,20 @@ class TestPestañas(unittest.TestCase):
     beta [2], gamma [3], delta [4].
     """
 
-    def filas_visibles(self, p):
+    def filas_visibles(self, p, pantalla=None):
+        pantalla = p.ultima() if pantalla is None else pantalla
         return {n for n, num in (("alfa", 1), ("beta", 2), ("gamma", 3), ("delta", 4))
-                if f"[ {num}]" in p.ultima()}
+                if f"[ {num}]" in pantalla}
+
+    def ultima_completa(self, p):
+        """
+        El ultimo repintado ENTERO: el que ya trae la barra de estado, que es lo ultimo que
+        se pinta. Con el refresco a 1 s el panel repinta cada segundo, y el drenado puede
+        cortar a mitad de uno: en el runner de macOS del CI, que es lento, `ultima()` llego
+        sin las ultimas filas y el test fallo sin que nada estuviera roto.
+        """
+        completas = [pant for pant in p.pantallas() if "↑↓" in pant]
+        return completas[-1] if completas else ""
 
     def ultima_cruda(self, p):
         return p.bruto.split(LIMPIAR)[-1]
@@ -1426,8 +1437,9 @@ class TestPestañas(unittest.TestCase):
             self.assertEqual(self.filas_visibles(p), {"gamma"})
             open(señal, "w").close()               # gamma muere
             p._drenar(2.5 * FACTOR_ESPERA)         # deja pasar un refresco
-            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "delta"})
-            self.assertIn("compartido (2)", p.ultima())
+            pantalla = self.ultima_completa(p)
+            self.assertEqual(self.filas_visibles(p, pantalla), {"alfa", "beta", "delta"})
+            self.assertIn("compartido (2)", pantalla)
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

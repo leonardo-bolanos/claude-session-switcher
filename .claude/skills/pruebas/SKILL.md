@@ -43,6 +43,13 @@ eso da tres proyectos —`compartido` (alfa, beta), `delta`, `gamma`— y las fi
 NUMERO (`[ 4]`), no por el nombre, que sale tambien en la cabecera del proyecto y en la barra de
 pestañas. Diseño: `specs/001-vista-por-proyecto.md`.
 
+**Con `CCL_TEST_REFRESH` bajo, `ultima()` puede ser un repintado a medias.** El panel repinta en
+cada refresco, y el drenado corta donde le pille: en el runner de macOS del CI, que es lento, un
+test de pestañas leyo una pantalla sin sus ultimas filas y fallo sin nada roto. Si el test
+necesita refresco, lee el ultimo repintado que ya trae la barra de estado (`↑↓`), que es lo
+ultimo que se pinta (`TestPestañas.ultima_completa`). Sin refresco no pasa: tras el drenado no
+llega nada mas.
+
 **`collect` parcheado se salta `build`**, que es quien pega `note` y `paused` a las filas. El
 arnes replica los dos pasos; si añades un campo que `build` calcule, hay que añadirlo ahi o el
 panel de los tests lo vera siempre vacio — y parecera un fallo de persistencia que no existe.
