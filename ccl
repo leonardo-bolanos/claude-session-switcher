@@ -503,6 +503,52 @@ def _indice_256(valor, por_defecto):
 CURSOR_BG = _indice_256(os.environ.get("CCL_CURSOR_BG", "238"), "")
 
 
+def _rgb_256(n):
+    """(r, g, b) de un indice de la paleta de 256 por encima de los 16 ANSI (xterm)."""
+    if n >= 232:
+        v = 8 + (n - 232) * 10
+        return v, v, v
+    n -= 16
+    nivel = (0, 95, 135, 175, 215, 255)
+    return nivel[n // 36], nivel[(n // 6) % 6], nivel[n % 6]
+
+
+def _luminancia(rgb):
+    """Luminancia relativa (WCAG): la que decide si un color se lee sobre otro."""
+    def canal(v):
+        v /= 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (canal(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _gris_sobre(indice):
+    """
+    El gris (indice de 256) que se lee sobre una banda de fondo `indice`: claro si la banda
+    es oscura, oscuro si es clara.
+
+    Hace falta porque el gris del panel (`90`) y el tenue (`2`) estan pensados para el fondo
+    del terminal, no para la banda. En un tema oscuro real (fondo #1a1b26) el `90` es #414868 y
+    la banda por defecto #444444: contraste 1,1, el texto desaparece; el tenue se queda en
+    2,7. Con el 250, 5,1. Lo reporto el usuario al seleccionar una recuperable: las que faltan
+    de la foto se pintan enteras en gris, y en las de disco lo son la antiguedad y la rama.
+
+    De los dos candidatos, el que mas contrasta con la banda. Un umbral fijo de luminancia se
+    equivocaba en bandas de color (la 29, un verde azulado, elegia el peor): lo cazo el test
+    que recorre las 240. Los 16 primeros indices son colores del TEMA y no se sabe que RGB
+    tienen: se asume lo habitual (oscuros del 1 al 6 y el 8).
+    """
+    n = int(indice)
+    if n < 16:
+        return "250" if n in (1, 2, 3, 4, 5, 6, 8) else "238"
+    fondo = _luminancia(_rgb_256(n))
+
+    def contraste(gris):
+        a, b = sorted((_luminancia(_rgb_256(int(gris))), fondo), reverse=True)
+        return (a + 0.05) / (b + 0.05)
+    return max(("250", "238"), key=contraste)
+
+
 def con_fondo(texto, ancho):
     """
     `texto` sobre el fondo del cursor, relleno hasta `ancho` columnas.
@@ -517,10 +563,16 @@ def con_fondo(texto, ancho):
     que sin el relleno la banda acaba en mitad de la fila y parece un error de pintado. El
     relleno va con `pad()`, que cuenta columnas VISIBLES: con `ljust()` los escapes contarian
     como caracteres y cada fila quedaria de un largo distinto.
+
+    **El gris y el tenue se cambian por un gris que contraste con la banda** (`_gris_sobre`).
+    Sobre el fondo normal se leen; sobre la banda, en un tema oscuro, casi desaparecen. Solo
+    aqui dentro: fuera de la fila seleccionada el gris sigue significando lo que significa.
     """
     if not CURSOR_BG or CURSOR_BG == "0" or not _TTY:
         return texto
     abrir = f"\033[48;5;{CURSOR_BG}m"
+    legible = f"\033[38;5;{_gris_sobre(CURSOR_BG)}m"
+    texto = texto.replace("\033[90m", legible).replace("\033[2m", legible)
     return abrir + pad(texto, ancho).replace("\033[0m", "\033[0m" + abrir) + "\033[0m"
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")

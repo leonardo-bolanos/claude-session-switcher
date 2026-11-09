@@ -71,6 +71,14 @@ cualquiera de los dos, que compruebe el otro: una nota salmon sobre un fondo sal
 Y ahi la trampa es distinta: **cada reset del texto apaga el fondo**, asi que hay que rearmarlo
 detras de cada `\033[0m` y rellenar hasta el ancho con `pad()`.
 
+**Y el gris (`90`) y el tenue (`2`) se cambian dentro de la banda** por el gris de 256 que mas
+contrasta con ella (`_gris_sobre`). Estan pensados para el fondo del terminal: en un tema oscuro
+real el `90` era #414868 sobre la banda #444444, contraste 1,1, y al seleccionar una recuperable
+(las que faltan de la foto van enteras en gris) no se leia nada. Ojo al tocarlo: un umbral fijo
+de luminancia elegia el peor gris en bandas de color, y lo cazo el test que recorre las 240. Si
+añades un color nuevo que pueda quedar tenue sobre la banda, se cambia en `con_fondo`, no en cada
+sitio que pinta.
+
 **El editor arranca con la nota que ya hubiera** — corregir no es reescribir. Y el cursor `▏` del
 prompt no es decoracion: sin el, una nota vacia no se distingue de "no estoy editando" y parece
 que la tecla no hizo nada.

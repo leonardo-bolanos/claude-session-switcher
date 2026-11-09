@@ -2292,6 +2292,56 @@ class TestFondoDelCursor(unittest.TestCase):
         for bueno in ("0", "12", "238", "255"):
             self.assertEqual(ccl._indice_256(bueno, ""), bueno)
 
+    def test_el_gris_y_lo_tenue_se_cambian_por_uno_que_se_lea(self):
+        """
+        EL FALLO, reportado al seleccionar una recuperable: en un tema oscuro el gris `90`
+        (#414868) sobre la banda 238 (#444444) tiene contraste 1,1 — el texto desaparece.
+        """
+        salida = ccl.con_fondo(ccl.GREY("rama") + " " + ccl.DIM("·") + " x", 20)
+        self.assertNotIn("\033[90m", salida)
+        self.assertNotIn("\033[2m", salida)
+        self.assertEqual(salida.count(f"\033[38;5;{ccl._gris_sobre(ccl.CURSOR_BG)}m"), 2)
+        self.assertEqual(ccl.vis(salida), 20, "cambiar el color no puede mover columnas")
+
+    def test_el_gris_elegido_contrasta_con_la_banda(self):
+        """Contraste WCAG calculado aparte, con los RGB de xterm escritos a mano."""
+        def lum(hexa):
+            canales = [int(hexa[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+            r, g, b = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+                       for v in canales]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        def contraste(a, b):
+            x, y = sorted((lum(a), lum(b)), reverse=True)
+            return (x + 0.05) / (y + 0.05)
+
+        rgb = {"238": "444444", "250": "bcbcbc", "254": "e4e4e4"}
+        # la banda por defecto (oscura) y una clara, la que pondria quien use un tema claro
+        for banda in ("238", "254"):
+            gris = ccl._gris_sobre(banda)
+            self.assertGreaterEqual(contraste(rgb[gris], rgb[banda]), 4.5,
+                                    f"gris {gris} sobre banda {banda}")
+        # y el gris del panel en el tema oscuro del usuario: lo que habia antes
+        self.assertLess(contraste("414868", rgb["238"]), 1.2)
+
+    def test_sobre_cualquier_banda_elige_el_que_mas_contrasta(self):
+        def contraste(a, b):
+            x, y = sorted((ccl._luminancia(ccl._rgb_256(a)),
+                           ccl._luminancia(ccl._rgb_256(b))), reverse=True)
+            return (x + 0.05) / (y + 0.05)
+        for banda in range(16, 256):
+            elegido = int(ccl._gris_sobre(str(banda)))
+            otro = 238 if elegido == 250 else 250
+            self.assertGreaterEqual(contraste(elegido, banda), contraste(otro, banda),
+                                    f"banda {banda}")
+
+    def test_fuera_de_la_banda_el_gris_no_cambia(self):
+        """Fuera de la fila seleccionada el gris sigue diciendo «falta» o «viejo»."""
+        r = row(1, "a", "idle", ts=iso(days=9))
+        r["faltante"] = True
+        self.assertIn("\033[90m", ccl.main_line(r))
+        self.assertNotIn("\033[90m", ccl.con_fondo(ccl.main_line(r), 80))
+
     def test_un_texto_sin_color_tambien_queda_con_fondo(self):
         salida = ccl.con_fondo("sin color", 20)
         self.assertTrue(salida.startswith(f"\033[48;5;{ccl.CURSOR_BG}m"))

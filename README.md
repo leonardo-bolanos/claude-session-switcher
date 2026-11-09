@@ -523,7 +523,7 @@ a session dies its number is freed and recycled.
 | red ⚠ | The session isn't in an iTerm window |
 | `⚡2` | That session has 2 Bash commands running right now |
 | red name, `same conversation as [26]` | The same conversation is open in two processes (a `claude --resume` while it was still open); both write to one transcript, so close one |
-| selected row | cyan `▌` bar plus a dark grey band across the whole row |
+| selected row | cyan `▌` bar plus a dark grey band across the whole row; grey text is lightened on it so it stays readable |
 
 The band is a 256-colour background, which reads well on a dark theme and badly on a light one.
 `CCL_CURSOR_BG=236 ccl` picks another colour (an xterm-256 index), and `CCL_CURSOR_BG=0 ccl`
