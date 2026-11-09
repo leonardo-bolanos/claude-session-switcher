@@ -424,6 +424,9 @@ casa con lo que estás haciendo; esta tabla está por los síntomas que una `des
 | Tocar las notas (`Ctrl-N`), las pausadas (`Ctrl-P`), el editor del panel, `ccl-notes.json` o el color de la línea de detalle | `notas` |
 | Añadir texto visible al usuario; tocar traducciones; regenerar `demo.svg` o `table.svg`; editar los README | `i18n-y-demo` |
 
+Los diseños de lo que se va a construir, con lo que se descartó y por qué, viven en `specs/`
+(convención en `specs/README.md`).
+
 Un guardarraíl que no depende de cargar nada: **ninguna acción del panel puede colgar de una letra
 suelta**, porque se comería el filtrado. Hay un test que lo fija (`test_ninguna_accion_es_una_letra_suelta`).
 
@@ -472,7 +475,7 @@ sentido dejar sin panel al usuario porque una config extra este rota.
 | `README.es.md` | español — traducción completa, misma estructura |
 | **La interfaz** (ayuda, errores, barra de estado) | **inglés por defecto, español si el locale lo pide** |
 | `TODO.md` | inglés — el README en inglés lo enlaza tres veces, y es donde se pide contribuir |
-| Código, comentarios, nombres de test, `CLAUDE.md`, los skills | español |
+| Código, comentarios, nombres de test, `CLAUDE.md`, los skills, las specs | español |
 
 La regla de fondo: **lo que ve quien USA la herramienta sigue su idioma; lo que ve quien TOCA el
 código va en español.** `TODO.md` empezo en español por caer del lado del codigo, pero es

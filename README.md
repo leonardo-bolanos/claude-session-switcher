@@ -99,6 +99,7 @@ ccl 7            # jump straight to session number 7
 ccl -w           # jump to the session that's been waiting on you longest
 ccl -w2          # same, the second one in the WAITING queue
 ccl --table      # one line per session, in columns
+ccl --projects   # grouped by project, with a tab per project (also -p)
 ccl --recent     # the ones that died with your terminal — resume them
 ccl --recent --list   # just look at them, nothing is touched
 ccl --save       # before resetting your terminal: remember what's open, and where
@@ -119,11 +120,13 @@ ccl --version    # print the version
 | `Ctrl-N` | Write **your own note** on this session (`←` `→` `Home` `End` move the cursor) |
 | `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
+| `Ctrl-G` | Group **by project** instead of by state |
+| `←` `→` | In the project view, switch **tabs**: All, then one per project |
 | `Ctrl-O` | Show the sessions you can **resume** — the ones that died with their terminal |
 | click | Select that session |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |
-| any letter | **Filter** by name, repo, branch, account or note |
+| any letter | **Filter** by name, repo, project, branch, account or note |
 | `Ctrl-R` | Force a refresh |
 | `?` | **Help** with every shortcut |
 | `esc` | Clears the filter; with no filter, quits |
@@ -135,13 +138,26 @@ way with `CCL_LANG=en` / `CCL_LANG=es`.
 The panel **refreshes itself** and **does not close when you jump**: you land back on the list
 with a confirmation of where you went.
 
-### Two views
+### Views
 
 `Ctrl-T` swaps the two-line list above for **one line per session, in columns**, with the state as
 a column instead of a group header — roughly twice as many fit on screen. `ccl --table` starts
 that way.
 
 ![the table view](table.svg)
+
+`Ctrl-G` groups by **project** instead of by state, in either view: every session of
+`support_agent` together, each project with a summary of what's working and what's waiting. A
+tab bar shows up under the header — `←` `→` move from *All* to one project at a time.
+`ccl --projects` starts that way.
+
+```
+  22 sessions · 4 active · 7 projects
+‹  emaus 3 │ Luna 1 │ NewCariAI 4 │ support_agent 7 │ system 1
+
+  WORKING (2)
+[17] deepseek price change                6m ago ⚡2
+```
 
 `PAUSED` is a mark of your own (`Ctrl-P`) for the sessions waiting on someone else: they leave the
 WAITING queue, so `⌥1`…`⌥9` and `ccl -w` skip them.
@@ -399,6 +415,42 @@ squeezing every column down to unreadable; whatever's left over goes to the note
 </details>
 
 <details>
+<summary><b>By project</b>, and what counts as one</summary>
+
+The `repo` column is just the name of the session's directory, which isn't much use for grouping:
+a session in `api/apps/web` says `web`, and one in a worktree says the worktree's name. So a
+**project** is the repository the directory belongs to:
+
+- Subfolders go with their repo: it walks up until it finds `.git` or `.svn`.
+- **Worktrees go with their main repo**, wherever they live — a linked worktree's `.git` file
+  points back at it. Even worktrees you've already deleted, which is what `ccl --recent` is full
+  of.
+- A submodule, or a nested SVN checkout, is a project of its own.
+- It never walks up into your home directory, so dotfiles kept in `~/.git` don't swallow every
+  session that has no repo of its own. A directory with no repository is its own project.
+
+No `git` is run for any of this; it reads a handful of files, a few milliseconds for hundreds of
+directories.
+
+Projects are sorted **alphabetically**, so they don't move around as sessions get busy and
+idle. Inside one, sessions keep the usual order: working first, then the ones waiting on you.
+Each row says its state, and the `repo` column only shows something when the session isn't at
+the root — the worktree or subfolder it's in.
+
+The **tabs** (`←` `→`, wrapping around) show one project at a time, grouped by state. The tab bar
+scrolls when it doesn't fit, always keeping the current one in sight, and `‹` `›` tell you there's
+more. Filtering works inside a tab, and if every session of the project you're on closes, it
+goes back to *All*.
+
+`⌥1`…`⌥9` and `ccl -w` don't change: they still count over the whole WAITING queue, whatever
+view or tab you're on — the same key can't take you to different sessions depending on how the
+list is grouped. Typing a number still works for a session in another tab.
+
+`ccl --list --projects` (with or without `--table`) prints the grouped list without the panel.
+
+</details>
+
+<details>
 <summary><b>Mouse, and how to select text to copy</b></summary>
 
 Click selects, **double click opens**, the wheel moves the selection. Terminals don't report
@@ -427,7 +479,8 @@ ready to paste.
 <details>
 <summary><b>Filtering</b></summary>
 
-With many sessions, just type to narrow the list: `supp` leaves only `support-agent`. It ignores
+With many sessions, just type to narrow the list: `supp` leaves only `support-agent`. The project
+counts too, so `api` finds the sessions in its worktrees and subfolders. It ignores
 case and accents (`migracion` finds `migración`), and multiple terms combine in any order:
 `api backend` matches the same as `backend api`.
 
@@ -512,7 +565,8 @@ python3 test_panel.py       # the real panel, over a pty (~3 min)
 No dependencies, and **neither of them touches iTerm or runs `claude`**.
 
 `test_ccl.py` covers the pure logic: width helpers, stable numbering, AppleScript output parsing,
-transcript reading, grouping and ordering, pausing, filtering, multi-account, both views' column
+transcript reading, grouping and ordering (by state and by project), project detection and the
+tab bar, pausing, filtering, multi-account, both views' column
 layout, the static listing, the help screen, key and mouse decoding, and error handling.
 
 `test_panel.py` boots **the whole panel in a pty** and checks what you can only see by running

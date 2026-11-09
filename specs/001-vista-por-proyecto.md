@@ -1,27 +1,37 @@
 ---
 capacidad: project-view
-estado: aprobada
-modo: prospectivo
+estado: implementada
+modo: retroactivo
+version: 1.4.0
 rutas:
   - ccl
   - test_ccl.py
   - test_panel.py
   - README.md
   - README.es.md
-verificada_contra_commit: 81cfeaa
-fecha: 2026-11-09
+  - .claude/skills/teclas-y-raton/SKILL.md
+  - .claude/skills/pruebas/SKILL.md
+ultima_verificacion_commit: a9d810f
+ultima_verificacion_fecha: 2026-11-09
 ---
 
 # 001 · Vista por proyecto
+
+> **Implementada en 1.4.0** (`ca9997d`, `3337eb8`, `a9d810f`). Se escribió antes del código y se
+> reconcilió al cerrar: lo que sigue describe lo construido, y lo que salió distinto del diseño
+> está en *Desviaciones*.
 
 ## Qué se pide
 
 > «Quiero agregar una vista que se pueda ver pestañas de acuerdo a proyecto.»
 
-Interpretación: hoy el panel agrupa las sesiones —cada una vive en una pestaña— **por estado**
+Interpretación: el panel agrupaba las sesiones —cada una vive en una pestaña— **por estado**
 (TRABAJANDO, ESPERANDO, PAUSADAS…). Se pide poder agruparlas **por proyecto**: todas las pestañas
 de `support_agent` juntas, todas las de `NewCariAI` juntas, cada grupo con su resumen de estados.
 Es otra forma de mirar la misma lista, no otra lista: se elige, se salta y se filtra igual.
+
+Con las fases 1 y 2 ya hechas, el usuario pidió además pestañas: «¿se puede con tabs, si oprimo
+flechas izq der se mueve?». Son R13-R20.
 
 Si lo que se quería era ver la estructura de ventanas y pestañas de iTerm (ventana 2 › pestaña 3),
 eso es otra cosa y está en *Fuera de alcance*.
@@ -42,7 +52,8 @@ Medido el 2026-11-09 en esta máquina:
 ## Qué es un proyecto
 
 **La raíz del repositorio al que pertenece el `cwd`, con los worktrees vinculados dentro de su
-repo principal.** Se resuelve en una función nueva, `proyecto_de(cwd)`, sin subprocesos:
+repo principal.** Lo resuelve `proyecto_de(cwd)` (con `_raiz_de_worktree` para el `.git`
+archivo), sin subprocesos:
 
 1. Subir desde `cwd` hacia arriba, **sin llegar a `HOME` ni a `/`**. En cada directorio `d`:
    - `d/.git` es un directorio → la raíz es `d`.
@@ -52,7 +63,7 @@ repo principal.** Se resuelve en una función nueva, `proyecto_de(cwd)`, sin sub
      relativo a `d`) tiene la forma `<R>/.git/worktrees/<nombre>`, es un **worktree vinculado**
      y la raíz es `R`. Si no tiene esa forma (un submódulo: `../.git/modules/x`), la raíz es `d`:
      un submódulo es su propio proyecto.
-2. Sin ninguna marca, la raíz es el propio `cwd` — que es lo que se ve hoy.
+2. Sin ninguna marca, la raíz es el propio `cwd` — que es lo que enseñaba la columna `repo`.
 
 Nombre del proyecto: `basename(raíz)`, **pasado por `sin_control()`**: el nombre de un directorio
 viene de fuera y puede traer secuencias de escape (ver «Lo que se pinta viene de fuera» en
@@ -62,8 +73,8 @@ raíz, nunca el nombre.
 
 ### Verificado contra datos reales
 
-El prototipo del algoritmo sobre los `cwd` de los 200 transcripts más recientes (`recent_rows`)
-tardó **4,8 ms** y resolvió:
+El prototipo sobre los `cwd` de los 200 transcripts más recientes (`recent_rows`) tardó
+**4,8 ms** y resolvió lo mismo que la implementación final (CA2):
 
 | `cwd` | Proyecto | Por qué |
 |---|---|---|
@@ -98,7 +109,7 @@ es lo correcto.
 
 | # | Requisito |
 |---|---|
-| R1 | `Ctrl-G` alterna la agrupación: **por estado** (la de hoy) ↔ **por proyecto**. Es independiente de `Ctrl-T`: las cuatro combinaciones (dos líneas o tabla × estado o proyecto) existen. |
+| R1 | `Ctrl-G` alterna la agrupación: **por estado** (la de siempre) ↔ **por proyecto**. Es independiente de `Ctrl-T`: las cuatro combinaciones (dos líneas o tabla × estado o proyecto) existen. |
 | R2 | `ccl -p` / `ccl --projects` arranca agrupado por proyecto. Se combina con `--list`, `--table`, `--recent` y `--saved`. |
 | R3 | Cabecera de cada grupo: nombre, total y resumen por estado con sus colores, omitiendo los ceros: `support_agent (7) · working 2 · waiting 5`. Etiqueta y luego número: `1 pausadas` no se puede decir en español y `pausadas 1` sí, sin claves nuevas para el plural. |
 | R4 | Orden de los grupos: **alfabético**, sin mayúsculas ni acentos; desempata la ruta de la raíz. Un proyecto cuyas filas son **todas** `faltante` (`--saved`) va al final. |
@@ -128,15 +139,15 @@ versión: así la documentación se escribe una vez.
 | # | Requisito |
 |---|---|
 | R13 | En la vista por proyecto, una **barra de pestañas** bajo la cabecera del panel: **Todas** primero y luego una por proyecto, en el orden de los grupos (R4), cada una con su número de sesiones. La activa va resaltada. Solo existe con `Ctrl-G`: sin agrupar por proyecto no hay barra ni línea de más. |
-| R14 | `←` / `→` cambian de pestaña, **en círculo** como `↑↓`: `→` en la última vuelve a Todas. Sin la vista por proyecto siguen sin hacer nada, como hoy. |
+| R14 | `←` / `→` cambian de pestaña, **en círculo** como `↑↓`: `→` en la última vuelve a Todas. Sin la vista por proyecto siguen sin hacer nada, como antes. |
 | R15 | **Todas** es la vista por proyecto de R1-R12. Una pestaña de proyecto enseña solo ese proyecto, **agrupado por estado**: dentro de un proyecto lo que distingue una sesión de otra es si trabaja o te espera. Y `repo` es `donde`, como en Todas (R7): con datos reales, sin esto `support_agent` salía repetido en cada fila. Vale en las dos disposiciones (`Ctrl-T`). |
 | R16 | La barra **se desplaza sola** si no cabe: la pestaña activa siempre se ve, y `‹` / `›` avisan de que hay más a cada lado. Con los 7 proyectos vivos del 2026-11-09 ocupa ~115 columnas; en `--recent` son 24 proyectos. |
 | R17 | El filtro de texto se combina con la pestaña (las dos condiciones a la vez). Las pestañas y sus números salen de **todas** las filas, no de las filtradas: la barra no baila mientras escribes. Una pestaña sin coincidencias enseña «sin resultados» y desde ahí `← →` siguen funcionando. |
 | R18 | Si el proyecto de la pestaña activa desaparece (se cerraron sus sesiones), se vuelve a **Todas**. `Ctrl-G` y `Ctrl-O` también la devuelven a Todas: la lista de pestañas cambia entera. |
-| R19 | No cambia: teclear un número lleva a la sesión aunque esté en otra pestaña (`by_num` va sobre todas las filas), y `⌥1…9` / `-w` cuentan sobre la cola ESPERANDO entera. Si la sesión elegida no está en la pestaña activa, el cursor cae en la primera fila: lo que ya pasa hoy con el filtro. |
+| R19 | No cambia: teclear un número lleva a la sesión aunque esté en otra pestaña (`by_num` va sobre todas las filas), y `⌥1…9` / `-w` cuentan sobre la cola ESPERANDO entera. Si la sesión elegida no está en la pestaña activa, el cursor cae en la primera fila: lo que ya pasaba con el filtro. |
 | R20 | `←→` aparece en la barra de estado y en la ayuda **solo con la vista por proyecto**, que es cuando hacen algo. En la barra va junto a `↑↓` y no al final: es navegación, y la barra se recorta por la derecha (a 100 columnas ya no cabía entera antes de esta spec). |
 
-## Dónde se toca
+## Dónde vive
 
 Todo en `ccl`. La idea entera es que **la vista por proyecto es otra lista de grupos con la misma
 forma** `[(etiqueta, color, filas)]` que devuelve `grouped()`: si se cumple, el cursor, el clic, el
@@ -145,21 +156,32 @@ scroll y la cabecera fija funcionan sin enterarse, igual que pasó con la tabla
 
 | Pieza | Cambio |
 |---|---|
-| `proyecto_de(cwd)` | **Nueva.** `(raíz, nombre)` según el algoritmo de arriba, con `lru_cache`. |
-| `agrupar_por_proyecto(rows)` | **Nueva.** Misma forma que `grouped()`. Reparte por raíz, ordena según R4 y, dentro de cada proyecto, aplana `grouped(subconjunto)` (R5). Resuelve aquí las colisiones de nombre. |
-| `grupos(rows, por_proyecto)` | **Nueva.** El único sitio que elige entre `grouped` y `agrupar_por_proyecto`. |
-| `cabecera_grupo(…)` | **Nueva.** Hoy `render` y `build_display` construyen `f"{label} ({len(items)})"` cada uno por su cuenta; la del proyecto lleva además el resumen (R3). Una sola función para las dos, recortada al ancho **al construirla**. |
+| `proyecto_de(cwd)` | `(raíz, nombre)` según el algoritmo de arriba, con `lru_cache`. El `.git` archivo lo interpreta `_raiz_de_worktree`. |
+| `donde(r)` | Lo que va en `repo` dentro de un proyecto: vacío en la raíz, `basename(cwd)` si no (R7). |
+| `_proyectos(rows)` | `[(raíz, etiqueta, color, filas)]`: reparte por raíz, ordena según R4, aplana `grouped(subconjunto)` dentro de cada proyecto (R5) y resuelve las colisiones de nombre (`_etiquetas_de_proyecto`). Es la fuente única de grupos y pestañas: no pueden salir en distinto orden ni con distinta etiqueta. |
+| `agrupar_por_proyecto(rows)` | `_proyectos` sin la raíz: la misma forma que `grouped()`. |
+| `grupos(rows, por_proyecto)` | El único sitio que elige entre `grouped` y `agrupar_por_proyecto`. |
+| `cabecera_grupo(…)` | Antes `render` y `build_display` construían `f"{label} ({len(items)})"` cada uno por su cuenta; la del proyecto lleva además el resumen (R3). Una sola función para las dos, recortada al ancho **al construirla**. |
 | `render`, `build_display`, `build_table_display`, `vista` | Reciben `por_proyecto` y llaman a `grupos()`. `build_table_display` mete una línea `head` por proyecto debajo de la de nombres de columna. |
-| `main_line` | Con `por_proyecto`, columna de estado (R6) y `repo` según R7. |
-| `table_line` | `repo` según R7; la columna de estado ya existe. |
+| `main_line` | Con `por_proyecto`, columna de estado (R6) y `repo` según R7; con `en_proyecto` (la pestaña de un proyecto), solo `repo` según R7. |
+| `table_line` | `repo` según R7 con cualquiera de los dos; la columna de estado ya existía. |
 | `matches` | Añade el nombre del proyecto al texto en el que se busca (R8). |
 | `_read_key` | `"\x07"` (`Ctrl-G`) → `"proyectos"`. |
 | `interactive` | Parámetro `por_proyecto`; la rama `k == "proyectos"` lo alterna y pone `requery`, como `Ctrl-T`. Cabecera con el número de proyectos (R9) y `^G` en la barra (R10). |
 | `parse_args`, `main` | `-p`/`--projects`, propagado a las tres llamadas a `interactive` y a las de `render`. |
 | `TEXTOS` | Dos claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra (`barra_proyectos`) y la cabecera (`proyectos_n`). El resumen reutiliza las etiquetas de los grupos, y no hay aviso al cambiar: como con `Ctrl-T`, el cambio se ve solo. Las pestañas añaden `pestaña_todas` y `barra_pestañas`. |
-| `_proyectos(rows)` | **Nueva** (pestañas). `[(raíz, etiqueta, color, filas)]`: lo que hoy calcula `agrupar_por_proyecto` por dentro, con la raíz a la vista. `agrupar_por_proyecto` pasa a ser una vista de esto, y la lista de pestañas también: así las pestañas y los grupos no pueden salir en distinto orden ni con distinta etiqueta. |
-| `barra_pestañas(pestañas, activa, ancho)` | **Nueva**, pura. La línea de pestañas recortada a `ancho`, con la activa siempre dentro de la ventana y `‹ ›` cuando sobran. Pura para probar el desplazamiento sin pty. |
+| `pestañas_de(rows)`, `pestaña_vecina(…)` | La lista `[(clave, etiqueta, n)]` con «Todas» delante, sacada de `_proyectos`; y la de al lado, en círculo. |
+| `barra_pestañas(pestañas, activa, ancho)` | Pura. La línea de pestañas recortada a `ancho`, con la activa siempre dentro de la ventana y `‹ ›` cuando sobran. Pura para probar el desplazamiento sin pty. |
 | `interactive` (pestañas) | Estado `pestaña` (la **raíz** del proyecto, o `None` para Todas: la clave es la ruta, nunca el nombre). Al reconstruir, filtra `shown` por pestaña y pide `vista(…, por_proyecto=pestaña is None, en_proyecto=pestaña is not None)` (R15); `en_proyecto` llega a `main_line`/`table_line` para poner `donde` en `repo` sin la columna de estado. La barra se pinta entre la cabecera y la cabecera de grupo fija, y **resta una línea a `body` antes de calcular el scroll**: si se resta al pintar, la fila del cursor puede quedar fuera por abajo. `← →` en el bucle principal y en la rama de lista vacía (R17). |
+
+### Puntos de extensión
+
+- **Otro control de versiones** (Mercurial, Jujutsu): una marca más en el bucle de `proyecto_de`.
+- **Otro orden de proyectos**: la clave de `sorted` en `_proyectos`; grupos y pestañas lo heredan.
+- **Otra línea fija arriba del panel**: como la barra de pestañas — fuera de `screen` y descontada
+  de `body` antes del scroll (skill `teclas-y-raton`).
+- **Otra columna en la vista por proyecto**: `main_line`/`table_line` y `_tabla_columnas`; el
+  test de 80 columnas con fecha completa y ⚠ dice si sigue cabiendo.
 
 ## Invariantes que no se pueden romper
 
@@ -197,8 +219,8 @@ Todas están en `CLAUDE.md` o en los skills; se listan porque esta vista toca ju
 
 | # | Criterio | Cómo se verifica |
 |---|---|---|
-| CA1 | `ccl --list --projects` muestra un grupo por proyecto con las sesiones vivas del momento; la suma de los totales es la de `ccl --list`. El 2026-11-09 serían 7 grupos para 17 sesiones. | A mano, con datos reales; la propiedad, en `test_ccl.py`. |
-| CA2 | `ccl --recent --list --projects` agrupa bajo **un solo** `emaus` los 12 directorios distintos que hoy salen con 9 nombres, incluidos los worktrees ya borrados. | A mano: los datos existen hoy en `~/.claude/projects`. |
+| CA1 | `ccl --list --projects` muestra un grupo por proyecto con las sesiones vivas del momento; la suma de los totales es la de `ccl --list`. | A mano, con datos reales; la propiedad, en `test_ccl.py`. |
+| CA2 | `ccl --recent --list --projects` agrupa bajo **un solo** `emaus` los 12 directorios distintos que la columna `repo` enseña con 9 nombres, incluidos los worktrees ya borrados. | A mano: los datos existían el 2026-11-09 en `~/.claude/projects`. |
 | CA3 | Un worktree vinculado fuera del repo (`.git` archivo → `<R>/.git/worktrees/<n>`) cae en `R`; un submódulo (`gitdir` sin `/worktrees/`) es su propio proyecto. | `test_ccl.py` con directorios temporales. Ejemplo real: `Colsanitas` → `NewCariAI`. |
 | CA4 | SVN: la raíz con `.svn` es el proyecto; un checkout anidado con su propio `.svn` es otro. | `test_ccl.py`. Real: `defybots_svn` y `phalcore_svn`. |
 | CA5 | Una carpeta sin control de versiones, y `HOME` mismo, son su propio proyecto; la búsqueda no sube por encima de `HOME`. | `test_ccl.py`, con `HOME` temporal que **sí** tenga `.git`. |
@@ -219,47 +241,23 @@ Todas están en `CLAUDE.md` o en los skills; se listan porque esta vista toca ju
 | CA20 | Si muere la última sesión del proyecto de la pestaña activa, el panel vuelve a Todas. | `test_panel.py`, con `CCL_TEST_MATAR` y refresco corto. |
 | CA21 | Escribiendo una nota, `←` mueve el cursor del texto y no cambia de pestaña. | `test_panel.py`. |
 
-## Plan
+**Verificación final** (2026-11-09, `a9d810f`), todos en verde. CA1 a mano: 22 sesiones vivas en 7
+grupos, el mismo total agrupando por estado y por proyecto. CA2 a mano: `emaus (75)` en un solo
+grupo en `--recent`. Las pestañas, además, en el panel real sobre un pty de 100 columnas: la barra
+se desplaza con `‹` al llegar a `support_agent`. El resto, por las suites: 364 tests en
+`test_ccl.py` y 132 en `test_panel.py`, también sin locale.
 
-Tres tandas en serie: la 2 necesita las funciones de la 1, y la 3 documenta lo que quede. Dentro
-de cada tanda las tareas son pequeñas y del mismo archivo; no compensa repartirlas.
+## Cómo se hizo
 
-**Fase 1 — lógica pura** (`ccl` + `test_ccl.py`)
+| Fase | Commit | Qué |
+|---|---|---|
+| Spec | `45fe0f9`, `ea2487b` | La spec, y su ampliación con las pestañas |
+| 1 — lógica pura | `ca9997d` | `proyecto_de`, agrupación, cabeceras, filtro, `--projects` en `--list` (T1-T6) |
+| 2 — panel | `3337eb8` | `Ctrl-G`, cabecera, barra, ayuda y sus tests de panel (T7-T10) |
+| 2b — pestañas | `a9d810f` | `_proyectos`, `barra_pestañas`, `← →` y sus tests (T15-T18) |
+| 3 — cierre | el de esta reconciliación | README en paralelo, skills, `demo.svg`/`table.svg`, versión 1.4.0 (T11-T14) |
 
-- T1. `proyecto_de` con sus casos: repo, subcarpeta, worktree vinculado, worktree borrado,
-  submódulo, SVN, SVN anidado, sin VCS, tope en `HOME`, `.git` ilegible. (CA3–CA5)
-- T2. `agrupar_por_proyecto` y `grupos`: propiedad de exclusividad, orden R4, orden interno R5,
-  faltantes al final, colisión de nombres. (CA1, CA12)
-- T3. `cabecera_grupo` con resumen y recorte; `render` y `build_display` pasan a usarla. (CA9, CA13)
-- T4. `main_line` y `table_line` con estado y `repo` según R6–R7; `build_table_display` con
-  cabeceras de proyecto. (CA9)
-- T5. `matches` con el proyecto. (CA10)
-- T6. `parse_args` con `-p`/`--projects`; `pick_waiting` igual en las dos agrupaciones. (CA8)
-
-**Fase 2 — panel** (`ccl` + `test_panel.py`)
-
-- T7. `Ctrl-G` en `_read_key`, con su caso en `TestLecturaDeTeclas` y en `TestEntreLecturas`.
-- T8. `interactive`: alternar, cabecera R9, barra R10; `main` propaga la bandera.
-- T9. `TEXTOS`, `HELP_EN`/`HELP_ES`, `USO_EN`/`USO_ES`, en los dos idiomas.
-- T10. Tests de panel: alternar con cursor estable, clic en las dos disposiciones, `⌥1`, el editor
-  se queda `Ctrl-G`, arranque con `CCL_TEST_ARGS=--projects`. (CA6, CA7, CA8, CA11)
-
-**Fase 2b — pestañas** (`ccl` + las dos suites)
-
-- T15. `_proyectos` y `barra_pestañas`, con sus tests de lógica pura. (CA16)
-- T16. `interactive`: estado `pestaña`, filtrado, barra, `← →`, vuelta a Todas. (CA15, CA18-CA20)
-- T17. `TEXTOS`, ayuda y barra de estado en los dos idiomas. (R20)
-- T18. Tests de panel. (CA15, CA17-CA21)
-
-**Fase 3 — documentación y cierre**
-
-- T11. `README.md` y `README.es.md` **en paralelo**: tecla, bandera, pestañas; la sección «Two
-  views» pasa a hablar de las dos agrupaciones.
-- T12. `CLAUDE.md`: una sección corta con las trampas que queden (el tope en `HOME`, derivar en vez
-  de almacenar, `⌥N` global). Skill `teclas-y-raton`: añadir `Ctrl-G` a las ocupadas y las
-  descartadas con su motivo.
-- T13. Comprobar CA1 y CA2 a mano con datos reales; versión `1.4.0` (minor: funcionalidad nueva).
-- T14. Reconciliar esta spec y pasarla a `implementada` en el mismo commit que cierre el trabajo.
+Las fases fueron en serie, como estaba previsto: cada una necesitaba las funciones de la anterior.
 
 ## Fuera de alcance
 
@@ -276,8 +274,9 @@ de cada tanda las tareas son pequeñas y del mismo archivo; no compensa repartir
 - **Repos bare y sus worktrees, Mercurial, Jujutsu.** Caen al último paso del algoritmo: el propio
   `cwd`. Sin datos reales que lo pidan.
 - **Recordar la agrupación entre ejecuciones** (R12).
-- **Una imagen nueva en el README.** `make_demo.py` podría generar `projects.svg`; se decide al
-  cerrar, según cómo quede la sección.
+- **Una imagen nueva en el README.** `make_demo.py` podría generar `projects.svg`. Descartado en
+  1.4.0: el bloque de texto de la sección «Views» basta, y cada imagen es otro paso del CI que
+  mantener al día.
 
 ## Decisiones
 
@@ -290,14 +289,29 @@ descartó y por qué.
 | D1 | ¿En qué orden van los proyectos? | **Alfabético** (R4): no baila entre refrescos y se aprende dónde está cada uno, la misma razón por la que los anchos de la tabla no se ajustan al contenido (`TODO.md`). | Por actividad más reciente, como el resto del panel, a costa de que los grupos cambien de sitio cada 4 s. Por urgencia: primero los que tienen sesiones esperando. |
 | D2 | ¿Agrupación y disposición son independientes? | **Sí** (R1): `Ctrl-T` cambia la disposición, `Ctrl-G` la agrupación. El código ya separa las dos cosas. | Una tercera vista en ciclo con `Ctrl-T` (lista → tabla → proyectos): una tecla menos, pero `Ctrl-T` deja de significar «tabla» y faltaría la tabla por proyecto. |
 | D3 | ¿Qué tecla? | **`Ctrl-G`** (*group*): libre, sin significado para el tty. | Tab: no es letra, pero en muchas TUI es «siguiente campo». |
-| D4 | ¿Un worktree es su propio proyecto o va con su repo? | **Con su repo** (es lo que deshace los 9 nombres de `emaus`), y su nombre visible en el campo `repo` (R7). | Proyecto propio: agrupar por `basename(cwd)` como hoy, sin función nueva — pero no arregla las subcarpetas. |
+| D4 | ¿Un worktree es su propio proyecto o va con su repo? | **Con su repo** (es lo que deshace los 9 nombres de `emaus`), y su nombre visible en el campo `repo` (R7). | Proyecto propio: agrupar por `basename(cwd)`, como la columna `repo`, sin función nueva — pero no arregla las subcarpetas. |
 | D5 | En la tabla por proyecto, al hacer scroll la cabecera fija muestra el proyecto y la fila de nombres de columna se va. | **Aceptarlo en v1**: con grupos, los nombres de columna importan menos que saber en qué proyecto estás. | Fijar las dos: toca la lógica de la cabecera fija de `interactive`, que hoy pinta solo la `head` más cercana por encima del cursor. |
 | D6 | ¿Pestañas siempre o solo con `Ctrl-G`? | **Solo con `Ctrl-G`** (R13): son parte de la vista por proyecto. | Siempre: una línea más en el panel para quien no las usa. |
 | D7 | Dentro de la pestaña de un proyecto, ¿cómo se agrupa? | **Por estado** (R15). | Lista plana por actividad. |
 | D8 | ¿`→` en la última pestaña? | **Vuelve a Todas** (R14), como `↑↓` dan la vuelta. | Quedarse en la última. |
 | D9 | ¿Cambiar de pestaña con un clic? | **Después** (Fuera de alcance). | Ahora: obliga a leer la columna del ratón. |
 
-## Riesgos
+## Desviaciones del diseño
+
+Lo que se construyó distinto de lo escrito antes del código, y por qué. Cada una se corrigió en la
+spec en el mismo commit que el código.
+
+| Diseño | Construido | Por qué |
+|---|---|---|
+| Resumen `2 working · 3 waiting` | `working 2 · waiting 3` (R3) | «1 pausadas» no se puede decir en español; así no hacen falta claves de plural |
+| El nombre cede ocho columnas (36 → 28) | Cede nueve (→ 27) (R6) | Con ocho, una sesión vieja y sin ventana llegaba a 77 y el recorte se comía el ⚠ |
+| Aviso al cambiar de agrupación | Ninguno | Como con `Ctrl-T`: el cambio se ve solo, y son dos claves de traducción menos |
+| Una pestaña de proyecto = la vista por estado filtrada | Más `en_proyecto`: `repo` es `donde` (R15) | Probado con datos reales, `support_agent` salía repetido en cada fila |
+| `←→` al final de la barra de estado | Junto a `↑↓` (R20) | Al final era lo primero que se perdía al recortar |
+| T12: una sección en `CLAUDE.md` | Dos skills (`teclas-y-raton`, `pruebas`) y una línea en `CLAUDE.md` que apunta a `specs/` | `CLAUDE.md` se carga en cada turno; esto solo importa al tocar la vista (skill `claude-models` §5) |
+| Sin pestañas | R13-R20 | Pedidas por el usuario tras la fase 2; salen en la misma versión |
+
+## Riesgos y deuda
 
 - **`⌥N` no coincide con el orden visual** en la vista por proyecto. Está decidido (Invariantes);
   el riesgo es que parezca un fallo. Se mitiga en la ayuda: «cuenta sobre la cola ESPERANDO, en
@@ -307,3 +321,8 @@ descartó y por qué.
   raro y no cuesta nada; los tests llaman a `proyecto_de.cache_clear()` en `setUp`.
 - **El `.git` de un worktree viene de fuera.** Solo se usa para calcular una ruta y su `basename`,
   nunca se ejecuta, se lee acotado y el nombre pasa por `sin_control()`.
+- **La barra de estado ya no enseña `? help` a 100 columnas.** Con `^G` mide 110 en inglés por
+  estado (antes 97, cabía) y 119 por proyecto; en español 120 y 133. Por debajo de eso el recorte
+  se come lo último, que es justo la ayuda — y la ayuda es por donde se descubre todo lo demás.
+  Arreglo barato: subir `?` al principio de la barra. No se hizo aquí porque cambia el orden de
+  una barra que no era de esta spec.

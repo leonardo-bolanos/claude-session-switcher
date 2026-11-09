@@ -100,6 +100,7 @@ ccl 7            # salta directo a la sesión número 7
 ccl -w           # salta a la sesión que llevas más tiempo sin atender
 ccl -w2          # ídem, la segunda de la cola de ESPERANDO
 ccl --table      # una línea por sesión, en columnas
+ccl --projects   # agrupadas por proyecto, con una pestaña por proyecto (también -p)
 ccl --recent     # las que murieron con tu terminal — para reanudarlas
 ccl --recent --list   # solo verlas, sin tocar nada
 ccl --save       # antes de reiniciar el terminal: apunta qué hay abierto, y dónde
@@ -120,11 +121,13 @@ ccl --version    # imprime la versión
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión (`←` `→` `Inicio` `Fin` mueven el cursor) |
 | `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
+| `Ctrl-G` | Agrupar **por proyecto** en vez de por estado |
+| `←` `→` | En la vista por proyecto, cambiar de **pestaña**: Todas y una por proyecto |
 | `Ctrl-O` | Ver las sesiones que puedes **reanudar** — las que murieron con su terminal |
 | clic | Seleccionar esa sesión |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
-| cualquier letra | **Filtrar** por nombre, repo, rama, cuenta o nota |
+| cualquier letra | **Filtrar** por nombre, repo, proyecto, rama, cuenta o nota |
 | `Ctrl-R` | Forzar refresco |
 | `?` | **Ayuda** con todos los atajos |
 | `esc` | Limpia el filtro; si no hay filtro, sale |
@@ -136,13 +139,26 @@ Se puede forzar con `CCL_LANG=es` / `CCL_LANG=en`.
 El panel **se refresca solo** y **no se cierra al saltar**: vuelves a la lista con una
 confirmación de a dónde fuiste.
 
-### Dos vistas
+### Vistas
 
 `Ctrl-T` cambia la lista de dos líneas de arriba por **una línea por sesión, en columnas**, con el
 estado como columna en vez de como cabecera de grupo — caben más o menos el doble en pantalla.
 `ccl --table` arranca así.
 
 ![la vista de tabla](table.svg)
+
+`Ctrl-G` agrupa por **proyecto** en vez de por estado, en cualquiera de las dos vistas: todas las
+de `support_agent` juntas, y cada proyecto con un resumen de lo que trabaja y lo que espera. Bajo
+la cabecera aparece una barra de pestañas — `←` `→` pasan de *Todas* a un proyecto cada vez.
+`ccl --projects` arranca así.
+
+```
+  22 sesiones · 4 activas · 7 proyectos
+‹  emaus 3 │ Luna 1 │ NewCariAI 4 │ support_agent 7 │ system 1
+
+  TRABAJANDO (2)
+[17] deepseek cambia precios              hace 6m ⚡2
+```
 
 `PAUSADAS` es una marca tuya (`Ctrl-P`) para las sesiones que esperan a otro: salen de la cola de
 ESPERANDO, así que `⌥1`…`⌥9` y `ccl -w` se las saltan.
@@ -403,6 +419,42 @@ tubería.
 </details>
 
 <details>
+<summary><b>Por proyecto</b>, y qué cuenta como uno</summary>
+
+La columna `repo` es solo el nombre del directorio de la sesión, y para agrupar no sirve de mucho:
+una sesión en `api/apps/web` dice `web`, y una en un worktree dice el nombre del worktree. Así que
+un **proyecto** es el repositorio al que pertenece el directorio:
+
+- Las subcarpetas van con su repo: sube hasta encontrar `.git` o `.svn`.
+- **Los worktrees van con su repo principal**, vivan donde vivan — el archivo `.git` de un
+  worktree vinculado apunta a él. Incluso los worktrees que ya borraste, que es de lo que está
+  lleno `ccl --recent`.
+- Un submódulo, o un checkout de SVN anidado, es un proyecto propio.
+- Nunca sube hasta tu directorio personal, así que unos dotfiles en `~/.git` no se tragan todas
+  las sesiones que no tienen repo propio. Un directorio sin repositorio es su propio proyecto.
+
+No se ejecuta `git` para nada de esto: lee un puñado de archivos, unos milisegundos para cientos
+de directorios.
+
+Los proyectos van en **orden alfabético**, para que no cambien de sitio según las sesiones se
+ocupan o se quedan esperando. Dentro de cada uno, el orden de siempre: primero lo que trabaja,
+luego lo que te espera. Cada fila dice su estado, y la columna `repo` solo enseña algo cuando la
+sesión no está en la raíz — el worktree o la subcarpeta donde está.
+
+Las **pestañas** (`←` `→`, dando la vuelta) enseñan un proyecto cada vez, agrupado por estado. La
+barra se desplaza cuando no cabe, siempre con la actual a la vista, y `‹` `›` avisan de que hay
+más. El filtro funciona dentro de una pestaña, y si se cierran todas las sesiones del proyecto en
+el que estás, vuelve a *Todas*.
+
+`⌥1`…`⌥9` y `ccl -w` no cambian: siguen contando sobre la cola entera de ESPERANDO, estés en la
+vista o la pestaña que estés — la misma tecla no puede llevarte a sesiones distintas según cómo
+esté agrupada la lista. Teclear un número sigue funcionando para una sesión de otra pestaña.
+
+`ccl --list --projects` (con o sin `--table`) imprime la lista agrupada sin panel.
+
+</details>
+
+<details>
 <summary><b>Ratón, y cómo seleccionar texto para copiar</b></summary>
 
 Clic selecciona, **doble clic abre**, la rueda mueve la selección. El doble clic no lo reporta el
@@ -432,6 +484,7 @@ color**, lista para pegar.
 <summary><b>Filtrar</b></summary>
 
 Con muchas sesiones, escribe para reducir la lista: `supp` deja solo las de `support-agent`.
+También cuenta el proyecto: `api` encuentra las sesiones de sus worktrees y subcarpetas.
 Ignora mayúsculas y acentos (`migracion` encuentra `migración`), y varios términos se combinan
 sin importar el orden: `api backend` casa igual que `backend api`.
 
@@ -517,7 +570,8 @@ python3 test_panel.py       # el panel de verdad, sobre un pty (~3 min)
 Sin dependencias, y **ninguno de los dos toca iTerm ni lanza `claude`**.
 
 `test_ccl.py` cubre la lógica pura: helpers de ancho, numeración estable, parseo de la salida de
-AppleScript, lectura de transcripts, agrupación y orden, la pausa, el filtro, multi-cuenta, las
+AppleScript, lectura de transcripts, agrupación y orden (por estado y por proyecto), la detección de proyectos y la barra de
+pestañas, la pausa, el filtro, multi-cuenta, las
 columnas de las dos vistas, el listado estático, la pantalla de ayuda, la decodificación de
 teclas y ratón, y el manejo de errores.
 

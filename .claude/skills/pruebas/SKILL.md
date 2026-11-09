@@ -35,6 +35,14 @@ busca por su contenido en vez de darla por sabida. Y es donde mas falta hace pro
 mapa fila→sesion se construye pintando, y un calculo aparte se desincronizaria justo al cambiar
 de vista.
 
+**`proyecto_de` lleva `lru_cache` y lee el disco.** Los tests que montan un repo en un temporal
+(`.git`, `.svn`, el `.git` archivo de un worktree) llaman a `ccl.proyecto_de.cache_clear()` en
+`setUp`, y parchean `ccl.HOME`, porque la busqueda se para ahi. Una ruta que no existe (`/x/api`)
+es su propio proyecto: por eso las filas sinteticas agrupan sin montar nada. En `test_panel.py`
+eso da tres proyectos —`compartido` (alfa, beta), `delta`, `gamma`— y las filas se buscan por su
+NUMERO (`[ 4]`), no por el nombre, que sale tambien en la cabecera del proyecto y en la barra de
+pestañas. Diseño: `specs/001-vista-por-proyecto.md`.
+
 **`collect` parcheado se salta `build`**, que es quien pega `note` y `paused` a las filas. El
 arnes replica los dos pasos; si añades un campo que `build` calcule, hay que añadirlo ahi o el
 panel de los tests lo vera siempre vacio — y parecera un fallo de persistencia que no existe.

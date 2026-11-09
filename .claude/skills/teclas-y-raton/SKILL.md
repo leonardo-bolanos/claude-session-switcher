@@ -12,7 +12,11 @@ ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es 
 
 Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
 Las ocupadas hasta ahora: `Ctrl-R` refrescar, `Ctrl-N` nota, `Ctrl-P` pausar, `Ctrl-T` tabla,
-`Ctrl-C`/`Ctrl-D` salir. Y un test lo fija a partir de la ayuda
+`Ctrl-O` recuperables, `Ctrl-G` agrupar por proyecto, `Ctrl-C`/`Ctrl-D` salir; y `← →`, que fuera
+del editor de notas solo hacen algo en la vista por proyecto (cambian de pestaña). Descartadas a
+proposito, no por estar libres: `Ctrl-S`/`Ctrl-Q` son control de flujo (IXON, que
+`_preparar_tty` NO apaga: entre lecturas congelarian la salida) y `Ctrl-Y` es VDSUSP en macOS, una
+señal con ISIG encendido. Diseño de la vista por proyecto: `specs/001-vista-por-proyecto.md`. Y un test lo fija a partir de la ayuda
 (`test_ninguna_accion_es_una_letra_suelta`), asi que documentar la tecla y añadirla es el mismo
 gesto: una accion sin fila en `HELP_EN`/`HELP_ES` no la vigila nadie.
 
@@ -61,6 +65,11 @@ y pareceria doble.
 de repintado (`screen[y] = i`) porque cualquier cosa que se añada arriba —la cabecera de grupo
 fija, un aviso— desplaza todo; un calculo aparte se desincroniza en silencio y el clic acaba
 enfocando la sesion vecina, que es el peor fallo posible: parece que funciona.
+
+Una linea fija nueva arriba (como la barra de pestañas) tiene dos obligaciones: **no** registrarse
+en `screen` —un clic ahi no elige nada— y descontarse de `body` **antes** de calcular el scroll.
+Restada al pintar, como hace la cabecera de grupo fija, la fila del cursor puede quedar una linea
+por debajo de la pantalla.
 
 **`MOUSE_ON` se rearma en CADA repintado, no solo al arrancar.** Emitido una sola vez, cualquier
 reset de los modos privados del terminal (tmux, un `reset` ajeno, iTerm restaurando la sesion)
