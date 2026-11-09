@@ -1344,6 +1344,93 @@ class TestVistaPorProyecto(unittest.TestCase):
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestPestañas(unittest.TestCase):
+    """
+    Las pestañas son «Todas · compartido 2 · delta 1 · gamma 1». Los nombres de proyecto
+    salen tambien en la barra, asi que las sesiones se buscan por su NUMERO: alfa [1],
+    beta [2], gamma [3], delta [4].
+    """
+
+    def filas_visibles(self, p):
+        return {n for n, num in (("alfa", 1), ("beta", 2), ("gamma", 3), ("delta", 4))
+                if f"[ {num}]" in p.ultima()}
+
+    def ultima_cruda(self, p):
+        return p.bruto.split(LIMPIAR)[-1]
+
+    def test_sin_la_vista_por_proyecto_no_hay_barra_y_las_flechas_no_hacen_nada(self):
+        with con_panel() as p:
+            p.enviar(b"\033[C", b"\033[D")
+            self.assertNotIn("Todas", p.ultima())
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"})
+            self.assertEqual(p.cursor(), "alfa")
+
+    def test_la_derecha_enseña_solo_el_proyecto_y_por_estado(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            self.assertIn("Todas", p.ultima().split("\n")[1], "falta la barra de pestañas")
+            p.enviar(b"\033[C")
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta"})
+            self.assertIn("ESPERANDO (2)", p.ultima(), "dentro del proyecto, por estado")
+            self.assertIn("\033[1;7m compartido 2 ", self.ultima_cruda(p),
+                          "la activa deberia ir resaltada")
+            p.enviar(b"\033[C")
+            self.assertEqual(self.filas_visibles(p), {"delta"})
+            self.assertEqual(p.cursor(), "delta", "el cursor pasa a la pestaña nueva")
+
+    def test_la_izquierda_desde_todas_va_a_la_ultima_y_vuelve(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[D")
+            self.assertEqual(self.filas_visibles(p), {"gamma"})
+            p.enviar(b"\033[C")
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"})
+            self.assertIn("compartido (2)", p.ultima(), "Todas es la vista por proyecto")
+
+    def test_ctrl_g_sale_de_la_pestaña_y_al_volver_empieza_en_todas(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C", b"\x07")
+            self.assertIn("ESPERANDO (4)", p.ultima())
+            p.enviar(b"\x07")
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"})
+
+    def test_un_clic_dentro_de_la_pestaña_y_otro_en_la_barra(self):
+        """La barra desplaza todo una linea: el mapa fila → sesion tiene que saberlo."""
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C")
+            fila = next(i for i, l in enumerate(p.ultima().split("\n"), 1) if "[ 2]" in l)
+            p.enviar(press(fila))
+            self.assertEqual(p.cursor(), "beta")
+            p.enviar(press(2))                     # la linea de pestañas
+            self.assertEqual(p.cursor(), "beta")
+
+    def test_filtro_y_pestaña_a_la_vez(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C", b"gamma")
+            self.assertIn("sin resultados", p.ultima(), "gamma no es de compartido")
+            p.enviar(b"\033[C", b"\033[C")         # delta, gamma: tambien desde ahi
+            self.assertIn("1 coincide", p.barra())
+            self.assertEqual(self.filas_visibles(p), {"gamma"})
+
+    def test_mientras_escribes_la_nota_las_flechas_son_del_editor(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\x0e", b"ab", b"\033[D", b"X", b"\r")
+            self.assertIn("✎ aXb", p.ultima(), "← deberia mover el cursor del texto")
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"},
+                             "← cambio de pestaña desde el editor")
+
+    def test_si_muere_el_proyecto_de_la_pestaña_vuelve_a_todas(self):
+        señal = os.path.join(_NOTAS_TMP, f"matar-{next(_contador_notas)}")
+        with con_panel(entorno={"CCL_TEST_MATAR": señal, "CCL_TEST_MUERTA": "gamma",
+                                "CCL_TEST_REFRESH": "1"}) as p:
+            p.enviar(b"\x07", b"\033[D")           # la pestaña de gamma
+            self.assertEqual(self.filas_visibles(p), {"gamma"})
+            open(señal, "w").close()               # gamma muere
+            p._drenar(2.5 * FACTOR_ESPERA)         # deja pasar un refresco
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "delta"})
+            self.assertIn("compartido (2)", p.ultima())
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
 class TestGeneradorDelDemo(unittest.TestCase):
     """
     `make_demo.py` graba el panel y escribe demo.svg. Cada comprobacion de aqui es un

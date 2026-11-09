@@ -311,6 +311,8 @@ TEXTOS = {
         "barra_pausa": " pause  ",
         "barra_tabla": " table  ",
         "barra_proyectos": " projects  ",
+        "barra_pestañas": " tabs  ",
+        "pestaña_todas": "All",
         "barra_escribe": "type",
         "barra_filtrar": " filter  ",
         "barra_ayuda": " help",
@@ -420,6 +422,8 @@ TEXTOS = {
         "barra_pausa": " pausa  ",
         "barra_tabla": " tabla  ",
         "barra_proyectos": " proyectos  ",
+        "barra_pestañas": " pestañas  ",
+        "pestaña_todas": "Todas",
         "barra_escribe": "escribe",
         "barra_filtrar": " filtrar  ",
         "barra_ayuda": " ayuda",
@@ -1748,9 +1752,11 @@ def _etiquetas_de_proyecto(raices):
             for r, n in nombres.items()}
 
 
-def agrupar_por_proyecto(rows):
+def _proyectos(rows):
     """
-    [(etiqueta, color, filas)] por proyecto — la MISMA forma que `grouped`.
+    [(raiz, etiqueta, color, filas)] por proyecto. Lo comparten los grupos
+    (`agrupar_por_proyecto`) y las pestañas (`pestañas_de`): calculado en un solo sitio, no
+    pueden salir en distinto orden ni con distinta etiqueta.
 
     Los proyectos van en orden alfabetico, sin mayusculas ni acentos: asi no bailan entre
     refrescos y se aprende donde esta cada uno (la misma razon por la que los anchos de la
@@ -1772,9 +1778,71 @@ def agrupar_por_proyecto(rows):
 
     orden = sorted(por_raiz, key=lambda raiz: (
         solo_faltan(raiz), strip_accents(etiquetas[raiz]).lower(), raiz))
-    return [(etiquetas[raiz], GREY if solo_faltan(raiz) else MAGENTA,
+    return [(raiz, etiquetas[raiz], GREY if solo_faltan(raiz) else MAGENTA,
              [f for _, _, items in grouped(por_raiz[raiz]) for f in items])
             for raiz in orden]
+
+
+def agrupar_por_proyecto(rows):
+    """[(etiqueta, color, filas)] por proyecto — la MISMA forma que `grouped`."""
+    return [(etiqueta, color, filas) for _, etiqueta, color, filas in _proyectos(rows)]
+
+
+def pestañas_de(rows):
+    """
+    [(clave, etiqueta, n)]: «Todas» (clave None) y luego una por proyecto, en el orden de
+    los grupos. La clave es la RAIZ, nunca el nombre: dos proyectos pueden llamarse igual.
+    """
+    return ([(None, t("pestaña_todas"), len(rows))]
+            + [(raiz, etiqueta, len(filas)) for raiz, etiqueta, _, filas in _proyectos(rows)])
+
+
+def pestaña_vecina(pestañas, activa, paso):
+    """
+    La clave de la pestaña `paso` posiciones mas alla, en circulo como ↑↓. Si la activa ya
+    no esta (se cerraron sus sesiones), se cuenta desde Todas.
+    """
+    claves = [p[0] for p in pestañas]
+    i = claves.index(activa) if activa in claves else 0
+    return claves[(i + paso) % len(claves)]
+
+
+def barra_pestañas(pestañas, activa, ancho):
+    """
+    La linea de pestañas, recortada a `ancho`, con la activa SIEMPRE dentro.
+
+    Con siete proyectos ya no cabe en 100 columnas, y en `--recent` son dos docenas: se
+    enseña una ventana alrededor de la activa, creciendo hacia la derecha primero —lo que
+    vas a ver al pulsar →— y luego a la izquierda, y `‹ ›` avisan de lo que queda fuera.
+    Las dos columnas de cada lado se reservan siempre, para que la barra no se mueva de
+    sitio segun aparezcan o no las flechas.
+
+    Pura a proposito: el desplazamiento se prueba sin pty, que es donde de verdad puede
+    fallar (la activa fuera de la ventana, o la barra mas ancha que la terminal).
+    """
+    trozos = [c("1;7", f" {etiqueta} {n} ") if clave == activa
+              else f" {etiqueta} " + DIM(str(n)) + " "
+              for clave, etiqueta, n in pestañas]
+    if not trozos:
+        return ""
+    actual = next((i for i, p in enumerate(pestañas) if p[0] == activa), 0)
+    cabe = max(1, ancho - 4)
+
+    def ocupa(i, j):        # los trozos i..j-1 y sus separadores de una columna
+        return sum(vis(trozos[k]) for k in range(i, j)) + (j - i - 1)
+
+    i, j = actual, actual + 1
+    crecio = True
+    while crecio:
+        crecio = False
+        if j < len(trozos) and ocupa(i, j + 1) <= cabe:
+            j, crecio = j + 1, True
+        if i > 0 and ocupa(i - 1, j) <= cabe:
+            i, crecio = i - 1, True
+    # `clip` por si la activa sola ya no cabe: un nombre de proyecto larguisimo
+    medio = clip(DIM("│").join(trozos[i:j]), cabe)
+    return ((DIM("‹ ") if i > 0 else "  ") + medio
+            + (DIM(" ›") if j < len(trozos) else ""))
 
 
 def grupos(rows, por_proyecto=False):
@@ -1817,9 +1885,13 @@ def gris_si_falta(r, texto):
     return GREY(ANSI_RE.sub("", texto)) if r.get("faltante") and texto else texto
 
 
-def main_line(r, show_account=False, por_proyecto=False):
+def main_line(r, show_account=False, por_proyecto=False, en_proyecto=False):
     """
     Linea principal coloreada, con las columnas alineadas por ancho VISIBLE.
+
+    `en_proyecto`: todas las filas son de un mismo proyecto (su pestaña), agrupadas por
+    estado. Ahi el estado ya lo dice la cabecera, pero `repo` repetiria el proyecto en cada
+    fila igual que en «Todas», asi que tambien pasa a ser `donde`.
 
     Agrupando por proyecto, la cabecera ya no dice el estado, asi que lo dice la fila, con
     la etiqueta y el color de la columna de la tabla; el nombre cede nueve columnas para que
@@ -1836,7 +1908,7 @@ def main_line(r, show_account=False, por_proyecto=False):
     ancho_nombre = 27 if por_proyecto else 36
     name = pad((RED if r.get("duplicada") else BOLD)(r["name"][:ancho_nombre]),
                ancho_nombre + 2)
-    repo = pad(MAGENTA((donde(r) if por_proyecto else r["repo"])[:15]), 17)
+    repo = pad(MAGENTA((donde(r) if por_proyecto or en_proyecto else r["repo"])[:15]), 17)
     # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
     # seria una columna vacia en todas las filas.
     acct = pad(GREY(r.get("account") or ""), 11) if show_account else ""
@@ -1911,15 +1983,18 @@ def table_head(width=100, show_account=False):
     return DIM(clip(fijas + t("col_nota"), width))
 
 
-def table_line(r, width=100, show_account=False, por_proyecto=False):
-    """Una sesion en una sola linea, en columnas. Por proyecto, `repo` pasa a ser `donde`."""
+def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto=False):
+    """
+    Una sesion en una sola linea, en columnas. Por proyecto o dentro de la pestaña de un
+    proyecto, `repo` pasa a ser `donde`.
+    """
     etiqueta, color = estado_de(r)
     celda = {
         "num": CYAN(BOLD(f"[{r['num']:>2}]")),
         "estado": color(etiqueta),
         "name": (RED if r.get("duplicada") else BOLD)(r["name"]),
         "account": GREY(r.get("account") or ""),
-        "repo": MAGENTA(donde(r) if por_proyecto else r["repo"]),
+        "repo": MAGENTA(donde(r) if por_proyecto or en_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),
         "model": color_model(r["model"]),
         "ts": color_age(r["ts"]),
@@ -2367,6 +2442,8 @@ HELP_EN = [
         ("",           "a repo's worktrees and subfolders go with it"),
         ("",           "works in both the list and the table view"),
         ("",           "⌥1-9 still counts over the WAITING queue"),
+        ("← →",        "switch tabs: All, then one per project"),
+        ("",           "a project's tab groups its sessions by state"),
         ("ccl -p",     "start that way (also --projects, with --list too)"),
     ]),
     ("filtering", [
@@ -2455,6 +2532,8 @@ HELP_ES = [
         ("",           "los worktrees y subcarpetas de un repo van con él"),
         ("",           "vale en la vista de lista y en la de tabla"),
         ("",           "⌥1-9 sigue contando sobre la cola de ESPERANDO"),
+        ("← →",        "cambiar de pestaña: Todas y una por proyecto"),
+        ("",           "la pestaña de un proyecto agrupa sus sesiones por estado"),
         ("ccl -p",     "arrancar así (también --projects, y con --list)"),
     ]),
     ("filtrar", [
@@ -2544,7 +2623,7 @@ def render_help(cols, term_rows, pagina=0, paginas=None):
     return "".join(buf)
 
 
-def build_display(rows, width=100, por_proyecto=False):
+def build_display(rows, width=100, por_proyecto=False, en_proyecto=False):
     """
     Lista plana de (rol, texto, fila). Roles:
       'head'   cabecera de grupo, no seleccionable
@@ -2559,7 +2638,7 @@ def build_display(rows, width=100, por_proyecto=False):
         lines.append(("head", cabecera_grupo(label, color, items, por_proyecto,
                                              max(20, width - 4)), None))
         for r in items:
-            lines.append(("main", main_line(r, multi, por_proyecto), r))
+            lines.append(("main", main_line(r, multi, por_proyecto, en_proyecto), r))
             d = detail_line(r, width - 9)
             if d:
                 lines.append(("sub", d, r))
@@ -2567,7 +2646,7 @@ def build_display(rows, width=100, por_proyecto=False):
     return lines
 
 
-def build_table_display(rows, width=100, por_proyecto=False):
+def build_table_display(rows, width=100, por_proyecto=False, en_proyecto=False):
     """
     Lo mismo que `build_display`, en tabla: cabecera de columnas y una linea por sesion.
 
@@ -2587,18 +2666,20 @@ def build_table_display(rows, width=100, por_proyecto=False):
         if por_proyecto:
             lines.append(("head", cabecera_grupo(label, color, items, True, ancho), None))
         for r in items:
-            lines.append(("main", table_line(r, ancho, multi, por_proyecto), r))
+            lines.append(("main", table_line(r, ancho, multi, por_proyecto, en_proyecto),
+                          r))
     return lines
 
 
-def vista(rows, width, tabla, por_proyecto=False):
+def vista(rows, width, tabla, por_proyecto=False, en_proyecto=False):
     """
     El constructor de lineas que toca. Disposicion (`tabla`, Ctrl-T) y agrupacion
     (`por_proyecto`, Ctrl-G) son independientes: las cuatro combinaciones existen.
+    `en_proyecto` es la pestaña de un proyecto: agrupado por estado, `repo` como `donde`.
     """
     if tabla:
-        return build_table_display(rows, width, por_proyecto)
-    return build_display(rows, width, por_proyecto)
+        return build_table_display(rows, width, por_proyecto, en_proyecto)
+    return build_display(rows, width, por_proyecto, en_proyecto)
 
 
 def interactive(feed, tabla=False, por_proyecto=False):
@@ -2626,6 +2707,9 @@ def interactive(feed, tabla=False, por_proyecto=False):
     # recuperables que se leen de disco. Se guardan aparte porque el Feed sigue
     # refrescando por detras y machacaria la lista al segundo siguiente.
     modo_recent = False
+    # La pestaña activa de la vista por proyecto: la RAIZ del proyecto, o None para «Todas».
+    # Por la raiz y no por el nombre, por lo mismo que los grupos: dos pueden llamarse igual.
+    pestaña = None
     filas_recent = []
     last_cols = cols0
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
@@ -2650,8 +2734,19 @@ def interactive(feed, tabla=False, por_proyecto=False):
             if new_stamp != stamp or now_cols != last_cols or requery:
                 stamp, last_cols, requery = new_stamp, now_cols, False
                 rows = filas_recent if modo_recent else fresh
+                # Si se cerraron todas las sesiones del proyecto de la pestaña, se vuelve a
+                # Todas: si no, el panel se quedaria en una pestaña vacia que ya no sale en
+                # la barra, sin forma de saber donde estas.
+                if pestaña is not None and pestaña not in {proyecto_de(r.get("cwd") or "")[0]
+                                                           for r in rows}:
+                    pestaña = None
                 shown = [r for r in rows if matches(r, query)]
-                lines = vista(shown, now_cols, tabla, por_proyecto)
+                if por_proyecto and pestaña is not None:
+                    shown = [r for r in shown if proyecto_de(r.get("cwd") or "")[0] == pestaña]
+                # Dentro de la pestaña de un proyecto, por estado: ahi lo que distingue una
+                # sesion de otra es si trabaja o te espera, no de que proyecto es.
+                lines = vista(shown, now_cols, tabla, por_proyecto and pestaña is None,
+                              por_proyecto and pestaña is not None)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
                 if pickable and not any(clave_de(lines[i][2]) == sel_id for i in pickable):
                     sel_id = clave_de(lines[pickable[0]][2])  # el filtro dejo fuera al cursor
@@ -2700,6 +2795,11 @@ def interactive(feed, tabla=False, por_proyecto=False):
                         sel_id = nuevo_sel
                 elif k == "back" and query:
                     query, requery, top = query[:-1], True, 0
+                elif k in ("left", "right") and por_proyecto:
+                    # tambien aqui: una pestaña sin coincidencias no puede ser un callejon
+                    pestaña = pestaña_vecina(pestañas_de(rows), pestaña,
+                                             1 if k == "right" else -1)
+                    requery, top = True, 0
                 elif len(k) == 1 and k.isprintable():
                     query, requery, top = query + k, True, 0
                 continue
@@ -2710,7 +2810,9 @@ def interactive(feed, tabla=False, por_proyecto=False):
             by_num = {r["num"]: r for r in rows}
 
             cols, term_rows = os.get_terminal_size()
-            body = max(5, term_rows - 6)
+            # La barra de pestañas se descuenta AQUI, antes de calcular el scroll: restada al
+            # pintar, la fila del cursor podia quedar una linea por debajo de la pantalla.
+            body = max(5, term_rows - 6 - (1 if por_proyecto else 0))
             cl = pickable[cur]
             # +1 para que la linea de detalle de la fila elegida no quede cortada abajo
             has_sub = cl + 1 < len(lines) and lines[cl + 1][0] == "sub"
@@ -2756,6 +2858,11 @@ def interactive(feed, tabla=False, por_proyecto=False):
                             + GREEN(t("activas", n=busy_n)) + n_proy + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
                 y += 1
+                if por_proyecto:
+                    # Fuera de `screen` a proposito: un clic aqui no selecciona ninguna
+                    # sesion, igual que en una cabecera.
+                    buf.append(barra_pestañas(pestañas_de(rows), pestaña, cols - 2) + "\r\n")
+                    y += 1
 
                 # Cabecera de grupo fija: en ventanas pequeñas el scroll se lleva la
                 # cabecera por arriba y pierdes de vista en que grupo estas.
@@ -2791,7 +2898,11 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # Se recorta al ancho: con seis atajos la barra ya no cabe en una
                 # ventana estrecha, y al envolverse empujaba el panel una linea hacia
                 # arriba en cada repintado.
-                hint = clip(DIM("↑↓") + t("barra_mover") + DIM("enter") + t("barra_abrir")
+                # ←→ va junto a ↑↓ y no al final: es navegacion, y la barra se recorta por
+                # la derecha, asi que al final era lo primero en perderse.
+                hint = clip(DIM("↑↓") + t("barra_mover")
+                            + ((CYAN("←→") + DIM(t("barra_pestañas"))) if por_proyecto else "")
+                            + DIM("enter") + t("barra_abrir")
                             + CYAN("⌥1-9") + DIM(t("barra_esperando"))
                             + CYAN("^N") + DIM(t("barra_nota"))
                             + CYAN("^P") + DIM(t("barra_pausa"))
@@ -2952,6 +3063,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
                     flash = t("modo_vivas")
                 # el filtro y el numero a medio teclear son de la otra lista
                 query, typed, top, requery = "", "", 0, True
+                pestaña = None      # las pestañas eran las de la otra lista
             elif k == "table":
                 # Ctrl-T: la misma lista en columnas. El cursor sigue a la sesion (su
                 # clave), asi que cambiar de vista no lo mueve.
@@ -2961,6 +3073,15 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # lo mismo que alli el cursor no se mueve: sigue a la sesion, no a la fila.
                 # `⌥N` NO cambia: cuenta sobre la cola ESPERANDO en cualquier agrupacion.
                 por_proyecto, requery = not por_proyecto, True
+                pestaña = None      # entrar o salir de la vista empieza siempre en Todas
+            elif k in ("left", "right") and por_proyecto:
+                # ← →: la pestaña de al lado, en circulo. Solo en la vista por proyecto:
+                # fuera de ella no hacen nada, como siempre. El cursor no hay que tocarlo:
+                # si su sesion no esta en la pestaña nueva, la reconstruccion lo pone en la
+                # primera fila, como hace el filtro.
+                pestaña = pestaña_vecina(pestañas_de(rows), pestaña,
+                                         1 if k == "right" else -1)
+                requery, top, typed = True, 0, ""
             elif k == "refresh":
                 # Ctrl-R, no 'r' a secas: cualquier letra empieza a filtrar, y 'r' se
                 # comia el filtrado de todo lo que empezara por esa letra

@@ -129,12 +129,12 @@ versión: así la documentación se escribe una vez.
 |---|---|
 | R13 | En la vista por proyecto, una **barra de pestañas** bajo la cabecera del panel: **Todas** primero y luego una por proyecto, en el orden de los grupos (R4), cada una con su número de sesiones. La activa va resaltada. Solo existe con `Ctrl-G`: sin agrupar por proyecto no hay barra ni línea de más. |
 | R14 | `←` / `→` cambian de pestaña, **en círculo** como `↑↓`: `→` en la última vuelve a Todas. Sin la vista por proyecto siguen sin hacer nada, como hoy. |
-| R15 | **Todas** es la vista por proyecto de R1-R12. Una pestaña de proyecto enseña solo ese proyecto, **agrupado por estado**: dentro de un proyecto lo que distingue una sesión de otra es si trabaja o te espera. Vale en las dos disposiciones (`Ctrl-T`). |
+| R15 | **Todas** es la vista por proyecto de R1-R12. Una pestaña de proyecto enseña solo ese proyecto, **agrupado por estado**: dentro de un proyecto lo que distingue una sesión de otra es si trabaja o te espera. Y `repo` es `donde`, como en Todas (R7): con datos reales, sin esto `support_agent` salía repetido en cada fila. Vale en las dos disposiciones (`Ctrl-T`). |
 | R16 | La barra **se desplaza sola** si no cabe: la pestaña activa siempre se ve, y `‹` / `›` avisan de que hay más a cada lado. Con los 7 proyectos vivos del 2026-11-09 ocupa ~115 columnas; en `--recent` son 24 proyectos. |
 | R17 | El filtro de texto se combina con la pestaña (las dos condiciones a la vez). Las pestañas y sus números salen de **todas** las filas, no de las filtradas: la barra no baila mientras escribes. Una pestaña sin coincidencias enseña «sin resultados» y desde ahí `← →` siguen funcionando. |
 | R18 | Si el proyecto de la pestaña activa desaparece (se cerraron sus sesiones), se vuelve a **Todas**. `Ctrl-G` y `Ctrl-O` también la devuelven a Todas: la lista de pestañas cambia entera. |
 | R19 | No cambia: teclear un número lleva a la sesión aunque esté en otra pestaña (`by_num` va sobre todas las filas), y `⌥1…9` / `-w` cuentan sobre la cola ESPERANDO entera. Si la sesión elegida no está en la pestaña activa, el cursor cae en la primera fila: lo que ya pasa hoy con el filtro. |
-| R20 | `←→` aparece en la barra de estado y en la ayuda **solo con la vista por proyecto**, que es cuando hacen algo. |
+| R20 | `←→` aparece en la barra de estado y en la ayuda **solo con la vista por proyecto**, que es cuando hacen algo. En la barra va junto a `↑↓` y no al final: es navegación, y la barra se recorta por la derecha (a 100 columnas ya no cabía entera antes de esta spec). |
 
 ## Dónde se toca
 
@@ -159,7 +159,7 @@ scroll y la cabecera fija funcionan sin enterarse, igual que pasó con la tabla
 | `TEXTOS` | Dos claves nuevas en **los dos idiomas** con los mismos huecos (lo exige un test): la barra (`barra_proyectos`) y la cabecera (`proyectos_n`). El resumen reutiliza las etiquetas de los grupos, y no hay aviso al cambiar: como con `Ctrl-T`, el cambio se ve solo. Las pestañas añaden `pestaña_todas` y `barra_pestañas`. |
 | `_proyectos(rows)` | **Nueva** (pestañas). `[(raíz, etiqueta, color, filas)]`: lo que hoy calcula `agrupar_por_proyecto` por dentro, con la raíz a la vista. `agrupar_por_proyecto` pasa a ser una vista de esto, y la lista de pestañas también: así las pestañas y los grupos no pueden salir en distinto orden ni con distinta etiqueta. |
 | `barra_pestañas(pestañas, activa, ancho)` | **Nueva**, pura. La línea de pestañas recortada a `ancho`, con la activa siempre dentro de la ventana y `‹ ›` cuando sobran. Pura para probar el desplazamiento sin pty. |
-| `interactive` (pestañas) | Estado `pestaña` (la **raíz** del proyecto, o `None` para Todas: la clave es la ruta, nunca el nombre). Al reconstruir, filtra `shown` por pestaña y pide `vista(…, por_proyecto=pestaña is None)` (R15). La barra se pinta entre la cabecera y la cabecera de grupo fija, y **resta una línea a `body` antes de calcular el scroll**: si se resta al pintar, la fila del cursor puede quedar fuera por abajo. `← →` en el bucle principal y en la rama de lista vacía (R17). |
+| `interactive` (pestañas) | Estado `pestaña` (la **raíz** del proyecto, o `None` para Todas: la clave es la ruta, nunca el nombre). Al reconstruir, filtra `shown` por pestaña y pide `vista(…, por_proyecto=pestaña is None, en_proyecto=pestaña is not None)` (R15); `en_proyecto` llega a `main_line`/`table_line` para poner `donde` en `repo` sin la columna de estado. La barra se pinta entre la cabecera y la cabecera de grupo fija, y **resta una línea a `body` antes de calcular el scroll**: si se resta al pintar, la fila del cursor puede quedar fuera por abajo. `← →` en el bucle principal y en la rama de lista vacía (R17). |
 
 ## Invariantes que no se pueden romper
 

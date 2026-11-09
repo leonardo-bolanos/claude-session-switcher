@@ -1540,6 +1540,67 @@ class TestAgruparPorProyecto(unittest.TestCase):
         self.assertEqual(ccl.pick_waiting(rows, 1)[0]["sessionId"], "nueva")
 
 
+class TestPestañas(unittest.TestCase):
+    """La barra de pestañas de la vista por proyecto, y como se recorre con ← →."""
+
+    def setUp(self):
+        ccl.proyecto_de.cache_clear()
+
+    def muchas(self, n):
+        return ([(None, ccl.t("pestaña_todas"), 99)]
+                + [(f"/x/p{i}", f"proyecto-{i:02d}", i + 1) for i in range(n)])
+
+    def test_todas_primero_y_luego_los_grupos_en_su_orden(self):
+        rows = [en("/x/beta", 1, "b"), en("/x/alfa", 2, "a"), en("/x/alfa", 3, "a2")]
+        p = ccl.pestañas_de(rows)
+        self.assertEqual(p[0], (None, ccl.t("pestaña_todas"), 3))
+        self.assertEqual([e for _, e, _ in p[1:]],
+                         [e for e, _, _ in ccl.agrupar_por_proyecto(rows)])
+        self.assertEqual([(k, n) for k, _, n in p[1:]], [("/x/alfa", 2), ("/x/beta", 1)])
+
+    def test_la_clave_es_la_raiz_aunque_se_llamen_igual(self):
+        p = ccl.pestañas_de([en("/x/cariai/api", 1, "a"), en("/x/personal/api", 2, "b")])
+        self.assertEqual([k for k, _, _ in p[1:]], ["/x/cariai/api", "/x/personal/api"])
+
+    def test_las_flechas_dan_la_vuelta(self):
+        p = self.muchas(3)
+        self.assertEqual(ccl.pestaña_vecina(p, None, 1), "/x/p0")
+        self.assertEqual(ccl.pestaña_vecina(p, None, -1), "/x/p2")
+        self.assertEqual(ccl.pestaña_vecina(p, "/x/p2", 1), None)
+        self.assertEqual(ccl.pestaña_vecina(p, "/x/p1", -1), "/x/p0")
+
+    def test_una_activa_que_ya_no_esta_cuenta_desde_todas(self):
+        self.assertEqual(ccl.pestaña_vecina(self.muchas(3), "/x/desaparecido", 1), "/x/p0")
+
+    def test_nunca_desborda_y_la_activa_siempre_se_ve(self):
+        for n in (1, 5, 24):
+            p = self.muchas(n)
+            for ancho in (40, 80, 100):
+                for clave, etiqueta, num in p:
+                    barra = ccl.barra_pestañas(p, clave, ancho)
+                    self.assertLessEqual(ccl.vis(barra), ancho, f"n={n} ancho={ancho}")
+                    self.assertIn(f" {etiqueta} {num} ", ccl.ANSI_RE.sub("", barra),
+                                  f"n={n} ancho={ancho}: no se ve {etiqueta}")
+                    self.assertIn("\033[1;7m", barra, "la activa va resaltada")
+
+    def test_las_flechas_de_la_barra_solo_si_hay_algo_oculto(self):
+        pocas = self.muchas(2)
+        barra = ccl.ANSI_RE.sub("", ccl.barra_pestañas(pocas, None, 100))
+        self.assertNotIn("‹", barra)
+        self.assertNotIn("›", barra)
+        p = self.muchas(24)
+        al_principio = ccl.ANSI_RE.sub("", ccl.barra_pestañas(p, None, 80))
+        self.assertNotIn("‹", al_principio)
+        self.assertIn("›", al_principio)
+        al_final = ccl.ANSI_RE.sub("", ccl.barra_pestañas(p, "/x/p23", 80))
+        self.assertIn("‹", al_final)
+        self.assertNotIn("›", al_final)
+
+    def test_una_activa_que_no_cabe_ni_sola_se_recorta(self):
+        p = [(None, "All", 1), ("/x/l", "n" * 200, 1)]
+        self.assertLessEqual(ccl.vis(ccl.barra_pestañas(p, "/x/l", 60)), 60)
+
+
 class TestVistaPorProyecto(unittest.TestCase):
     def setUp(self):
         ccl.proyecto_de.cache_clear()
@@ -1615,6 +1676,24 @@ class TestVistaPorProyecto(unittest.TestCase):
         for linea in (ccl.main_line(wt, por_proyecto=True),
                       ccl.table_line(wt, 120, por_proyecto=True)):
             self.assertIn("offline-mode", self.plano(linea))
+
+    def test_en_la_pestaña_de_un_proyecto_repo_es_donde_y_el_estado_va_en_la_cabecera(self):
+        """
+        Dentro de una pestaña se agrupa por estado, asi que la fila no repite el estado;
+        pero tampoco el proyecto en cada fila: eso lo vio el usuario con datos reales.
+        """
+        tmp = os.path.realpath(tempfile.mkdtemp())
+        os.makedirs(os.path.join(tmp, "support_agent", ".git"))
+        raiz = en(os.path.join(tmp, "support_agent"), 1, "raiz", ts=iso(minutes=1))
+        wt = en(os.path.join(tmp, "support_agent", "apps", "web"), 2, "wt", ts=iso(minutes=2))
+        for tabla in (False, True):
+            lineas = ccl.vista([raiz, wt], 120, tabla, False, True)
+            plano = {f["sessionId"]: self.plano(txt) for rol, txt, f in lineas if rol == "main"}
+            self.assertNotIn("support_agent", plano["raiz"], f"tabla={tabla}")
+            self.assertIn("web", plano["wt"], f"tabla={tabla}")
+        cabeceras = [self.plano(t) for rol, t, _ in ccl.vista([raiz, wt], 120, False, False, True)
+                     if rol == "head"]
+        self.assertEqual(cabeceras, [f"{ccl.t('grupo_idle')} (2)"])
 
     def test_la_tabla_por_proyecto_lleva_una_cabecera_por_proyecto(self):
         lines = ccl.build_table_display(self.filas(), 120, por_proyecto=True)
