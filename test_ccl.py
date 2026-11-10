@@ -2204,6 +2204,115 @@ class TestSpaces(unittest.TestCase):
             ccl.subprocess.run, ccl.ir_a_space = orig_run, orig_ir
 
 
+class TestSesionesAparcadas(unittest.TestCase):
+    """
+    Un job de fondo que continua la conversacion de una pestaña aparcada (specs/003). La
+    pestaña no sale en `claude agents --json`; solo su `<pid>.json` la une con el job.
+    """
+
+    PID_VIVO = os.getpid()      # el del propio test: seguro que existe
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = os.path.join(self.tmp.name, ".claude")
+        os.makedirs(os.path.join(self.cfg, "sessions"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def job(self, **extra):
+        j = {"pid": 58841, "id": "5a59d1f0", "kind": "background", "status": "idle",
+             "sessionId": "5a59d1f0-job", "name": "Coordinador", "cwd": self.tmp.name}
+        j.update(extra)
+        return j
+
+    def registro_de(self, pid, **datos):
+        datos.setdefault("sessionId", "a5bcbbaf-pestaña")
+        datos.setdefault("parkedJobId", "5a59d1f0")
+        ruta = os.path.join(self.cfg, "sessions", f"{pid}.json")
+        with open(ruta, "w") as fh:
+            json.dump(dict(pid=pid, kind="interactive", **datos), fh)
+        return ruta
+
+    def pid_muerto(self):
+        p = ccl.subprocess.Popen(["true"], stdin=ccl.subprocess.DEVNULL)
+        p.wait()
+        return p.pid
+
+    def enlazar(self, *sesiones):
+        return ccl._enlazar_aparcadas(list(sesiones), self.cfg)
+
+    # --- el enlace ---
+
+    def test_el_job_queda_unido_a_su_pestaña_aparcada(self):
+        self.registro_de(self.PID_VIVO)
+        job = self.enlazar(self.job())[0]
+        self.assertEqual(job["aparcada"], "a5bcbbaf-pestaña")
+        self.assertEqual(job["_pid_terminal"], self.PID_VIVO)
+
+    def test_no_se_enlaza_con_una_pestaña_muerta(self):
+        """Un `<pid>.json` que sobrevivio a su proceso no puede dar por viva a nadie."""
+        self.registro_de(self.pid_muerto())
+        self.assertNotIn("aparcada", self.enlazar(self.job())[0])
+
+    def test_no_se_enlaza_lo_que_ya_esta_en_el_registro(self):
+        """Las aparcadas son justo las que faltan en `claude agents`: las demas no."""
+        self.registro_de(self.PID_VIVO)
+        otra = {"pid": self.PID_VIVO, "kind": "interactive", "sessionId": "x"}
+        self.assertNotIn("aparcada", self.enlazar(self.job(), otra)[0])
+
+    def test_otro_job_u_otro_formato_no_enlazan(self):
+        for datos in ({"parkedJobId": "otro"}, {"parkedJobId": None},
+                      {"parkedJobId": ["5a59d1f0"]}, {"sessionId": 7}):
+            self.registro_de(self.PID_VIVO, **datos)
+            self.assertNotIn("aparcada", self.enlazar(self.job())[0], repr(datos))
+
+    def test_un_json_roto_o_nombres_raros_no_rompen_nada(self):
+        carpeta = os.path.join(self.cfg, "sessions")
+        with open(os.path.join(carpeta, f"{self.PID_VIVO}.json"), "w") as fh:
+            fh.write("{roto")
+        for nombre in (f"{self.PID_VIVO}.abc123.key", "x.json", "0.json", "-1.json"):
+            open(os.path.join(carpeta, nombre), "w").close()
+        self.assertNotIn("aparcada", self.enlazar(self.job())[0])
+
+    def test_sin_carpeta_sessions_no_pasa_nada(self):
+        os.rmdir(os.path.join(self.cfg, "sessions"))
+        self.assertNotIn("aparcada", self.enlazar(self.job())[0])
+
+    def test_sin_jobs_de_fondo_ni_se_mira_el_disco(self):
+        """El caso normal —ningun job— no puede costar ni un `listdir` por refresco."""
+        orig = ccl.os.listdir
+        ccl.os.listdir = lambda *a: self.fail("listo sessions/ sin ningun job")
+        try:
+            self.enlazar({"pid": 1, "kind": "interactive", "sessionId": "a"})
+        finally:
+            ccl.os.listdir = orig
+
+    # --- lo que cambia en la fila y en lo que se da por vivo ---
+
+    def test_la_fila_del_job_salta_a_la_pestaña_y_cuenta_sus_comandos(self):
+        job = self.job(_pid_terminal=2323, aparcada="a5bcbbaf-pestaña")
+        fila = ccl.build([job], {2323: "ttys117", 58841: "ttys000"},
+                         {"ttys117": ("iTerm2", "483892", 10)}, {"5a59d1f0-job": 5},
+                         shells={58841: 2, 2323: 0})[0]
+        self.assertEqual(fila["tty"], "ttys117")
+        self.assertEqual(fila["ventana"], ("iTerm2", "483892", 10))
+        self.assertEqual(fila["shells"], 2, "los comandos los ejecuta el job, no la pestaña")
+        self.assertEqual(fila["aparcada"], "a5bcbbaf-pestaña")
+
+    def test_la_aparcada_cuenta_como_viva(self):
+        fila = row(5, "5a59d1f0-job", kind="background")
+        fila["aparcada"] = "a5bcbbaf-pestaña"
+        vivos = ccl.ids_vivos([fila])
+        self.assertEqual(vivos, {"5a59d1f0-job", "a5bcbbaf-pestaña"})
+        foto = {"sesiones": [{"sessionId": "a5bcbbaf-pestaña", "cwd": self.tmp.name,
+                              "name": "Coordinador", "cfg": None}]}
+        self.assertEqual(ccl.faltantes(foto, [fila]), [], "--saved la pintaria en gris")
+        _, ya, _ = ccl.plan_de_restauracion(foto, vivos)
+        self.assertEqual([x["sessionId"] for x in ya], ["a5bcbbaf-pestaña"],
+                         "--restore la reabriria en otra pestaña")
+
+
 class TestRecuperables(unittest.TestCase):
     """
     `--recent`: las sesiones que ya no corren pero se pueden reanudar. Es la funcion para
@@ -2238,6 +2347,13 @@ class TestRecuperables(unittest.TestCase):
         self._transcript("sid-viva")
         self._transcript("sid-muerta")
         ccl.get_sessions = lambda: [{"sessionId": "sid-viva"}]
+        self.assertEqual([r["sessionId"] for r in ccl.recent_rows()], ["sid-muerta"])
+
+    def test_no_lista_la_conversacion_aparcada_detras_de_un_job(self):
+        """Reanudarla abriria una segunda copia de lo que sigue abierto en su pestaña."""
+        self._transcript("sid-pestaña")
+        self._transcript("sid-muerta")
+        ccl.get_sessions = lambda: [{"sessionId": "sid-job", "aparcada": "sid-pestaña"}]
         self.assertEqual([r["sessionId"] for r in ccl.recent_rows()], ["sid-muerta"])
 
     def test_si_claude_no_responde_las_lista_TODAS(self):

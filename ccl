@@ -785,12 +785,84 @@ def get_sessions():
     todas, primero = [], True
     for d in dirs:
         try:
-            todas.extend(_sessions_from(d))
+            todas.extend(_enlazar_aparcadas(_sessions_from(d), d))
         except SessionsUnavailable:
             if primero:
                 raise
         primero = False
     return _marcar_claves(todas)
+
+
+def _enlazar_aparcadas(sesiones, cfg_dir):
+    """
+    Une cada job de fondo con la pestaña cuya conversacion continua (specs/003).
+
+    Claude Code puede APARCAR una sesion interactiva: la conversacion sigue en un job de
+    fondo —otro proceso, otro sessionId— y la pestaña de iTerm se queda con el proceso
+    original, que **desaparece de `claude agents --json`**. El registro solo enseña el job,
+    con un tty que no es de iTerm. Sin esto la fila no llevaba a ninguna parte, y la
+    conversacion de la pestaña salia como muerta: `--saved` la pintaba en gris y `--restore`
+    o `--recent` la habrian reanudado por duplicado.
+
+    El unico sitio que los une es `<cfg>/sessions/<pid>.json`, sin documentar: el de la
+    pestaña lleva `parkedJobId` y el job, ese mismo `id`. Se leen SOLO los de pids que no
+    estan en el registro —las aparcadas son justo las que faltan— y siguen vivos, y solo si
+    hay algun job: en el caso normal no se toca el disco. Si el formato cambia, no se enlaza
+    nada y todo queda como antes.
+
+    Al job le deja `aparcada` (el sessionId de la pestaña, para darla por viva) y
+    `_pid_terminal` (su pid, para saltar a su pestaña).
+    """
+    jobs = {s["id"]: s for s in sesiones
+            if s.get("kind") == "background" and isinstance(s.get("id"), str)}
+    if not jobs:
+        return sesiones
+    en_registro = {s.get("pid") for s in sesiones}
+    carpeta = os.path.join(cfg_dir, "sessions")
+    try:
+        nombres = os.listdir(carpeta)
+    except OSError:
+        return sesiones
+    for nombre in nombres:
+        base, ext = os.path.splitext(nombre)
+        if ext != ".json" or not base.isdigit():
+            continue
+        pid = int(base)
+        if pid in en_registro or not _proceso_vivo(pid):
+            continue
+        datos = leer_json(os.path.join(carpeta, nombre), {})
+        id_job, sid = datos.get("parkedJobId"), datos.get("sessionId")
+        job = jobs.get(id_job) if isinstance(id_job, str) else None
+        if job is not None and isinstance(sid, str):
+            job["aparcada"], job["_pid_terminal"] = sid, pid
+    return sesiones
+
+
+def _proceso_vivo(pid):
+    """Si existe el proceso, sin lanzar nada: la señal 0 solo comprueba."""
+    if pid <= 0:            # 0 y los negativos son GRUPOS de procesos para kill()
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True         # existe, aunque sea de otro usuario
+    except OSError:
+        return False
+    return True
+
+
+def ids_vivos(filas):
+    """
+    Los sessionId de las conversaciones vivas: el de cada fila, y el de la pestaña que su
+    job tenga aparcada. Es lo que deciden `--saved`, `--restore` y `--recent` antes de
+    reanudar nada; contando solo el de la fila, la aparcada se daba por muerta.
+    """
+    vivos = set()
+    for f in filas:
+        vivos.add(f["sessionId"])
+        if f.get("aparcada"):
+            vivos.add(f["aparcada"])
+    return vivos
 
 
 def _marcar_claves(sessions):
@@ -1553,7 +1625,9 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
     pausadas = despausar_las_que_trabajan(sessions, pausadas, spaces)
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
-        tty = ttys.get(s["pid"], "")
+        # Un job con su pestaña aparcada se enfoca en ESA pestaña: su propio tty es el del
+        # proceso de fondo, que no esta en ningun terminal (specs/003).
+        tty = ttys.get(s.get("_pid_terminal") or s["pid"], "")
         rows.append({
             "num": numbers[clave_de(s)],
             "_clave": clave_de(s),   # la identidad de la FILA; ver `_marcar_claves`
@@ -1565,6 +1639,7 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             "kind": s.get("kind", "interactive"),
             "status": s.get("status", "idle"),
             "sessionId": s["sessionId"],
+            "aparcada": s.get("aparcada"),   # la conversacion de la pestaña que continua
             "pid": s["pid"],
             "tty": tty,
             "ventana": ventanas.get(tty),
@@ -3605,7 +3680,7 @@ def recent_rows(limite=RECENT_MAX):
     acaban con el mismo mtime exacto (ver CLAUDE.md).
     """
     try:
-        vivas = {s["sessionId"] for s in get_sessions()}
+        vivas = ids_vivos(get_sessions())
     except SessionsUnavailable:
         vivas = set()
 
@@ -3839,7 +3914,7 @@ def faltantes(snapshot, rows):
     Se numeran a continuacion de las vivas: asi teclear un numero sigue llevando a una sola
     sesion, sin chocar con las de verdad.
     """
-    vivas = {r["sessionId"] for r in rows}
+    vivas = ids_vivos(rows)
     estado = load_state()
     siguiente = max([r.get("num") or 0 for r in rows] + [0])
     filas = []
@@ -4043,7 +4118,7 @@ def main():
         if not snapshot["sesiones"]:
             print(t("sin_snapshot"))
             return 1
-        return restaurar_sesiones(snapshot, {r["sessionId"] for r in rows},
+        return restaurar_sesiones(snapshot, ids_vivos(rows),
                                   solo_mirar=opts["list"])
 
     if opts["saved"]:

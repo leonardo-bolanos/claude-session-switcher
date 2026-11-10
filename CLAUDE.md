@@ -406,13 +406,21 @@ manda a `--recent`, que lee de disco y no depende del registro.
 
 | Fuente | Qué se usa | Si cambia |
 |---|---|---|
-| `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status` | El panel se queda sin datos |
+| `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status`; de los jobs de fondo, `id` | El panel se queda sin datos |
 | Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, y los tipos `ai-title` / `last-prompt` | Esos campos desaparecen; el resto sigue |
+| `<cfg>/sessions/<pid>.json` | `parkedJobId` y `sessionId`, solo de los pids vivos que faltan en el registro y solo si hay algún job | Un job deja de llevar a la pestaña que aparcó, y esa conversación vuelve a salir como muerta (specs/003) |
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y
 `waitingFor` que aparecen en la documentación no existen en la salida real, y `--all` no añade
 nada. Por eso los grupos que salen de los datos son dos —y no los tres del panel oficial—, y por
-eso PAUSADAS lo marca el usuario a mano: no hay de dónde deducirlo.
+eso PAUSADAS lo marca el usuario a mano: no hay de dónde deducirlo. En 2.1.319 los jobs de fondo
+sí traen `state` (visto: `blocked`), pero no se sabe qué significa y no se usa.
+
+**Una sesión APARCADA desaparece del registro** (verificado en 2.1.319): Claude Code pasa la
+conversación a un job de fondo con otro `sessionId` y deja la pestaña con el proceso original.
+Solo `sessions/<pid>.json` los une (`parkedJobId` ↔ `id`); sin eso el job no lleva a ninguna
+pestaña y la conversación de la pestaña se reanudaba por duplicado. Todo lo que decida «¿está
+viva?» usa `ids_vivos()`, no los `sessionId` a secas.
 ## Cuándo cargar cada skill
 
 Las trampas condicionales viven en `.claude/skills/`. Se cargan solas cuando su `description`

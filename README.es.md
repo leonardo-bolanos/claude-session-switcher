@@ -613,6 +613,12 @@ Sin dependencias, sin paso de grabación manual, y no expone ninguno de tus repo
 - **Formato interno no documentado**: `aiTitle` y `lastPrompt` vienen del transcript de Claude
   Code, que Anthropic no documenta y puede cambiar en cualquier versión. Se tratan como
   opcionales — si desaparecen, el panel sigue funcionando sin esa información.
+- **Las sesiones aparcadas salen como BACKGROUND.** Claude Code puede aparcar una sesión: la
+  conversación sigue en un job de fondo, con otro id, y su pestaña de iTerm se queda con el
+  proceso original — que desaparece de `claude agents`. `ccl` une los dos a través de
+  `~/.claude/sessions/` (tampoco documentado): la fila es el job, así que dice BACKGROUND, pero
+  `Enter` te lleva a la pestaña, y la conversación de la pestaña no se ofrece para reanudar como
+  si hubiera muerto. Si ese formato cambia, la fila simplemente deja de llevar a la pestaña.
 - **Los índices de pestaña se desplazan** si cierras una pestaña de la misma ventana entre listar
   y elegir. El riesgo es de segundos y el peor caso es enfocar la pestaña vecina.
 - **Solo iTerm2** para el salto de ventana. El listado funciona en cualquier terminal.

@@ -605,6 +605,12 @@ dependencies, no manual recording step, and it exposes none of your actual repos
 - **Undocumented internal format**: `aiTitle` and `lastPrompt` come from Claude Code's
   transcript, which Anthropic doesn't document and may change in any release. They're treated as
   optional — if they vanish, the panel keeps working without that information.
+- **Parked sessions show up as BACKGROUND.** Claude Code can park a session: the conversation
+  carries on in a background job, with a new id, while its iTerm tab keeps the original process —
+  which then vanishes from `claude agents`. `ccl` links the two through `~/.claude/sessions/`
+  (also undocumented): the row is the job, so it says BACKGROUND, but `Enter` takes you to the
+  tab, and the tab's conversation isn't offered for resuming as if it had died. If that format
+  changes, the row just stops leading to the tab.
 - **Tab indices shift** if you close a tab in the same window between listing and choosing. The
   window is seconds wide and the worst case is focusing the neighbouring tab.
 - **iTerm2 only** for the window jump. The listing works in any terminal. Terminal.app would be
