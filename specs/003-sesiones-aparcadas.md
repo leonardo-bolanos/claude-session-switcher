@@ -2,6 +2,7 @@
 capacidad: parked-sessions
 estado: implementada
 modo: retroactivo
+version: 1.5.1
 rutas:
   - ccl
   - test_ccl.py
@@ -14,9 +15,8 @@ ultima_verificacion_fecha: 2026-11-09
 
 # 003 · Sesiones aparcadas en un job de fondo
 
-> **Implementada** el 2026-11-09, sin versión publicada todavía. Se escribió antes del código, con
-> el diseño aprobado por el usuario («si arregla»), y se reconcilió al terminar: salió como se
-> diseñó, sin desviaciones.
+> **Implementada en 1.5.1** (`fcaa3d4`). Se escribió antes del código, con el diseño aprobado por
+> el usuario («si arregla»), y se reconcilió al terminar: salió como se diseñó, sin desviaciones.
 
 ## Qué pasa
 
