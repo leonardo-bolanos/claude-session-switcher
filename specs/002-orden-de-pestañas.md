@@ -2,6 +2,7 @@
 capacidad: tab-order
 estado: implementada
 modo: retroactivo
+version: 1.5.0
 rutas:
   - ccl
   - test_ccl.py
@@ -15,12 +16,10 @@ ultima_verificacion_fecha: 2026-11-09
 
 # 002 · Orden de las pestañas a mano
 
-> **Implementada** el 2026-11-09, sin versión publicada todavía. Se escribió antes del código y se
+> **Implementada en 1.5.0** (`a5c290b`). Se escribió antes del código y se
 > reconcilió al terminar: lo que sigue describe lo construido, y lo que salió distinto está en
 > *Desviaciones*. Se apoya en la 001 (vista por proyecto) y cambia su R4: el orden deja de ser
 > solo alfabético.
->
-> **Falta CA10**, que solo se puede comprobar a mano en el iTerm del usuario.
 
 ## Qué se pide
 
@@ -67,9 +66,9 @@ se soltó, pero sí dónde: también da `soltar:`.
 El release se sigue ignorando en todo lo demás —ni repinta ni cuenta para el doble clic—; si no,
 cada clic simple parecería doble (skill `teclas-y-raton`).
 
-**Pendiente de verificar en el iTerm del usuario** con `CCL_DEBUG` (CA10): que un arrastre real
-llega como un `click:` y un `soltar:` con columnas distintas. Es lo que dice el protocolo, pero el
-pty de los tests no tiene emulador y no puede probarlo.
+**Verificado en el iTerm2 del usuario** (CA10): un arrastre real funciona, o sea que llegan el
+`click:` y el `soltar:` con columnas distintas. Hizo falta probarlo a mano porque el pty de los
+tests no tiene emulador: lo que manda el terminal no se puede simular ahí.
 
 ### Dónde vive
 
@@ -118,11 +117,12 @@ pty de los tests no tiene emulador y no puede probarlo.
 | CA7 | Un clic simple, soltar fuera de la barra o sobre un separador no cambian el orden; el doble clic sobre una sesión sigue abriéndola. A 44 columnas, un clic en una pestaña del borde —que desplaza la barra al activarla— no la arrastra. | `test_panel.py`; el doble clic, por los tests de ratón de siempre. El de 44 columnas falla si se quita la condición de la misma columna (comprobado mutándola). |
 | CA8 | Escribiendo una nota, `Shift-←` mueve el cursor del texto. | `test_panel.py`. |
 | CA9 | `test_ccl.py` no lee el `~/.claude/ccl-notes.json` real: los tests de agrupación darían otro orden en cuanto el usuario arrastrara algo. | `NOTES_FILE` parcheado a un temporal para todo el módulo. |
-| CA10 | **Pendiente.** Un arrastre real en iTerm2 llega como `click:` + `soltar:` con columnas distintas, y `Shift-←` como `shift-left`. | A mano, con `CCL_DEBUG`, en la máquina del usuario. |
+| CA10 | Un arrastre real en iTerm2 llega como `click:` + `soltar:` con columnas distintas, y `Shift-←` como `shift-left`. | A mano, en la máquina del usuario: si algo no llega, `CCL_DEBUG` dice qué. |
 
 **Verificación** (2026-11-09): CA1-CA9 en verde, con 390 tests en `test_ccl.py` y 142 en
 `test_panel.py`, también sin locale. El test de CA3 falla si `guardar_estado` deja de conservar el
-orden (comprobado mutándolo). CA10, pendiente.
+orden (comprobado mutándolo). CA10, a mano por el usuario en su iTerm2 el mismo día: arrastrar
+una pestaña y `Shift-←` la mueven (sin necesidad de `CCL_DEBUG`).
 
 ## Cómo se hizo
 
@@ -167,8 +167,8 @@ quedan con la recomendación.
 
 ## Riesgos
 
-- **iTerm2 podría reservarse `Shift-←/→`** en algún preset de teclas. Lo estándar (xterm) es
-  `ESC[1;2D`/`ESC[1;2C`, pero no está verificado en el iTerm del usuario: entra en CA10. Si no
-  llegan, `CCL_DEBUG` lo enseña (`desconocida`, o nada).
+- **Otro terminal, u otro preset de teclas de iTerm2, podría reservarse `Shift-←/→`.** En el del
+  usuario llegan (CA10). Si en otro no, `CCL_DEBUG` lo enseña (`desconocida`, o nada), y el
+  arrastre sigue funcionando.
 - **El orden guardado crece** con cada proyecto que se toca y nunca se purga. Son rutas de unas
   decenas de bytes.
