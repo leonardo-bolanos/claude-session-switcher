@@ -1317,7 +1317,8 @@ def load_state():
     notas escritas no puede perderlas por un cambio de formato.
     """
     datos = leer_json(NOTES_FILE, {})
-    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "spaces")):
+    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "spaces",
+                                "orden_proyectos")):
         crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
     else:
         crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
@@ -1345,11 +1346,39 @@ def load_notes():
     return sesion, repo
 
 
-def guardar_estado(sesion, repo, pausadas, spaces=None):
-    """El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff
-    del JSON sea legible si alguien lo abre a mano."""
+def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None):
+    """
+    El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff del
+    JSON sea legible si alguien lo abre a mano.
+
+    `orden=None` CONSERVA el orden de proyectos que haya en disco. Quien guarda una nota o
+    una pausa no sabe nada del orden, y no puede borrarlo por no pasarlo: es el fallo que
+    ya paso con las pausadas, cuando la primera nota las borraba todas. Cerrado aqui, por
+    construccion, y no confiando en que cada llamador se acuerde.
+    """
     escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo,
-                               "pausadas": sorted(pausadas), "spaces": spaces or {}})
+                               "pausadas": sorted(pausadas), "spaces": spaces or {},
+                               "orden_proyectos": (orden_proyectos() if orden is None
+                                                   else list(orden))})
+
+
+def orden_proyectos():
+    """
+    Las raices de los proyectos en el orden que les diste arrastrando las pestañas
+    (`Shift-← →` o el raton). Vacio si nunca se ordeno: entonces manda el alfabetico.
+
+    Solo cadenas y sin repetidas: el JSON se puede editar a mano, y una raiz repetida
+    haria que `mover_proyecto` moviera la copia equivocada.
+    """
+    crudo = leer_json(NOTES_FILE, {}).get("orden_proyectos")
+    if not isinstance(crudo, list):
+        return []
+    return list(dict.fromkeys(r for r in crudo if isinstance(r, str)))
+
+
+def guardar_orden_proyectos(orden):
+    sesion, repo, pausadas, spaces = load_state()
+    guardar_estado(sesion, repo, pausadas, spaces, orden=orden)
 
 
 def note_for(row, notas_sesion, notas_repo):
@@ -1804,15 +1833,16 @@ def _etiquetas_de_proyecto(raices):
             for r, n in nombres.items()}
 
 
-def _proyectos(rows):
+def _proyectos(rows, orden=None):
     """
     [(raiz, etiqueta, color, filas)] por proyecto. Lo comparten los grupos
-    (`agrupar_por_proyecto`) y las pestañas (`pestañas_de`): calculado en un solo sitio, no
-    pueden salir en distinto orden ni con distinta etiqueta.
+    (`agrupar_por_proyecto`), las pestañas (`pestañas_de`) y `--list --projects`: calculado
+    en un solo sitio, no pueden salir en distinto orden ni con distinta etiqueta.
 
-    Los proyectos van en orden alfabetico, sin mayusculas ni acentos: asi no bailan entre
-    refrescos y se aprende donde esta cada uno (la misma razon por la que los anchos de la
-    tabla no se ajustan al contenido). Uno cuyas filas son TODAS de las que faltan de una
+    Primero los que ordenaste a mano (`orden`, por defecto el guardado: specs/002), y detras
+    los demas en orden alfabetico, sin mayusculas ni acentos. Ninguno de los dos baila entre
+    refrescos, y asi se aprende donde esta cada uno (la misma razon por la que los anchos de
+    la tabla no se ajustan al contenido). Uno cuyas filas son TODAS de las que faltan de una
     foto va al final, por lo mismo que su grupo en `grouped`: arriba empujaria fuera de
     pantalla lo que si esta.
 
@@ -1828,11 +1858,51 @@ def _proyectos(rows):
     def solo_faltan(raiz):
         return all(f.get("faltante") for f in por_raiz[raiz])
 
-    orden = sorted(por_raiz, key=lambda raiz: (
-        solo_faltan(raiz), strip_accents(etiquetas[raiz]).lower(), raiz))
+    puesto = {r: i for i, r in enumerate(orden_proyectos() if orden is None else orden)}
+    raices = sorted(por_raiz, key=lambda raiz: (
+        solo_faltan(raiz), puesto.get(raiz, len(puesto)),
+        strip_accents(etiquetas[raiz]).lower(), raiz))
     return [(raiz, etiquetas[raiz], GREY if solo_faltan(raiz) else MAGENTA,
              [f for _, _, items in grouped(por_raiz[raiz]) for f in items])
-            for raiz in orden]
+            for raiz in raices]
+
+
+def mover_proyecto(orden, visibles, clave, destino):
+    """
+    El orden guardado despues de llevar la pestaña `clave` al sitio de `destino`, como al
+    arrastrarla en un navegador: la soltada ocupa el sitio de la otra y las de en medio se
+    corren un puesto. `visibles` son las raices de las pestañas tal como se ven ahora (sin
+    Todas); `destino` None es Todas, y significa «la primera».
+
+    Se trabaja sobre la lista COMPLETA —lo guardado y detras lo visible que no lo estaba,
+    en el orden en que se ve— porque las pestañas salen de ella en ese mismo orden: mover
+    ahi es mover lo que se ve. Y lo guardado que ahora no se ve no se toca, para que un
+    proyecto sin sesiones hoy vuelva mañana a su sitio.
+    """
+    lista = list(dict.fromkeys(list(orden) + list(visibles)))
+    if not visibles or clave not in visibles:
+        return lista
+    destino = visibles[0] if destino is None else destino
+    if destino == clave or destino not in visibles:
+        return lista
+    a_la_derecha = visibles.index(destino) > visibles.index(clave)
+    lista.remove(clave)
+    i = lista.index(destino)
+    lista.insert(i + 1 if a_la_derecha else i, clave)
+    return lista
+
+
+def reordenar_pestaña(rows, clave, destino):
+    """
+    Lleva la pestaña `clave` al sitio de `destino` y lo guarda. Devuelve si cambio algo: si
+    no, no se escribe el archivo ni hay que repintar. La usan el arrastre y `Shift-← →`.
+    """
+    visibles = [p[0] for p in pestañas_de(rows)[1:]]
+    nuevo = mover_proyecto(orden_proyectos(), visibles, clave, destino)
+    if [r for r in nuevo if r in visibles] == visibles:
+        return False
+    guardar_orden_proyectos(nuevo)
+    return True
 
 
 def agrupar_por_proyecto(rows):
@@ -1860,14 +1930,27 @@ def pestaña_vecina(pestañas, activa, paso):
 
 
 def barra_pestañas(pestañas, activa, ancho):
+    """La linea de pestañas, recortada a `ancho`, con la activa SIEMPRE dentro."""
+    return barra_y_zonas(pestañas, activa, ancho)[0]
+
+
+def barra_y_zonas(pestañas, activa, ancho):
     """
-    La linea de pestañas, recortada a `ancho`, con la activa SIEMPRE dentro.
+    (linea, zonas): la barra de pestañas y donde cae cada una, `[(col_ini, col_fin, clave)]`
+    en columnas de terminal (desde 1, como las cuenta el raton; la barra se pinta en la
+    columna 1).
 
     Con siete proyectos ya no cabe en 100 columnas, y en `--recent` son dos docenas: se
     enseña una ventana alrededor de la activa, creciendo hacia la derecha primero —lo que
     vas a ver al pulsar →— y luego a la izquierda, y `‹ ›` avisan de lo que queda fuera.
     Las dos columnas de cada lado se reservan siempre, para que la barra no se mueva de
     sitio segun aparezcan o no las flechas.
+
+    Las zonas salen del MISMO calculo que pinta la barra, no de uno aparte: es la regla de
+    `screen` aplicada a las columnas. Calculadas por su lado, el dia que cambie un
+    separador o el relleno de una pestaña el clic caeria en la de al lado sin que nada
+    falle. `‹` y `›` tambien son zonas: llevan a la primera pestaña oculta de ese lado,
+    que es lo que prometen.
 
     Pura a proposito: el desplazamiento se prueba sin pty, que es donde de verdad puede
     fallar (la activa fuera de la ventana, o la barra mas ancha que la terminal).
@@ -1876,7 +1959,7 @@ def barra_pestañas(pestañas, activa, ancho):
               else f" {etiqueta} " + DIM(str(n)) + " "
               for clave, etiqueta, n in pestañas]
     if not trozos:
-        return ""
+        return "", []
     actual = next((i for i, p in enumerate(pestañas) if p[0] == activa), 0)
     cabe = max(1, ancho - 4)
 
@@ -1893,8 +1976,23 @@ def barra_pestañas(pestañas, activa, ancho):
             i, crecio = i - 1, True
     # `clip` por si la activa sola ya no cabe: un nombre de proyecto larguisimo
     medio = clip(DIM("│").join(trozos[i:j]), cabe)
+    fin_medio = 2 + vis(medio)          # ultima columna del medio: lo recortado no es zona
+    zonas = [(1, 2, pestañas[i - 1][0])] if i > 0 else []
+    col = 3
+    for k in range(i, j):
+        if col > fin_medio:
+            break
+        zonas.append((col, min(col + vis(trozos[k]) - 1, fin_medio), pestañas[k][0]))
+        col += vis(trozos[k]) + 1       # el separador `│` no es de nadie
+    if j < len(trozos):
+        zonas.append((fin_medio + 1, fin_medio + 2, pestañas[j][0]))
     return ((DIM("‹ ") if i > 0 else "  ") + medio
-            + (DIM(" ›") if j < len(trozos) else ""))
+            + (DIM(" ›") if j < len(trozos) else "")), zonas
+
+
+def pestaña_en(zonas, col):
+    """La zona de `barra_y_zonas` que contiene la columna `col`, o None (un separador)."""
+    return next((z for z in zonas if z[0] <= col <= z[1]), None)
 
 
 def grupos(rows, por_proyecto=False):
@@ -2129,20 +2227,26 @@ MOUSE_OFF = "\033[?1006l\033[?1000l"
 DOUBLE_CLICK = 0.4                    # segundos entre dos clics para que cuenten como doble
 
 
-def _mouse_event(boton, fila):
-    """Traduce un boton del protocolo a una tecla nuestra. None = no nos interesa."""
+def _mouse_event(boton, fila, col):
+    """
+    Traduce un boton del protocolo a una tecla nuestra. None = no nos interesa.
+
+    El clic lleva la columna ademas de la fila: para elegir una sesion basta la fila, pero
+    en la barra de pestañas hay varias en la misma linea.
+    """
     if boton == 64:
         return "wheelup"
     if boton == 65:
         return "wheeldn"
     if boton == 0:
-        return f"click:{fila}"
+        return f"click:{fila}:{col}"
     return "mouse-otro"
 
 
 # Lo que significa cada secuencia CSI que se reconoce. Por el byte FINAL, y para las que
 # acaban en `~`, por su primer parametro. Los modificadores no cambian la tecla: Ctrl-← es
-# `ESC[1;5D`, y sigue siendo izquierda.
+# `ESC[1;5D`, y sigue siendo izquierda. La excepcion es Shift (modificador 2) en ← →
+# (`ESC[1;2D`): mueve la pestaña activa en la vista por proyecto (specs/002).
 _CSI_FINAL = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
 _CSI_TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn",
               "3": "delete", "2": "insert"}
@@ -2181,6 +2285,8 @@ def _read_csi(fd):
     final, params = cuerpo[-1], cuerpo[:-1]
     if final == "~":
         return _CSI_TILDE.get(params.split(";")[0], "desconocida")
+    if final in ("C", "D") and params.split(";")[1:2] == ["2"]:
+        return "shift-" + _CSI_FINAL[final]
     return _CSI_FINAL.get(final, "desconocida")
 
 
@@ -2195,8 +2301,10 @@ def _read_mouse_sgr(fd):
     """
     Modo SGR (1006): ESC [ < boton ; columna ; fila (M|m).
 
-    Solo el press ('M') vale; el release ('m') se descarta, o cada clic contaria dos
-    veces y un clic simple pareceria doble.
+    El press ('M') es el clic. El release ('m') NO es otro clic —contado como tal, cada
+    clic simple pareceria doble—, pero trae donde se solto: `soltar:<fila>:<col>`, que es
+    lo que hace falta para arrastrar una pestaña sin pedir al terminal el movimiento
+    (specs/002). Quien no lo use lo ignora, igual que ignoraba el `mouse-release`.
     """
     buf = ""
     while len(buf) < 20:
@@ -2204,13 +2312,16 @@ def _read_mouse_sgr(fd):
             return "esc"
         ch = os.read(fd, 1).decode("utf-8", "ignore")
         if ch in ("M", "m"):
-            if ch == "m":
-                return "mouse-release"
             partes = buf.split(";")
-            if len(partes) != 3 or not all(p.isdigit() for p in partes):
+            valida = len(partes) == 3 and all(p.isdigit() for p in partes)
+            if ch == "m":
+                if valida and int(partes[0]) == 0:
+                    return f"soltar:{partes[2]}:{partes[1]}"
+                return "mouse-release"
+            if not valida:
                 return "esc"
-            boton, _col, fila = (int(p) for p in partes)
-            return _mouse_event(boton, fila)
+            boton, col, fila = (int(p) for p in partes)
+            return _mouse_event(boton, fila, col)
         buf += ch
     return "esc"
 
@@ -2227,10 +2338,10 @@ def _read_mouse_x10(fd):
         if not select.select([fd], [], [], 0.05)[0]:
             return "esc"
         datos += os.read(fd, 3 - len(datos))
-    boton, _col, fila = (b - 32 for b in datos[:3])
-    if boton == 3:          # en X10 el release no dice que boton se solto
-        return "mouse-release"
-    return _mouse_event(boton & 0x43, fila)
+    boton, col, fila = (b - 32 for b in datos[:3])
+    if boton == 3:          # en X10 el release no dice que boton se solto, pero si donde
+        return f"soltar:{fila}:{col}"
+    return _mouse_event(boton & 0x43, fila, col)
 
 
 def _preparar_tty(fd=None):
@@ -2284,8 +2395,9 @@ def _restaurar_tty(attrs, fd=None):
 def _read_key(timeout=None):
     """
     Una pulsacion en modo raw. Devuelve 'up','down','enter','esc','q','refresh',
-    'alt-<digito>', 'click:<fila>', 'wheelup','wheeldn', un digito, o None si vencio
-    el timeout (para refrescar sin bloquear).
+    'alt-<digito>', 'click:<fila>:<columna>', 'soltar:<fila>:<columna>', 'shift-left',
+    'shift-right', 'wheelup','wheeldn', un digito, o None si vencio el timeout (para
+    refrescar sin bloquear).
     """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -2495,6 +2607,9 @@ HELP_EN = [
         ("",           "works in both the list and the table view"),
         ("",           "⌥1-9 still counts over the WAITING queue"),
         ("← →",        "switch tabs: All, then one per project"),
+        ("click",      "on a tab: go to it · ‹ › bring in the hidden ones"),
+        ("Shift-← →",  "move the current tab · or drag it with the mouse"),
+        ("",           "the order is saved, and the groups follow it"),
         ("",           "a project's tab groups its sessions by state"),
         ("ccl -p",     "start that way (also --projects, with --list too)"),
     ]),
@@ -2585,6 +2700,9 @@ HELP_ES = [
         ("",           "vale en la vista de lista y en la de tabla"),
         ("",           "⌥1-9 sigue contando sobre la cola de ESPERANDO"),
         ("← →",        "cambiar de pestaña: Todas y una por proyecto"),
+        ("clic",       "en una pestaña: ir a ella · ‹ › traen las ocultas"),
+        ("Shift-← →",  "mover la pestaña actual · o arrástrala con el ratón"),
+        ("",           "el orden se guarda, y los grupos lo siguen"),
         ("",           "la pestaña de un proyecto agrupa sus sesiones por estado"),
         ("ccl -p",     "arrancar así (también --projects, y con --list)"),
     ]),
@@ -2767,6 +2885,12 @@ def interactive(feed, tabla=False, por_proyecto=False):
     dirty = True    # solo repintar cuando algo cambia: evita quemar CPU a 2.5 fps
     requery = False  # fuerza reconstruir la vista tras tocar el filtro
     screen = {}     # fila de la terminal -> indice en `lines`, para saber donde se hizo clic
+    # La barra de pestañas va APARTE de `screen`: no es una sesion. Su fila y sus zonas
+    # (columnas → pestaña) se apuntan al pintarla, igual que `screen`.
+    barra_y, barra_zonas = None, []
+    # (pestaña, columna) pulsadas en la barra, por si el boton se suelta sobre otra: eso es
+    # arrastrarla (specs/002). Se vacia en cada `soltar:`, se haya movido algo o no.
+    arrastre = None
     last_click = (0, 0.0)   # (fila, momento) del ultimo clic, para detectar el doble
 
     # El raton se puede desactivar: mientras esta activo, iTerm2 le pasa los clics al
@@ -2847,10 +2971,12 @@ def interactive(feed, tabla=False, por_proyecto=False):
                         sel_id = nuevo_sel
                 elif k == "back" and query:
                     query, requery, top = query[:-1], True, 0
-                elif k in ("left", "right") and por_proyecto:
-                    # tambien aqui: una pestaña sin coincidencias no puede ser un callejon
+                elif k in ("left", "right", "shift-left", "shift-right") and por_proyecto:
+                    # tambien aqui: una pestaña sin coincidencias no puede ser un callejon.
+                    # Shift navega en vez de mover: aqui no se pinta la barra, y mover una
+                    # pestaña que no se ve no se puede comprobar.
                     pestaña = pestaña_vecina(pestañas_de(rows), pestaña,
-                                             1 if k == "right" else -1)
+                                             1 if k.endswith("right") else -1)
                     requery, top = True, 0
                 elif len(k) == 1 and k.isprintable():
                     query, requery, top = query + k, True, 0
@@ -2910,10 +3036,14 @@ def interactive(feed, tabla=False, por_proyecto=False):
                             + GREEN(t("activas", n=busy_n)) + n_proy + more)
                 buf.append(head + ("   " + GREEN(flash) if flash else "") + "\r\n")
                 y += 1
+                barra_y, barra_zonas = None, []
                 if por_proyecto:
                     # Fuera de `screen` a proposito: un clic aqui no selecciona ninguna
-                    # sesion, igual que en una cabecera.
-                    buf.append(barra_pestañas(pestañas_de(rows), pestaña, cols - 2) + "\r\n")
+                    # sesion, cambia de pestaña. Sus zonas salen del mismo calculo que la
+                    # pinta, y la fila se apunta aqui, pintando, por lo mismo que `screen`.
+                    barra, barra_zonas = barra_y_zonas(pestañas_de(rows), pestaña, cols - 2)
+                    buf.append(barra + "\r\n")
+                    barra_y = y
                     y += 1
 
                 # Cabecera de grupo fija: en ventanas pequeñas el scroll se lleva la
@@ -2995,8 +3125,30 @@ def interactive(feed, tabla=False, por_proyecto=False):
             if k.startswith("mouse-") or k == "desconocida":
                 continue   # soltar el boton, un boton que no usamos o una tecla sin uso: ni
                            # repintar, ni borrar el aviso que hubiera en la cabecera
-            if not mouse and (k.startswith("click:") or k in ("wheelup", "wheeldn")):
+            if not mouse and (k.startswith(("click:", "soltar:"))
+                              or k in ("wheelup", "wheeldn")):
                 continue   # CCL_MOUSE=0 significa sin raton, aunque algo los mande igual
+            if k.startswith("soltar:"):
+                # Soltar el boton NO es un clic: no repinta ni borra el aviso, salvo que
+                # termine un arrastre de pestaña sobre otra. Va antes que el editor de
+                # notas para vaciar `arrastre` siempre; con el editor abierto no se mueve
+                # nada, porque ahi el raton no hace nada.
+                #
+                # Soltar en la MISMA columna es un clic, aunque ahi haya ahora otra
+                # pestaña: pulsar activa la pestaña, y si la barra no cabe se desplaza para
+                # enseñarla, asi que bajo el raton puede quedar la de al lado. Sin esto, un
+                # clic en una pestaña del borde la arrastraria sobre la vecina.
+                origen, arrastre = arrastre, None
+                fila_s, _, col_s = k[7:].partition(":")
+                if (origen is not None and editando is None and por_proyecto
+                        and barra_y is not None and int(fila_s) == barra_y
+                        and int(col_s or 0) != origen[1]):
+                    zona = pestaña_en(barra_zonas, int(col_s or 0))
+                    if zona is not None and zona[2] != origen[0] \
+                            and reordenar_pestaña(rows, origen[0], zona[2]):
+                        requery = dirty = True
+                        feed.touch()
+                continue
             dirty = True   # cualquier tecla cambia algo que hay que repintar
             feed.touch()   # vuelve al refresco rapido
             flash = ""
@@ -3018,9 +3170,9 @@ def interactive(feed, tabla=False, por_proyecto=False):
                     editando, requery = None, True
                 elif k == "esc":
                     editando, flash = None, t("nota_sin_cambios")
-                elif k == "left":
+                elif k in ("left", "shift-left"):
                     editando_pos = max(0, editando_pos - 1)
-                elif k == "right":
+                elif k in ("right", "shift-right"):
                     editando_pos = min(len(editando), editando_pos + 1)
                 elif k == "home":
                     editando_pos = 0
@@ -3126,6 +3278,18 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # `⌥N` NO cambia: cuenta sobre la cola ESPERANDO en cualquier agrupacion.
                 por_proyecto, requery = not por_proyecto, True
                 pestaña = None      # entrar o salir de la vista empieza siempre en Todas
+            elif k in ("shift-left", "shift-right") and por_proyecto:
+                # Shift-← →: mover la pestaña activa un puesto (specs/002). Sin dar la
+                # vuelta, a diferencia de ← →: mover no es navegar, y llevar la primera al
+                # final de un toque sorprende. Todas no se mueve.
+                vecinas = [p[0] for p in pestañas_de(rows)[1:]]
+                i = vecinas.index(pestaña) if pestaña in vecinas else -1
+                j = i + (1 if k == "shift-right" else -1)
+                if i < 0 or not 0 <= j < len(vecinas) \
+                        or not reordenar_pestaña(rows, pestaña, vecinas[j]):
+                    dirty = False
+                else:
+                    requery = True
             elif k in ("left", "right") and por_proyecto:
                 # ← →: la pestaña de al lado, en circulo. Solo en la vista por proyecto:
                 # fuera de ella no hacen nada, como siempre. El cursor no hay que tocarlo:
@@ -3144,10 +3308,25 @@ def interactive(feed, tabla=False, por_proyecto=False):
             elif k == "wheeldn":
                 i = min(len(pickable) - 1, cur + 1)
                 sel_id = clave_de(lines[pickable[i]][2]); typed = ""
+            elif k.startswith("click:") and barra_y is not None \
+                    and int(k[6:].partition(":")[0]) == barra_y:
+                # Clic en la barra de pestañas: la que hay en esa columna, como ← →. Un
+                # separador, o la pestaña en la que ya estas, no cambian nada.
+                col_b = int(k[6:].partition(":")[2] or 0)
+                zona = pestaña_en(barra_zonas, col_b)
+                last_click = (0, 0.0)
+                # Tambien la activa: arrastrar la pestaña en la que estas es lo normal.
+                arrastre = ((zona[2], col_b) if zona is not None and zona[2] is not None
+                            else None)
+                if zona is None or zona[2] == pestaña:
+                    dirty = False
+                else:
+                    pestaña, requery, top, typed = zona[2], True, 0, ""
             elif k.startswith("click:"):
                 # El terminal NO reporta dobles clics, solo clics sueltos: el doble hay
                 # que sintetizarlo por tiempo y fila. Simple selecciona, doble abre.
-                fila_y = int(k[6:])
+                fila_y = int(k[6:].partition(":")[0])
+                arrastre = None
                 idx = screen.get(fila_y)
                 tocada = (lines[idx][2] if idx is not None
                           and lines[idx][0] in ("main", "sub") else None)

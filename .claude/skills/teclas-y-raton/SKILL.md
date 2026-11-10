@@ -13,7 +13,9 @@ ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es 
 Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
 Las ocupadas hasta ahora: `Ctrl-R` refrescar, `Ctrl-N` nota, `Ctrl-P` pausar, `Ctrl-T` tabla,
 `Ctrl-O` recuperables, `Ctrl-G` agrupar por proyecto, `Ctrl-C`/`Ctrl-D` salir; y `← →`, que fuera
-del editor de notas solo hacen algo en la vista por proyecto (cambian de pestaña). Descartadas a
+del editor de notas solo hacen algo en la vista por proyecto (cambian de pestaña), igual que
+`Shift-← →` (mueven la pestaña activa, specs/002: `_read_csi` solo distingue el modificador 2 en
+← →; los demas siguen siendo la tecla a secas). Descartadas a
 proposito, no por estar libres: `Ctrl-S`/`Ctrl-Q` son control de flujo (IXON, que
 `_preparar_tty` NO apaga: entre lecturas congelarian la salida) y `Ctrl-Y` es VDSUSP en macOS, una
 señal con ISIG encendido. Diseño de la vista por proyecto: `specs/001-vista-por-proyecto.md`. Y un test lo fija a partir de la ayuda
@@ -58,8 +60,13 @@ sobrevivia 1**. Se notaba al escribir rapido en el filtro, y hacia imposible el 
 "simplifica" a `tty.setraw(fd)`, vuelve.
 
 **El terminal NO reporta dobles clics**, solo clics sueltos: el doble se sintetiza por tiempo y
-fila (`DOUBLE_CLICK`). Y el **release hay que descartarlo**, o cada clic simple contaria dos veces
-y pareceria doble.
+fila (`DOUBLE_CLICK`). Y el **release no es un clic**, o cada clic simple contaria dos veces y
+pareceria doble. Llega como `soltar:<fila>:<columna>` —en SGR el terminal dice donde se solto— y el
+panel lo ignora sin repintar, salvo para terminar un arrastre de pestaña. Arrastrar no necesita el
+modo 1002: pulsar y soltar en columnas distintas ya lo es. Pero **soltar en la MISMA columna es un
+clic**, aunque debajo haya otra pestaña: pulsar activa la pestaña y, si la barra no cabe, la
+desplaza, asi que bajo el raton queda la vecina. Sin esa condicion un clic en el borde la
+arrastraba (lo caza `test_un_clic_en_el_borde_que_desplaza_la_barra_no_arrastra`, a 44 columnas).
 
 **El mapa fila-de-terminal → sesion se construye pintando, no calculando.** Va dentro del bucle
 de repintado (`screen[y] = i`) porque cualquier cosa que se añada arriba —la cabecera de grupo
@@ -67,9 +74,14 @@ fija, un aviso— desplaza todo; un calculo aparte se desincroniza en silencio y
 enfocando la sesion vecina, que es el peor fallo posible: parece que funciona.
 
 Una linea fija nueva arriba (como la barra de pestañas) tiene dos obligaciones: **no** registrarse
-en `screen` —un clic ahi no elige nada— y descontarse de `body` **antes** de calcular el scroll.
-Restada al pintar, como hace la cabecera de grupo fija, la fila del cursor puede quedar una linea
-por debajo de la pantalla.
+en `screen` —un clic ahi no elige ninguna sesion— y descontarse de `body` **antes** de calcular el
+scroll. Restada al pintar, como hace la cabecera de grupo fija, la fila del cursor puede quedar una
+linea por debajo de la pantalla.
+
+Si esa linea se pulsa por partes, como la barra de pestañas, la regla de `screen` vale para las
+columnas: **el clic trae la columna** (`click:<fila>:<columna>`), y el mapa columna → pestaña sale
+del MISMO calculo que dibuja la barra (`barra_y_zonas`), con su fila apuntada al pintarla
+(`barra_y`). Y su rama va antes que la del clic en `screen`.
 
 **`MOUSE_ON` se rearma en CADA repintado, no solo al arrancar.** Emitido una sola vez, cualquier
 reset de los modos privados del terminal (tmux, un `reset` ajeno, iTerm restaurando la sesion)

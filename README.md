@@ -122,8 +122,9 @@ ccl --version    # print the version
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
 | `Ctrl-G` | Group **by project** instead of by state |
 | `←` `→` | In the project view, switch **tabs**: All, then one per project |
+| `Shift-←` `Shift-→` | Move the current tab — or **drag** it with the mouse |
 | `Ctrl-O` | Show the sessions you can **resume** — the ones that died with their terminal |
-| click | Select that session |
+| click | Select that session · on a tab, go to it |
 | double click | Open it, same as `Enter` |
 | wheel | Move the selection |
 | any letter | **Filter** by name, repo, project, branch, account or note |
@@ -148,7 +149,8 @@ that way.
 
 `Ctrl-G` groups by **project** instead of by state, in either view: every session of
 `support_agent` together, each project with a summary of what's working and what's waiting. A
-tab bar shows up under the header — `←` `→` move from *All* to one project at a time.
+tab bar shows up under the header — `←` `→` move from *All* to one project at a time, or click
+the one you want.
 `ccl --projects` starts that way.
 
 ```
@@ -432,15 +434,18 @@ a session in `api/apps/web` says `web`, and one in a worktree says the worktree'
 No `git` is run for any of this; it reads a handful of files, a few milliseconds for hundreds of
 directories.
 
-Projects are sorted **alphabetically**, so they don't move around as sessions get busy and
-idle. Inside one, sessions keep the usual order: working first, then the ones waiting on you.
-Each row says its state, and the `repo` column only shows something when the session isn't at
-the root — the worktree or subfolder it's in.
+Projects are sorted **alphabetically**, so they don't move around as sessions get busy and idle —
+until you put them in your own order: **drag a tab** onto another one, or move the current one with
+`Shift-←` `Shift-→`. The order is saved, and the groups in *All* and `ccl --list --projects` follow
+it; a project you haven't placed goes after the ones you have, alphabetically. Inside one, sessions
+keep the usual order: working first, then the ones waiting on you. Each row says its state, and the
+`repo` column only shows something when the session isn't at the root — the worktree or subfolder
+it's in.
 
-The **tabs** (`←` `→`, wrapping around) show one project at a time, grouped by state. The tab bar
-scrolls when it doesn't fit, always keeping the current one in sight, and `‹` `›` tell you there's
-more. Filtering works inside a tab, and if every session of the project you're on closes, it
-goes back to *All*.
+The **tabs** (`←` `→`, wrapping around, or a click) show one project at a time, grouped by state.
+The tab bar scrolls when it doesn't fit, always keeping the current one in sight, and `‹` `›` tell
+you there's more — click them to bring in the next hidden tab on that side. Filtering works inside
+a tab, and if every session of the project you're on closes, it goes back to *All*.
 
 `⌥1`…`⌥9` and `ccl -w` don't change: they still count over the whole WAITING queue, whatever
 view or tab you're on — the same key can't take you to different sessions depending on how the
@@ -453,9 +458,9 @@ list is grouped. Typing a number still works for a session in another tab.
 <details>
 <summary><b>Mouse, and how to select text to copy</b></summary>
 
-Click selects, **double click opens**, the wheel moves the selection. Terminals don't report
-double clicks — only individual clicks — so it's synthesised by timing two clicks on the same
-row (400 ms).
+Click selects, **double click opens**, the wheel moves the selection; in the project view a click
+on a tab switches to it, and dragging one moves it. Terminals don't report double clicks — only
+individual clicks — so it's synthesised by timing two clicks on the same row (400 ms).
 
 While the panel is open **the clicks belong to it**, so dragging doesn't select text. Three ways
 round it, fastest to most convenient:

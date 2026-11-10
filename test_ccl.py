@@ -37,6 +37,14 @@ _loader.exec_module(ccl)
 
 ccl._TTY = True  # forzar colores: es lo que hace interesantes los tests de ancho
 
+# Ningun test lee ni escribe el `ccl-notes.json` real. Las clases que prueban las notas ya
+# ponen el suyo en `setUp`; esto cubre a las demas, que lo leian sin saberlo: desde que el
+# orden de los proyectos vive ahi (specs/002), los tests de agrupacion daban otro orden en
+# cuanto el usuario arrastraba una pestaña.
+_NOTES_FILE_REAL = ccl.NOTES_FILE
+_NOTAS_TMP = tempfile.TemporaryDirectory()
+ccl.NOTES_FILE = os.path.join(_NOTAS_TMP.name, "ccl-notes.json")
+
 # El idioma se FIJA: si no, los tests heredan el locale de quien los ejecute y las
 # cadenas cambian — pasaban en una maquina con LANG=es_ES y fallaban en el CI, que corre
 # sin locale. Se fija ingles porque es el defecto del proyecto; el español lo cubre
@@ -1600,6 +1608,207 @@ class TestPestañas(unittest.TestCase):
         p = [(None, "All", 1), ("/x/l", "n" * 200, 1)]
         self.assertLessEqual(ccl.vis(ccl.barra_pestañas(p, "/x/l", 60)), 60)
 
+    # --- el clic: donde cae cada pestaña ---
+
+    def columnas(self, texto):
+        """El texto sin color, una entrada por COLUMNA: un CJK ocupa dos."""
+        return [ch for ch in ccl.ANSI_RE.sub("", texto) for _ in range(ccl.char_width(ch))]
+
+    def test_cada_zona_cae_sobre_su_pestaña_pintada(self):
+        """
+        La propiedad que importa: en las columnas de la zona esta pintada ESA pestaña.
+        Si las zonas se desfasaran una columna por pestaña, el clic en la quinta caeria
+        en la cuarta — parece que funciona y lleva al proyecto equivocado.
+        """
+        variadas = [(None, "Todas", 9), ("/x/a", "api", 3), ("/x/w", "工具", 2),
+                    ("/x/b", "año-ñandú", 12)]
+        for p in (self.muchas(1), self.muchas(5), self.muchas(24), variadas):
+            for ancho in (40, 80, 100):
+                for activa, _, _ in p:
+                    barra, zonas = ccl.barra_y_zonas(p, activa, ancho)
+                    cols = self.columnas(barra)
+                    nombres = {clave: (etiqueta, n) for clave, etiqueta, n in p}
+                    for ini, fin, clave in zonas:
+                        if "".join(cols[ini - 1:fin]).strip() in ("‹", "›"):
+                            continue        # las flechas: se prueban aparte
+                        etiqueta, n = nombres[clave]
+                        esperado = self.columnas(f" {etiqueta} {n} ")
+                        self.assertEqual(cols[ini - 1:fin], esperado,
+                                         f"ancho={ancho} activa={activa} zona={clave}")
+
+    def test_una_zona_por_pestaña_visible_sin_solaparse_ni_salirse(self):
+        for n in (1, 5, 24):
+            p = self.muchas(n)
+            for ancho in (40, 80, 100):
+                for activa, _, _ in p:
+                    barra, zonas = ccl.barra_y_zonas(p, activa, ancho)
+                    for (_, fin, _), (ini, _, _) in zip(zonas, zonas[1:]):
+                        self.assertLess(fin, ini, "dos zonas se pisan")
+                    self.assertLessEqual(zonas[-1][1], ccl.vis(barra), "zona fuera de la barra")
+                    self.assertIn(activa, [z[2] for z in zonas], "la activa no se puede pulsar")
+
+    def test_el_separador_no_es_de_nadie(self):
+        barra, zonas = ccl.barra_y_zonas(self.muchas(3), None, 100)
+        cols = self.columnas(barra)
+        separadores = [i + 1 for i, ch in enumerate(cols) if ch == "│"]
+        self.assertEqual(len(separadores), 3)
+        for col in separadores:
+            self.assertIsNone(ccl.pestaña_en(zonas, col))
+
+    def test_las_flechas_llevan_a_la_primera_oculta_de_su_lado(self):
+        """`‹` y `›` prometen que hay mas: pulsarlas tiene que enseñarlo."""
+        p = self.muchas(24)
+        claves = [k for k, _, _ in p]
+        barra, zonas = ccl.barra_y_zonas(p, "/x/p12", 80)
+        visibles = [k for _, _, k in zonas[1:-1]]
+        cols = self.columnas(barra)
+        izq = ccl.pestaña_en(zonas, 1)
+        der = ccl.pestaña_en(zonas, len(cols))
+        self.assertEqual(cols[0], "‹")
+        self.assertEqual(cols[-1], "›")
+        self.assertEqual(izq[2], claves[claves.index(visibles[0]) - 1])
+        self.assertEqual(der[2], claves[claves.index(visibles[-1]) + 1])
+        self.assertNotIn(izq[2], visibles)
+        self.assertNotIn(der[2], visibles)
+
+    def test_sin_nada_oculto_los_bordes_no_son_zona(self):
+        barra, zonas = ccl.barra_y_zonas(self.muchas(2), None, 100)
+        self.assertIsNone(ccl.pestaña_en(zonas, 1))
+        self.assertIsNone(ccl.pestaña_en(zonas, ccl.vis(barra) + 1))
+
+    def test_la_barra_es_la_misma_que_se_pintaba(self):
+        p = self.muchas(24)
+        for activa in (None, "/x/p0", "/x/p23"):
+            self.assertEqual(ccl.barra_pestañas(p, activa, 80),
+                             ccl.barra_y_zonas(p, activa, 80)[0])
+
+    def test_una_activa_recortada_no_deja_zona_fuera_de_la_barra(self):
+        p = [(None, "All", 1), ("/x/l", "n" * 200, 1)]
+        barra, zonas = ccl.barra_y_zonas(p, "/x/l", 60)
+        self.assertLessEqual(max(fin for _, fin, _ in zonas), ccl.vis(barra))
+
+
+class TestOrdenDePestañas(unittest.TestCase):
+    """El orden a mano de los proyectos (specs/002)."""
+
+    def setUp(self):
+        ccl.proyecto_de.cache_clear()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = (ccl.NOTES_FILE, ccl._hs)
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "ccl-notes.json")
+
+    def tearDown(self):
+        ccl.NOTES_FILE, ccl._hs = self.orig
+        self.tmp.cleanup()
+
+    def filas(self):
+        return [en("/x/alfa", 1, "a"), en("/x/beta", 2, "b"), en("/x/gamma", 3, "c"),
+                en("/x/delta", 4, "d")]
+
+    def raices(self, rows=None, orden=None):
+        return [r for r, _, _, _ in ccl._proyectos(rows or self.filas(), orden)]
+
+    # --- mover_proyecto ---
+
+    def test_a_la_derecha_ocupa_el_sitio_de_la_otra(self):
+        vis = ["/x/a", "/x/b", "/x/c", "/x/d"]
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/a", "/x/c"),
+                         ["/x/b", "/x/c", "/x/a", "/x/d"])
+
+    def test_a_la_izquierda_ocupa_el_sitio_de_la_otra(self):
+        vis = ["/x/a", "/x/b", "/x/c", "/x/d"]
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/d", "/x/b"),
+                         ["/x/a", "/x/d", "/x/b", "/x/c"])
+
+    def test_sobre_todas_pasa_a_ser_la_primera(self):
+        vis = ["/x/a", "/x/b", "/x/c"]
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/c", None),
+                         ["/x/c", "/x/a", "/x/b"])
+
+    def test_sobre_si_misma_o_algo_que_no_se_ve_no_cambia_nada(self):
+        vis = ["/x/a", "/x/b"]
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/a", "/x/a"), vis)
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/a", "/x/zz"), vis)
+        self.assertEqual(ccl.mover_proyecto([], vis, "/x/zz", "/x/a"), vis)
+
+    def test_lo_guardado_que_no_se_ve_conserva_su_puesto(self):
+        """Un proyecto sin sesiones hoy tiene que volver mañana a su sitio."""
+        guardado = ["/x/b", "/x/oculto", "/x/a"]
+        nuevo = ccl.mover_proyecto(guardado, ["/x/b", "/x/a", "/x/c"], "/x/c", "/x/a")
+        self.assertEqual(nuevo, ["/x/b", "/x/oculto", "/x/c", "/x/a"])
+
+    # --- el orden en los grupos y las pestañas ---
+
+    def test_sin_orden_guardado_es_alfabetico(self):
+        self.assertEqual(self.raices(), ["/x/alfa", "/x/beta", "/x/delta", "/x/gamma"])
+
+    def test_los_ordenados_primero_y_los_demas_detras_en_alfabetico(self):
+        self.assertEqual(self.raices(orden=["/x/gamma", "/x/beta"]),
+                         ["/x/gamma", "/x/beta", "/x/alfa", "/x/delta"])
+
+    def test_las_que_solo_tienen_faltantes_siguen_al_final(self):
+        rows = self.filas() + [dict(en("/x/aaa", 5, "e"), faltante=True)]
+        self.assertEqual(self.raices(rows, orden=["/x/aaa", "/x/gamma"])[-1], "/x/aaa")
+
+    def test_grupos_pestañas_y_lista_salen_del_orden_guardado(self):
+        """Un solo orden para los tres (decision D2): si divergen, la barra miente."""
+        ccl.guardar_orden_proyectos(["/x/delta", "/x/alfa"])
+        rows = self.filas()
+        esperado = ["delta", "alfa", "beta", "gamma"]
+        self.assertEqual([e for _, e, _ in ccl.pestañas_de(rows)[1:]], esperado)
+        self.assertEqual([e for e, _, _ in ccl.agrupar_por_proyecto(rows)], esperado)
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida):
+            ccl.render(rows, por_proyecto=True)
+        plano = ccl.ANSI_RE.sub("", salida.getvalue())
+        posiciones = [plano.index(f"{e} (") for e in esperado]
+        self.assertEqual(posiciones, sorted(posiciones), "--list --projects en otro orden")
+
+    def test_reordenar_guarda_y_dice_si_cambio(self):
+        rows = self.filas()
+        self.assertTrue(ccl.reordenar_pestaña(rows, "/x/gamma", "/x/alfa"))
+        self.assertEqual(self.raices()[:2], ["/x/gamma", "/x/alfa"])
+        antes = os.path.getmtime(ccl.NOTES_FILE)
+        time.sleep(0.01)
+        self.assertFalse(ccl.reordenar_pestaña(rows, "/x/gamma", "/x/gamma"))
+        self.assertEqual(os.path.getmtime(ccl.NOTES_FILE), antes, "reescribio sin cambios")
+
+    # --- la persistencia ---
+
+    def test_nada_de_lo_demas_que_se_guarda_borra_el_orden(self):
+        """
+        `guardar_estado` escribe el archivo entero, y la primera nota ya borro una vez
+        todas las pausadas. Quien guarda sin saber del orden tiene que conservarlo.
+        """
+        ccl.guardar_orden_proyectos(["/x/b", "/x/a"])
+        ccl.save_note("sid-a", "esperando a Felipe")
+        ccl.toggle_paused("sid-a")
+        ccl._hs = lambda lua, marca, timeout=8: "4"
+        ccl.recordar_space("sid-a")
+        ccl.despausar_las_que_trabajan([{"sessionId": "sid-a", "status": "busy"}],
+                                       {"sid-a"})
+        self.assertEqual(ccl.orden_proyectos(), ["/x/b", "/x/a"])
+        sesion, _, _, spaces = ccl.load_state()
+        self.assertEqual(sesion["sid-a"], "esperando a Felipe")
+        self.assertEqual(spaces, {"sid-a": 4})
+
+    def test_guardar_el_orden_no_borra_lo_demas(self):
+        ccl.save_note("sid-a", "nota")
+        ccl.toggle_paused("sid-b")
+        ccl.guardar_orden_proyectos(["/x/a"])
+        sesion, _, pausadas, _ = ccl.load_state()
+        self.assertEqual((sesion, pausadas), ({"sid-a": "nota"}, {"sid-b"}))
+
+    def test_un_orden_roto_a_mano_no_rompe_nada(self):
+        for crudo, esperado in (("texto", []), ({"a": 1}, []),
+                                (["/x/a", 3, None, "/x/b", "/x/a"], ["/x/a", "/x/b"])):
+            ccl.escribir_json(ccl.NOTES_FILE, {"orden_proyectos": crudo})
+            self.assertEqual(ccl.orden_proyectos(), esperado, repr(crudo))
+
+    def test_un_archivo_con_solo_el_orden_no_se_lee_como_el_formato_viejo(self):
+        ccl.escribir_json(ccl.NOTES_FILE, {"orden_proyectos": ["/x/a"]})
+        self.assertEqual(ccl.load_state()[1], {}, "el orden acabo como nota de un repo")
+
 
 class TestVistaPorProyecto(unittest.TestCase):
     def setUp(self):
@@ -2384,8 +2593,13 @@ class TestNoEnsuciarLaConfigReal(unittest.TestCase):
             self.assertEqual(repes, [], f"{ruta}: clases duplicadas {repes}")
 
     def test_el_valor_por_defecto_apunta_al_home(self):
-        """Si esto cambiara, el guardarraíl de arriba dejaría de significar nada."""
-        self.assertTrue(ccl.NOTES_FILE.startswith(os.path.expanduser("~")))
+        """
+        Si esto cambiara, el guardarraíl de arriba dejaría de significar nada. Se mira el
+        valor de ANTES del desvío global del principio del módulo; el guardarraíl sigue
+        valiendo con él puesto, porque sin su propio archivo una clase que escribe
+        ensuciaría el temporal que leen todas las demás.
+        """
+        self.assertTrue(_NOTES_FILE_REAL.startswith(os.path.expanduser("~")))
 
 
 class TestTrazaDeDiagnostico(unittest.TestCase):
@@ -3293,16 +3507,31 @@ class TestLecturaDeTeclas(unittest.TestCase):
         """El doble clic depende de esto: los 4 eventos vienen en una sola rafaga."""
         rafaga = b"\x1b[<0;5;9M\x1b[<0;5;9m\x1b[<0;5;9M\x1b[<0;5;9m"
         self.assertEqual(self._pulsar(rafaga, n=4),
-                         ["click:9", "mouse-release", "click:9", "mouse-release"])
+                         ["click:9:5", "soltar:9:5", "click:9:5", "soltar:9:5"])
 
-    def test_clic_izquierdo_da_la_fila(self):
-        """SGR: ESC [ < boton ; columna ; fila M — solo interesa la fila."""
-        self.assertEqual(self._pulsar(b"\x1b[<0;42;7M"), "click:7")
-        self.assertEqual(self._pulsar(b"\x1b[<0;1;23M"), "click:23")
+    def test_clic_izquierdo_da_la_fila_y_la_columna(self):
+        """
+        SGR: ESC [ < boton ; columna ; fila M. Para elegir una sesion basta la fila, pero
+        la barra de pestañas tiene varias en la misma linea: sin la columna no se sabe cual.
+        """
+        self.assertEqual(self._pulsar(b"\x1b[<0;42;7M"), "click:7:42")
+        self.assertEqual(self._pulsar(b"\x1b[<0;1;23M"), "click:23:1")
 
-    def test_soltar_el_boton_no_es_un_clic(self):
-        """Si el release contara, cada clic simple pareceria doble."""
-        self.assertEqual(self._pulsar(b"\x1b[<0;42;7m"), "mouse-release")
+    def test_soltar_el_boton_no_es_un_clic_pero_dice_donde(self):
+        """
+        Si el release contara como clic, cada clic simple pareceria doble. Pero trae la
+        columna donde se solto, y con eso se arrastra una pestaña (specs/002).
+        """
+        self.assertEqual(self._pulsar(b"\x1b[<0;42;7m"), "soltar:7:42")
+        self.assertEqual(self._pulsar(b"\x1b[<2;42;7m"), "mouse-release")   # derecho
+
+    def test_shift_flechas_laterales(self):
+        """Shift (modificador 2) en ← → mueve la pestaña; los demas siguen siendo ← →."""
+        self.assertEqual(self._pulsar(b"\x1b[1;2C"), "shift-right")
+        self.assertEqual(self._pulsar(b"\x1b[1;2D"), "shift-left")
+        self.assertEqual(self._pulsar(b"\x1b[1;5D"), "left")      # Ctrl-←
+        self.assertEqual(self._pulsar(b"\x1b[1;4C"), "right")     # Shift-⌥-→
+        self.assertEqual(self._pulsar(b"\x1b[1;2A"), "up")        # Shift-↑
 
     def test_rueda(self):
         self.assertEqual(self._pulsar(b"\x1b[<64;10;5M"), "wheelup")
@@ -3317,9 +3546,9 @@ class TestLecturaDeTeclas(unittest.TestCase):
         ESC [ M + tres bytes (+32 cada uno). Sin decodificarlo, un terminal que ignore
         1006 metia los clics como basura en el filtro.
         """
-        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32, 32 + 42, 32 + 7])), "click:7")
-        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32 + 3, 32 + 5, 32 + 5])),
-                         "mouse-release")
+        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32, 32 + 42, 32 + 7])), "click:7:42")
+        self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32 + 3, 32 + 5, 32 + 6])),
+                         "soltar:6:5")
         self.assertEqual(self._pulsar(b"\x1b[M" + bytes([32 + 64, 32 + 5, 32 + 5])), "wheelup")
 
     def test_secuencia_de_raton_rota_no_ensucia_el_filtro(self):

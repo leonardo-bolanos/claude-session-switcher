@@ -123,8 +123,9 @@ ccl --version    # imprime la versión
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
 | `Ctrl-G` | Agrupar **por proyecto** en vez de por estado |
 | `←` `→` | En la vista por proyecto, cambiar de **pestaña**: Todas y una por proyecto |
+| `Shift-←` `Shift-→` | Mover la pestaña actual — o **arrastrarla** con el ratón |
 | `Ctrl-O` | Ver las sesiones que puedes **reanudar** — las que murieron con su terminal |
-| clic | Seleccionar esa sesión |
+| clic | Seleccionar esa sesión · en una pestaña, ir a ella |
 | doble clic | Abrirla, igual que `Enter` |
 | rueda | Mover la selección |
 | cualquier letra | **Filtrar** por nombre, repo, proyecto, rama, cuenta o nota |
@@ -149,7 +150,8 @@ estado como columna en vez de como cabecera de grupo — caben más o menos el d
 
 `Ctrl-G` agrupa por **proyecto** en vez de por estado, en cualquiera de las dos vistas: todas las
 de `support_agent` juntas, y cada proyecto con un resumen de lo que trabaja y lo que espera. Bajo
-la cabecera aparece una barra de pestañas — `←` `→` pasan de *Todas* a un proyecto cada vez.
+la cabecera aparece una barra de pestañas — `←` `→` pasan de *Todas* a un proyecto cada vez, o
+un clic en la que quieras.
 `ccl --projects` arranca así.
 
 ```
@@ -437,14 +439,17 @@ No se ejecuta `git` para nada de esto: lee un puñado de archivos, unos milisegu
 de directorios.
 
 Los proyectos van en **orden alfabético**, para que no cambien de sitio según las sesiones se
-ocupan o se quedan esperando. Dentro de cada uno, el orden de siempre: primero lo que trabaja,
-luego lo que te espera. Cada fila dice su estado, y la columna `repo` solo enseña algo cuando la
-sesión no está en la raíz — el worktree o la subcarpeta donde está.
+ocupan o se quedan esperando — hasta que les das tu propio orden: **arrastra una pestaña** sobre
+otra, o mueve la actual con `Shift-←` `Shift-→`. El orden se guarda, y los grupos de *Todas* y
+`ccl --list --projects` lo siguen; un proyecto que no has colocado va detrás de los que sí, en
+orden alfabético. Dentro de cada uno, el orden de siempre: primero lo que trabaja, luego lo que te
+espera. Cada fila dice su estado, y la columna `repo` solo enseña algo cuando la sesión no está en
+la raíz — el worktree o la subcarpeta donde está.
 
-Las **pestañas** (`←` `→`, dando la vuelta) enseñan un proyecto cada vez, agrupado por estado. La
-barra se desplaza cuando no cabe, siempre con la actual a la vista, y `‹` `›` avisan de que hay
-más. El filtro funciona dentro de una pestaña, y si se cierran todas las sesiones del proyecto en
-el que estás, vuelve a *Todas*.
+Las **pestañas** (`←` `→`, dando la vuelta, o un clic) enseñan un proyecto cada vez, agrupado por
+estado. La barra se desplaza cuando no cabe, siempre con la actual a la vista, y `‹` `›` avisan de
+que hay más — un clic en ellas trae la siguiente oculta de ese lado. El filtro funciona dentro de
+una pestaña, y si se cierran todas las sesiones del proyecto en el que estás, vuelve a *Todas*.
 
 `⌥1`…`⌥9` y `ccl -w` no cambian: siguen contando sobre la cola entera de ESPERANDO, estés en la
 vista o la pestaña que estés — la misma tecla no puede llevarte a sesiones distintas según cómo
@@ -457,9 +462,10 @@ esté agrupada la lista. Teclear un número sigue funcionando para una sesión d
 <details>
 <summary><b>Ratón, y cómo seleccionar texto para copiar</b></summary>
 
-Clic selecciona, **doble clic abre**, la rueda mueve la selección. El doble clic no lo reporta el
-terminal — solo llegan clics sueltos — así que se sintetiza midiendo el tiempo entre dos clics en
-la misma fila (400 ms).
+Clic selecciona, **doble clic abre**, la rueda mueve la selección; en la vista por proyecto, un
+clic en una pestaña cambia a ella, y arrastrarla la mueve. El doble clic no lo reporta el terminal
+— solo llegan clics sueltos — así que se sintetiza midiendo el tiempo entre dos clics en la misma
+fila (400 ms).
 
 Mientras el panel está abierto **los clics son suyos**, así que arrastrar no selecciona texto.
 Tres vías, de la más rápida a la más cómoda:

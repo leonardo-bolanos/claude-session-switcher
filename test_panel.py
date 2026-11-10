@@ -632,7 +632,7 @@ class TestElRatonSeRearma(unittest.TestCase):
             p.enviar(b"x")
         texto = open(registro).read()
         self.assertIn("panel arranca", texto)
-        self.assertIn("click:%d" % FILA_DE["gamma"], texto)
+        self.assertIn("click:%d:" % FILA_DE["gamma"], texto)
         self.assertIn("'x'", texto)
         self.assertIn("raton rearmado", texto)
 
@@ -1404,15 +1404,54 @@ class TestPestañas(unittest.TestCase):
             p.enviar(b"\x07")
             self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"})
 
+    def columna_de(self, p, texto):
+        """La columna de terminal (desde 1) donde empieza `texto` en la barra de pestañas."""
+        return p.ultima().split("\n")[1].index(texto) + 1
+
     def test_un_clic_dentro_de_la_pestaña_y_otro_en_la_barra(self):
-        """La barra desplaza todo una linea: el mapa fila → sesion tiene que saberlo."""
+        """
+        La barra desplaza todo una linea: el mapa fila → sesion tiene que saberlo. Y un
+        clic en la barra cambia de pestaña pero NO elige sesion: el cursor sigue en beta.
+        """
         with con_panel() as p:
             p.enviar(b"\x07", b"\033[C")
             fila = next(i for i, l in enumerate(p.ultima().split("\n"), 1) if "[ 2]" in l)
             p.enviar(press(fila))
             self.assertEqual(p.cursor(), "beta")
-            p.enviar(press(2))                     # la linea de pestañas
+            p.enviar(press(2, self.columna_de(p, "Todas")))
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta", "gamma", "delta"})
             self.assertEqual(p.cursor(), "beta")
+
+    def test_un_clic_en_una_pestaña_va_a_ese_proyecto(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(press(2, self.columna_de(p, "delta")))
+            self.assertEqual(self.filas_visibles(p), {"delta"})
+            self.assertIn("\033[1;7m delta 1 ", self.ultima_cruda(p),
+                          "la pulsada deberia quedar resaltada")
+            # el borde derecho de la pestaña tambien es suyo: el relleno cuenta
+            col = self.columna_de(p, "compartido") + len("compartido 2")
+            p.enviar(press(2, col))
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta"})
+
+    def test_un_clic_en_el_separador_no_cambia_de_pestaña(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C")
+            p.enviar(press(2, self.columna_de(p, "│")))
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta"})
+
+    def test_dos_clics_en_la_barra_no_abren_nada(self):
+        """
+        El doble clic abre la sesion. En la barra no hay sesion que abrir: dos clics
+        rapidos sobre una pestaña solo la eligen. Van en una rafaga, como los manda el
+        terminal de verdad.
+        """
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            col = self.columna_de(p, "gamma")
+            p.enviar(press(2, col) + press(2, col))
+            self.assertEqual(self.filas_visibles(p), {"gamma"})
+            self.assertEqual(p.aviso(), "", "dos clics en la barra abrieron algo")
 
     def test_filtro_y_pestaña_a_la_vez(self):
         with con_panel() as p:
@@ -1440,6 +1479,108 @@ class TestPestañas(unittest.TestCase):
             pantalla = self.ultima_completa(p)
             self.assertEqual(self.filas_visibles(p, pantalla), {"alfa", "beta", "delta"})
             self.assertIn("compartido (2)", pantalla)
+
+
+def arrastre(fila, desde, hasta):
+    """Pulsar en una columna y soltar en otra, en una rafaga: lo que manda el terminal."""
+    return f"\033[<0;{desde};{fila}M\033[<0;{hasta};{fila}m".encode()
+
+
+SHIFT_DER, SHIFT_IZQ = b"\033[1;2C", b"\033[1;2D"
+
+
+class PanelEstrecho(Panel):
+    """44 columnas: la barra de pestañas ya no cabe entera y se desplaza al cambiar."""
+    COLUMNAS = 44
+
+
+@unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")
+class TestOrdenDePestañas(unittest.TestCase):
+    """Arrastrar las pestañas y Shift-← → (specs/002). Sin orden: compartido, delta, gamma."""
+
+    def barra(self, p):
+        return p.ultima().split("\n")[1]
+
+    def orden(self, p):
+        return [n for n in re.findall(r"(\S+) \d+", self.barra(p)) if n != "Todas"]
+
+    def columna_de(self, p, texto):
+        return self.barra(p).index(texto) + 1
+
+    def filas_visibles(self, p):
+        return {n for n, num in (("alfa", 1), ("beta", 2), ("gamma", 3), ("delta", 4))
+                if f"[ {num}]" in p.ultima()}
+
+    def test_arrastrar_una_pestaña_sobre_otra_la_pone_en_su_sitio_y_se_guarda(self):
+        notas = os.path.join(_NOTAS_TMP, f"orden-{next(_contador_notas)}.json")
+        with con_panel(notas=notas) as p:
+            p.enviar(b"\x07")
+            p.enviar(arrastre(2, self.columna_de(p, "delta"), self.columna_de(p, "compartido")))
+            self.assertEqual(self.orden(p), ["delta", "compartido", "gamma"])
+            self.assertEqual(self.filas_visibles(p), {"delta"}, "pulsar ya activa la pestaña")
+        with con_panel(notas=notas) as p:
+            p.enviar(b"\x07")
+            self.assertEqual(self.orden(p), ["delta", "compartido", "gamma"],
+                             "el orden no sobrevivio a cerrar el panel")
+            self.assertLess(p.ultima().index("delta (1)"), p.ultima().index("compartido (2)"),
+                            "los grupos de Todas no siguen el orden de las pestañas")
+
+    def test_un_clic_soltar_fuera_o_en_un_separador_no_reordenan(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(press(2, self.columna_de(p, "gamma")))
+            col = self.columna_de(p, "gamma")
+            p.enviar(f"\033[<0;{col};2M\033[<0;{col};6m".encode())   # suelta en una sesion
+            p.enviar(arrastre(2, self.columna_de(p, "gamma"), self.columna_de(p, "│")))
+            self.assertEqual(self.orden(p), ["compartido", "delta", "gamma"])
+
+    def test_arrastrar_sobre_todas_la_pone_la_primera(self):
+        with con_panel() as p:
+            p.enviar(b"\x07")
+            p.enviar(arrastre(2, self.columna_de(p, "gamma"), self.columna_de(p, "Todas")))
+            self.assertEqual(self.orden(p), ["gamma", "compartido", "delta"])
+
+    def test_shift_mueve_la_activa_sin_dar_la_vuelta(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C", SHIFT_DER)       # compartido, un puesto a la derecha
+            self.assertEqual(self.orden(p), ["delta", "compartido", "gamma"])
+            self.assertEqual(self.filas_visibles(p), {"alfa", "beta"}, "cambio de pestaña")
+            p.enviar(SHIFT_DER, SHIFT_DER)                 # el segundo ya esta en el extremo
+            self.assertEqual(self.orden(p), ["delta", "gamma", "compartido"])
+            p.enviar(SHIFT_IZQ)
+            self.assertEqual(self.orden(p), ["delta", "compartido", "gamma"])
+
+    def test_shift_en_todas_o_sin_la_vista_por_proyecto_no_hace_nada(self):
+        with con_panel() as p:
+            p.enviar(SHIFT_DER)
+            self.assertEqual(p.cursor(), "alfa")
+            p.enviar(b"\x07", SHIFT_DER)
+            self.assertEqual(self.orden(p), ["compartido", "delta", "gamma"])
+
+    def test_escribiendo_una_nota_shift_mueve_el_cursor_del_texto(self):
+        with con_panel() as p:
+            p.enviar(b"\x07", b"\033[C", b"\x0e", b"ab", SHIFT_IZQ, b"X", b"\r")
+            self.assertIn("✎ aXb", p.ultima())
+            self.assertEqual(self.orden(p), ["compartido", "delta", "gamma"])
+
+    def test_un_clic_en_el_borde_que_desplaza_la_barra_no_arrastra(self):
+        """
+        A 44 columnas no caben las cuatro: pulsar `delta` la activa y la barra se corre
+        para enseñarla, de modo que bajo el raton queda `gamma`. Soltar en la MISMA columna
+        es un clic, no un arrastre de delta sobre gamma.
+        """
+        p = PanelEstrecho()
+        try:
+            p.enviar(b"\x07")
+            self.assertIn("›", self.barra(p), "a 44 columnas la barra deberia no caber")
+            col = self.columna_de(p, "delta") + 1
+            p.enviar(press(2, col))
+            self.assertEqual(self.filas_visibles(p), {"delta"})
+            self.assertEqual(self.orden(p), ["compartido", "delta", "gamma"])
+            self.assertNotEqual(self.barra(p)[col - 1:col + 3], "elta",
+                                "la barra no se desplazo: el test no prueba nada")
+        finally:
+            p.cerrar()
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

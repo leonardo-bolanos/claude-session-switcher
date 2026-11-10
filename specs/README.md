@@ -32,3 +32,4 @@ construido y sus trampas viven en `CLAUDE.md` y en los skills de `.claude/skills
 | # | Spec | Estado |
 |---|---|---|
 | 001 | [Vista por proyecto](001-vista-por-proyecto.md) | implementada (1.4.0) |
+| 002 | [Orden de las pestañas a mano](002-orden-de-pestañas.md) | implementada (sin publicar) |

@@ -90,8 +90,9 @@ añades un grupo, revisa que ninguna fila pueda caer en dos.
 (notas por sesion, notas por repo, pausadas) y `save_note` se escribia el JSON entero por su
 cuenta con dos claves — la primera nota borraba todas las pausadas. Por eso `load_state()`
 devuelve las tres y **nadie mas llama a `escribir_json(NOTES_FILE, …)`**. Lo mismo vale para la
-deteccion del formato viejo: mira las tres claves, porque un archivo que solo tuviera `pausadas`
-se leia como el formato plano y la lista acababa de nota de un repo.
+deteccion del formato viejo: mira todas las claves, porque un archivo que solo tuviera `pausadas`
+se leia como el formato plano y la lista acababa de nota de un repo. El orden de proyectos
+(specs/002) va aparte: `guardar_estado` lo conserva cuando no se lo pasan.
 
 **La tabla se construye con `width - 4`.** El panel pinta cada fila como `clip(texto, cols - 4)`
 —margen mas barra del cursor— asi que construyendola al ancho entero el recorte se comia la

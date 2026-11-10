@@ -43,6 +43,13 @@ eso da tres proyectos —`compartido` (alfa, beta), `delta`, `gamma`— y las fi
 NUMERO (`[ 4]`), no por el nombre, que sale tambien en la cabecera del proyecto y en la barra de
 pestañas. Diseño: `specs/001-vista-por-proyecto.md`.
 
+**Tras una mutacion de prueba, borra `__pycache__/cclcpython-*.pyc`.** Los tests cargan `ccl`
+con `SourceFileLoader`, que guarda bytecode, y Python lo da por bueno si coinciden el TAMAÑO del
+fuente y su `mtime` en segundos. Cambiar `col = 3` por `col = 4` y devolverlo en el mismo segundo
+deja las dos cosas iguales: los tests siguieron corriendo la version mutada, con el fuente ya
+restaurado, y fallaron como si el codigo estuviera mal. Si un test falla y el codigo que lees dice
+otra cosa, `dis.dis` de la funcion cargada lo confirma.
+
 **Con `CCL_TEST_REFRESH` bajo, `ultima()` puede ser un repintado a medias.** El panel repinta en
 cada refresco, y el drenado corta donde le pille: en el runner de macOS del CI, que es lento, un
 test de pestañas leyo una pantalla sin sus ultimas filas y fallo sin nada roto. Si el test

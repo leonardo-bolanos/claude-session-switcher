@@ -90,14 +90,17 @@ temporal: es el unico archivo que el panel escribe de verdad en disco.
 
 ## Pausadas (`Ctrl-P`), en el mismo archivo
 
-`ccl-notes.json` guarda tres cosas: `por_sesion`, `por_repo` y `pausadas` (lista de sessionId).
+`ccl-notes.json` guarda `por_sesion`, `por_repo`, `pausadas` (lista de sessionId), `spaces` y
+`orden_proyectos` (el orden a mano de las pestañas, specs/002).
 
 **Un solo escritor: `guardar_estado()`.** `save_note` se escribia el JSON entero por su cuenta con
 dos claves, asi que la primera nota borraba todas las pausadas. Cualquier cosa nueva que se guarde
-ahi pasa por `load_state()` (lee las tres) y `guardar_estado()` (escribe las tres); **nadie mas
-llama a `escribir_json(NOTES_FILE, …)`**.
+ahi pasa por `load_state()` y `guardar_estado()`; **nadie mas llama a
+`escribir_json(NOTES_FILE, …)`**. El orden de proyectos no viaja en la tupla de `load_state`:
+`guardar_estado(…, orden=None)` relee el que haya en disco y lo conserva, asi que quien guarda una
+nota no puede borrarlo por no saber que existe. Si añades otra clave, hazlo igual.
 
-**La deteccion del formato viejo mira las tres claves.** Con solo `por_sesion`/`por_repo`, un
+**La deteccion del formato viejo mira todas las claves.** Con solo `por_sesion`/`por_repo`, un
 archivo que unicamente tuviera `pausadas` se leia como el formato plano `{cwd: nota}` y la lista
 acababa siendo la nota de un repo llamado "pausadas".
 
