@@ -12,7 +12,8 @@ ayuda — hay sesiones que empiezan por h — de ahi que sea `?`, que ademas es 
 
 Si añades una accion nueva: tecla de control, o un simbolo que nadie escribiria al buscar.
 Las ocupadas hasta ahora: `Ctrl-R` refrescar, `Ctrl-N` nota, `Ctrl-P` pausar, `Ctrl-T` tabla,
-`Ctrl-O` recuperables, `Ctrl-G` agrupar por proyecto, `Ctrl-C`/`Ctrl-D` salir; y `← →`, que fuera
+`Ctrl-O` recuperables, `Ctrl-G` agrupar por proyecto, `Ctrl-E` columnas de la tabla
+(specs/005), `Ctrl-C`/`Ctrl-D` salir; y `← →`, que fuera
 del editor de notas solo hacen algo en la vista por proyecto (cambian de pestaña), igual que
 `Shift-← →` (mueven la pestaña activa, specs/002: `_read_csi` solo distingue el modificador 2 en
 ← →; los demas siguen siendo la tecla a secas). Descartadas a

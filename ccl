@@ -48,6 +48,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -227,9 +228,22 @@ TEXTOS = {
         "col_cuenta": "account",
         "col_rama": "branch",
         "col_modelo": "model",
+        "col_ia": "ai",
         "col_ctx": "ctx",
         "ctx": "ctx",
         "col_visto": "seen",
+        # el selector de columnas (Ctrl-E)
+        "columnas_titulo": " · table columns",
+        "columnas_teclas": "↑↓ move · space shows or hides · esc back",
+        "columnas_nota": "a ticked column still drops off if the window is too narrow",
+        "columna_estado": "working, waiting, paused…",
+        "columna_account": "which Claude account, when there is more than one",
+        "columna_repo": "the session's folder",
+        "columna_branch": "git branch",
+        "columna_model": "the model it is using",
+        "columna_ia": "the model Haiku recommends for what it is doing",
+        "columna_ctx": "how full its context is",
+        "columna_ts": "last activity",
         "col_nota": "note / last prompt",
         # antiguedad
         "ahora": "now",
@@ -316,6 +330,7 @@ TEXTOS = {
         "barra_nota": " note  ",
         "barra_pausa": " pause  ",
         "barra_tabla": " table  ",
+        "barra_columnas": " columns  ",
         "barra_proyectos": " projects  ",
         "barra_pestañas": " tabs  ",
         "pestaña_todas": "All",
@@ -344,9 +359,21 @@ TEXTOS = {
         "col_cuenta": "cuenta",
         "col_rama": "rama",
         "col_modelo": "modelo",
+        "col_ia": "ia",
         "col_ctx": "ctx",
         "ctx": "ctx",
         "col_visto": "visto",
+        "columnas_titulo": " · columnas de la tabla",
+        "columnas_teclas": "↑↓ mover · espacio muestra u oculta · esc vuelve",
+        "columnas_nota": "una columna marcada se cae igual si la ventana es muy estrecha",
+        "columna_estado": "trabajando, esperando, pausada…",
+        "columna_account": "con qué cuenta de Claude, si hay varias",
+        "columna_repo": "la carpeta de la sesión",
+        "columna_branch": "la rama de git",
+        "columna_model": "el modelo que usa",
+        "columna_ia": "el modelo que recomienda Haiku para lo que hace",
+        "columna_ctx": "cuánto contexto lleva",
+        "columna_ts": "la última actividad",
         "col_nota": "nota / último prompt",
         "ahora": "ahora",
         "hace_min": "hace {n}m",
@@ -429,6 +456,7 @@ TEXTOS = {
         "barra_nota": " nota  ",
         "barra_pausa": " pausa  ",
         "barra_tabla": " tabla  ",
+        "barra_columnas": " columnas  ",
         "barra_proyectos": " proyectos  ",
         "barra_pestañas": " pestañas  ",
         "pestaña_todas": "Todas",
@@ -1460,6 +1488,405 @@ def ventana_de(modelo, cfg=None):
     return None
 
 
+# ─────────────────── el modelo que recomienda la IA (specs/005) ───────────────────
+#
+# Claude Code no guarda ninguna recomendacion: el `advisorModel` del transcript es el modelo
+# asesor configurado, el mismo en todas las sesiones. Asi que se le pregunta a Haiku, en un
+# hilo del panel, y solo cuando una sesion aparece o cambia de tema (su `ai-title`).
+
+IA_FILE = os.path.join(HOME, ".claude", "ccl-ia.json")
+# Sube cuando cambia lo que se le manda a Haiku: lo pedido con el criterio viejo deja de valer
+# y se vuelve a pedir una vez. La 2 añadio el nombre y las herramientas usadas.
+IA_VERSION = 2
+# De la mas barata a la mejor: el orden es el que da la flecha de `marca_ia`.
+IA_FAMILIAS = ("haiku", "sonnet", "opus", "fable")
+IA_LOTE = 20             # sesiones por llamada
+IA_PAUSA = 30            # segundos minimos entre una llamada y la siguiente
+IA_REINTENTO = 600       # una sesion cuya llamada fallo no se vuelve a pedir en diez minutos
+IA_CADUCA = 30 * 86400   # al guardar se purga lo de hace mas de un mes
+IA_TIMEOUT = 120
+# Cuanto transcript se mira para saber que hace la sesion. Con 2 MB, en una sesion pesada
+# (salidas de comandos largas) solo entraban sus ultimas ~70 llamadas: la ultima subtarea, no
+# la sesion. Se lee solo al pedir, en el hilo.
+IA_VENTANA = 8 * 1024 * 1024
+
+IA_ESQUEMA = json.dumps({
+    "type": "object",
+    "properties": {"sesiones": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"id": {"type": "string"},
+                       "modelo": {"type": "string", "enum": list(IA_FAMILIAS)},
+                       "porque": {"type": "string"}},
+        "required": ["id", "modelo", "porque"]}}},
+    "required": ["sesiones"],
+})
+
+# La guia de la skill `claude-models` §2. Las dos ultimas frases de criterio no sobran, y las
+# dos salieron de fallos medidos: con solo el titulo y el ultimo prompt, una sesion de
+# desarrollo salio `haiku` porque lo ultimo que se le dijo fue «comit push», y la mas cara del
+# dia salio `sonnet` porque Claude Code la habia retitulado con su ultima subtarea.
+IA_GUIA = (
+    "Recomiendas qué modelo de Claude conviene a cada sesión de Claude Code según el trabajo "
+    "que hace. "
+    "haiku: lecturas, formateo, renombrados, consultas cortas. "
+    "sonnet: coordinación, seguimiento, mensajería, resúmenes, análisis, pases mecánicos, "
+    "cambios acotados. "
+    "opus: código agéntico, refactors de varios archivos, revisión de código, "
+    "arquitectura, depuración, seguridad. "
+    "fable: solo sesiones autónomas de horas o con una causa raíz muy ambigua; cuesta el "
+    "doble que opus. "
+    "Cada sesión trae su nombre, que pone el usuario y dice de qué va la sesión entera; su "
+    "titulo, que pone Claude Code y a menudo es solo la última subtarea; y las herramientas "
+    "y comandos que más ha usado últimamente. Juzga por el trabajo real: ediciones (Edit, "
+    "Write, o sed y similares por Bash), consultas a bases de datos, ssh a servidores, git, "
+    "compiladores o tests son trabajo técnico sobre código; mensajes (SendMessage), lecturas "
+    "y comandos de consulta sin apenas ediciones son coordinación o análisis. "
+    "El último prompt es solo contexto: una orden corta como «commit» o «sigue» no cambia "
+    "la tarea. "
+    "Responde solo con el JSON pedido, una entrada por sesión con su mismo id. "
+    "El campo porque va en {idioma}, en 60 caracteres como mucho."
+)
+
+_CACHE_IA = {"firma": None, "datos": {}}
+
+
+def leer_ia():
+    """
+    {sessionId: {titulo, modelo, porque, cuando} y/o {a_mano}} de lo que ya se pidio, y de lo
+    que fijaste tu. Es cache: un archivo roto o con otra forma vale lo mismo que uno vacio, y
+    se vuelve a pedir.
+
+    `a_mano` es tuyo (R17): se escribe editando el JSON y manda sobre lo de Haiku. Por eso
+    sobrevive a lo que invalida lo demas: una entrada de otra `IA_VERSION` pierde la parte de
+    Haiku, no la tuya. Vale cualquier forma que diga la familia: `sonnet`, `Sonnet-5-5`.
+
+    Se relee solo si cambio: `--recent` monta hasta doscientas filas, y cada una lo consulta.
+    """
+    try:
+        st = os.stat(IA_FILE)
+        firma = (IA_FILE, st.st_size, st.st_mtime_ns)
+    except OSError:
+        return {}
+    if _CACHE_IA["firma"] == firma:
+        return _CACHE_IA["datos"]
+    datos = {}
+    for sid, e in leer_json(IA_FILE, {}).items():
+        if not isinstance(e, dict):
+            continue
+        limpia = {}
+        a_mano = e.get("a_mano")
+        if isinstance(a_mano, str) and familia(a_mano):
+            limpia["a_mano"] = familia(a_mano)
+        if (isinstance(e.get("titulo"), str) and e.get("modelo") in IA_FAMILIAS
+                and e.get("v") == IA_VERSION):
+            limpia.update(titulo=e["titulo"], modelo=e["modelo"],
+                          porque=e.get("porque") or "", cuando=e.get("cuando"))
+        if limpia:
+            datos[sid] = limpia
+    _CACHE_IA.update(firma=firma, datos=datos)
+    return datos
+
+
+def tema_de(fila):
+    """
+    De que va la sesion, para saber si su recomendacion sigue valiendo: el `ai-title`, y si
+    no hay, su nombre. Una sesion con nombre desde el principio NUNCA recibe `ai-title`
+    (verificado el 2026-11-11: cinco de las vivas, con cero `ai-title` y decenas de
+    `custom-title`): pidiendo solo con titulo, a esas no se les preguntaba jamas.
+    """
+    return fila.get("title") or fila.get("name") or None
+
+
+def recomendacion(cache, sid, titulo):
+    """
+    La familia que va en la columna para `sid`: la que fijaste a mano si la hay, sea cual sea
+    el tema; si no, la de Haiku, y solo si se pidio con ESTE tema. Con el tema cambiado, la
+    vieja hablaria de otra tarea: mejor vacia unos segundos que equivocada.
+    """
+    e = cache.get(sid)
+    if not e:
+        return None
+    if e.get("a_mano"):
+        return e["a_mano"]
+    return e["modelo"] if titulo and e.get("titulo") == titulo else None
+
+
+def guardar_ia(hallado, ahora=None):
+    """
+    Añade `{sid: (titulo, modelo, porque)}` a la cache y purga lo caducado.
+
+    Parte del archivo CRUDO, no de `leer_ia`: una entrada con `a_mano` se conserva tal cual
+    —tambien con un valor que no se entienda, que es una errata tuya y no se borra sola—, no
+    caduca, y al poner encima la respuesta de Haiku se le mantiene el `a_mano`.
+
+    Y si el archivo existe pero no se puede leer como un JSON de entradas, NO escribe y
+    devuelve False: lo mas probable es que lo estes editando a mano y se te haya escapado una
+    coma, y reescribirlo desde cero borraria todos tus `a_mano`.
+    """
+    ahora = time.time() if ahora is None else ahora
+    try:
+        with open(IA_FILE) as fh:
+            crudo = json.load(fh)
+    except FileNotFoundError:
+        crudo = {}
+    except Exception:
+        return False
+    if not isinstance(crudo, dict):
+        return False
+    cache = {}
+    for sid, e in crudo.items():
+        if not isinstance(e, dict):
+            continue
+        if "a_mano" in e or (isinstance(e.get("cuando"), (int, float))
+                             and ahora - e["cuando"] < IA_CADUCA):
+            cache[sid] = e
+    for sid, (titulo, modelo, porque) in hallado.items():
+        entrada = {"titulo": titulo, "modelo": modelo, "porque": porque,
+                   "cuando": int(ahora), "v": IA_VERSION}
+        if "a_mano" in cache.get(sid, {}):
+            entrada["a_mano"] = cache[sid]["a_mano"]
+        cache[sid] = entrada
+    escribir_json(IA_FILE, cache)
+    return True
+
+
+def familia(modelo):
+    """`opus` de `opus-5-5` o de `claude-opus-5-5`; None si no es un modelo de Claude."""
+    m = (modelo or "").lower()
+    return next((f for f in IA_FAMILIAS if f in m), None)
+
+
+# Lo que no dice nada de la tarea: `cd repo && sed …` cuenta como `sed`.
+_COMANDOS_RUIDO = {"cd", "echo", "export", "source", "true", "set", "printf", "sleep", "done",
+                   "fi", "for", "if", "while", "case", "esac"}
+# Lo que va delante del programa y no lo es: `do sed`, `sudo git`, `time pytest`.
+_PREFIJOS = {"do", "then", "else", "time", "sudo", "exec", "nohup", "!"}
+
+
+def _sin_heredocs(texto):
+    """`texto` sin el cuerpo de sus heredocs: la linea del `<<EOF` se queda, el resto hasta
+    `EOF` no. Un `<<` que no abre un heredoc (`$((1<<3))`) no lleva palabra detras."""
+    out, fin = [], None
+    for linea in texto.split("\n"):
+        if fin is not None:
+            if linea.strip() == fin:
+                fin = None
+            continue
+        m = re.search(r"<<-?\s*['\"]?([A-Za-z_]\w*)['\"]?", linea)
+        if m:
+            fin = m.group(1)
+        out.append(linea)
+    return "\n".join(out)
+
+
+def _comandos_de(linea):
+    """
+    Los programas que lanza una orden de shell: `cd x && ssh h | grep y` → ["ssh"]. Se parte
+    por `&&`, `||`, `;` y saltos de linea, pero NO por la tuberia: lo de detras de un `|` es un
+    filtro (`head`, `grep`). Y el cuerpo de un heredoc (`def`, `import`) no son ordenes: se
+    quita hasta su delimitador, y lo que sigue despues si cuenta (`… EOF)" && git push`).
+    """
+    out = []
+    # Lo entrecomillado es un argumento (`python3 -c "import os"`, `ssh h 'ls; df'`), no
+    # otra orden: se vacia antes de partir por `;` y saltos de linea.
+    linea = re.sub(r"'[^']*'|\"[^\"]*\"", "''", _sin_heredocs(linea))
+    for trozo in re.split(r"&&|\|\||[;\n]", linea):
+        palabras = [w for w in trozo.split() if not re.match(r"^[A-Za-z_]\w*=", w)]
+        # `do sed …` y `then git …`: la palabra del bucle no es el programa
+        while palabras and palabras[0] in _PREFIJOS:
+            palabras = palabras[1:]
+        if palabras:
+            prog = os.path.basename(palabras[0].strip("()'\"`$"))
+            if prog not in _COMANDOS_RUIDO and re.match(r"^[A-Za-z][\w.+-]*$", prog):
+                out.append(prog)
+    return out
+
+
+def actividad_reciente(sid, cfg=None, top=8, ventana=None):
+    """
+    ({herramienta: veces}, {comando: veces}) de lo que la sesion ha hecho ultimamente: lo mas
+    usado en los ultimos `IA_VENTANA` bytes del transcript, solo del hilo principal. Las de un
+    servidor MCP se juntan por servidor (`mcp:Zoho_Sprints`); los comandos son los programas
+    que lanzo por Bash, sin argumentos.
+
+    Es la señal que separa el codigo de la coordinacion, y ni el nombre ni el titulo la dan:
+    una sesion de «coordinador» que edita en un worktree es trabajo de codigo. Y los comandos
+    hacen falta porque mucho trabajo de codigo va entero por Bash: una migracion que edita con
+    `sed` y prueba por `ssh` hace pocas llamadas a `Edit`. Solo se lee al pedir una
+    recomendacion, en el hilo, nunca en un refresco.
+    """
+    base = cfg or os.path.join(HOME, ".claude")
+    hits = glob.glob(os.path.join(base, "projects", "*", f"{sid}.jsonl"))
+    if not hits:
+        return {}, {}
+    try:
+        with open(hits[0], "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - (ventana or IA_VENTANA)))
+            trozo = fh.read()
+    except OSError:
+        return {}, {}
+    cuenta, comandos = {}, {}
+    for linea in trozo.split(b"\n"):
+        if b'"tool_use"' not in linea:
+            continue
+        try:
+            o = json.loads(linea)
+        except ValueError:
+            continue    # la primera, cortada por el salto
+        if not isinstance(o, dict) or o.get("type") != "assistant" or o.get("isSidechain"):
+            continue
+        contenido = (o.get("message") or {}).get("content")
+        for b in contenido if isinstance(contenido, list) else ():
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name"):
+                nombre = str(b["name"])
+                if nombre.startswith("mcp__"):
+                    servidor = nombre.split("__")[1] if nombre.count("__") >= 2 else nombre
+                    nombre = "mcp:" + servidor.replace("claude_ai_", "")
+                cuenta[nombre] = cuenta.get(nombre, 0) + 1
+                orden = (b.get("input") or {}).get("command") if nombre == "Bash" else None
+                for prog in _comandos_de(orden) if isinstance(orden, str) else ():
+                    comandos[prog] = comandos.get(prog, 0) + 1
+    def mas_usados(d):
+        return dict(sorted(d.items(), key=lambda kv: -kv[1])[:top])
+    return mas_usados(cuenta), mas_usados(comandos)
+
+
+def pedir_recomendaciones(lote, timeout=IA_TIMEOUT):
+    """
+    {sessionId: (titulo, modelo, porque)} de UNA llamada a Haiku por todo el lote. {} si
+    algo falla: nunca lanza, corre en un hilo y un fallo solo deja la columna vacia.
+
+    Las banderas estan medidas (specs/005): sin transcript (`--no-session-persistence`, o
+    saldria en `--recent`), sin hooks ni settings del usuario (`--restricted`), sin MCP, sin
+    herramientas y con un tope de gasto. `--bare` no sirve: no lee el OAuth de la suscripcion.
+    """
+    binario = claude_bin()
+    if not binario or not lote:
+        return {}
+    por_id = {f"s{i}": r for i, r in enumerate(lote, 1)}
+    sesiones = [{"id": k, "nombre": r.get("name") or "", "titulo": r.get("title") or "",
+                 "ultimo_prompt": " ".join(str(r.get("prompt") or "").split())[:300],
+                 "repo": r.get("repo") or "", "modelo_actual": r.get("model") or "",
+                 "effort": r.get("effort") or ""}
+                for k, r in por_id.items()]
+    for sesion, r in zip(sesiones, por_id.values()):
+        sesion["herramientas_recientes"], sesion["comandos_recientes"] = \
+            actividad_reciente(r["sessionId"], r.get("_cfg"))
+    orden = [binario, "-p", "--model", "haiku", "--no-session-persistence", "--restricted",
+             "--strict-mcp-config", "--tools", "", "--disable-slash-commands",
+             "--output-format", "json", "--json-schema", IA_ESQUEMA,
+             "--system-prompt",
+             IA_GUIA.format(idioma="español" if LANG == "es" else "inglés"),
+             "--max-budget-usd", "0.05",
+             "Sesiones:\n" + json.dumps(sesiones, ensure_ascii=False)]
+    try:
+        # En el directorio temporal para que no cargue el CLAUDE.md del repo desde el que se
+        # abrio el panel. El texto va por argv: sale de los transcripts, o sea de fuera.
+        proc = subprocess.run(orden, capture_output=True, text=True, timeout=timeout,
+                              cwd=tempfile.gettempdir(), stdin=subprocess.DEVNULL)
+        datos = json.loads(proc.stdout)
+    except Exception:
+        return {}
+    if not isinstance(datos, dict) or datos.get("is_error"):
+        return {}
+    salida = datos.get("structured_output")
+    filas = salida.get("sesiones") if isinstance(salida, dict) else None
+    if not isinstance(filas, list):
+        return {}
+    hallado = {}
+    for f in filas:
+        r = por_id.get(f.get("id")) if isinstance(f, dict) else None
+        if r is None or f.get("modelo") not in IA_FAMILIAS:
+            continue   # un id que no se envio, o una familia inventada
+        porque = sin_control(" ".join(str(f.get("porque") or "").split()))[:80]
+        hallado[r["sessionId"]] = (tema_de(r), f["modelo"], porque)
+    return hallado
+
+
+class Recomendador:
+    """
+    Decide que sesiones hay que preguntar y lanza la llamada en un hilo (specs/005).
+
+    Lo crea el panel y nadie mas: `--list` y `-w` no pueden esperar cinco segundos, y una
+    llamada disparada desde un atajo global es gasto que no se ve. Una llamada a la vez, con
+    todas las pendientes, y al menos `IA_PAUSA` segundos entre dos.
+    """
+
+    def __init__(self, al_terminar=None, reloj=time.time):
+        self.al_terminar = al_terminar   # el panel le pasa `feed.force`: asi se pinta
+        self.reloj = reloj
+        self.lock = threading.Lock()
+        self.en_vuelo = False
+        self.ultima = None               # cuando salio la ultima llamada
+        self.fallos = {}                 # (sessionId, titulo) -> cuando fallo
+        self.hilo = None
+
+    @staticmethod
+    def activo():
+        return os.environ.get("CCL_IA", "1") != "0" and bool(claude_bin())
+
+    def pendientes(self, rows):
+        cache, ahora, vistas, lote = leer_ia(), self.reloj(), set(), []
+        for r in rows:
+            sid, titulo = r.get("sessionId"), tema_de(r)
+            # Sin tema (ni `ai-title` ni nombre) no hay nada que juzgar. Las recuperables estan
+            # muertas: no se gasta en ellas. Y dos procesos sobre la misma conversacion, una
+            # sola pregunta.
+            if not sid or not titulo or r.get("recoverable") or sid in vistas:
+                continue
+            vistas.add(sid)
+            # ya pedida con este tema, o fijada a mano: en las dos no hay nada que preguntar
+            if recomendacion(cache, sid, titulo):
+                continue
+            fallo = self.fallos.get((sid, titulo))
+            if fallo is not None and ahora - fallo < IA_REINTENTO:
+                continue
+            lote.append(r)
+        return lote[:IA_LOTE]
+
+    def pedir(self, rows):
+        """Lanza la llamada si hay pendientes y le toca. True si la lanzo."""
+        if not self.activo():
+            return False
+        with self.lock:
+            if self.en_vuelo or (self.ultima is not None
+                                 and self.reloj() - self.ultima < IA_PAUSA):
+                return False
+            lote = self.pendientes(rows)
+            if not lote:
+                return False
+            self.en_vuelo, self.ultima = True, self.reloj()
+        # copias: el panel sigue usando sus filas mientras el hilo trabaja
+        lote = [dict(r) for r in lote]
+        self.hilo = threading.Thread(target=self._correr, args=(lote,), daemon=True)
+        self.hilo.start()
+        return True
+
+    def _correr(self, lote):
+        hallado = {}
+        try:
+            hallado = pedir_recomendaciones(lote)
+            ahora = self.reloj()
+            # Si no se pudo guardar (el archivo esta roto a mano) cuenta como fallo: si no,
+            # la sesion seguiria pendiente y se volveria a pagar cada `IA_PAUSA` segundos.
+            if hallado and not guardar_ia(hallado, ahora):
+                hallado = {}
+            with self.lock:
+                self.fallos = {k: t for k, t in self.fallos.items()
+                               if ahora - t < IA_REINTENTO}   # un panel abierto dias
+                for r in lote:
+                    if r["sessionId"] not in hallado:
+                        self.fallos[(r["sessionId"], tema_de(r))] = ahora
+        except Exception:
+            pass   # un hilo de fondo no puede tumbar el panel
+        finally:
+            with self.lock:
+                self.en_vuelo = False
+        if hallado and self.al_terminar:
+            self.al_terminar()
+
+
 def leer_json(ruta, defecto):
     """
     El JSON de `ruta`, o `defecto` si falta, esta corrupto o no se puede leer.
@@ -1484,12 +1911,17 @@ def escribir_json(ruta, datos):
     """
     try:
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
-        with open(ruta, "w") as fh:
+        # A un temporal y `os.replace`: escribiendo encima, quien leyera a la vez (otro panel,
+        # el hilo del recomendador) veia un archivo a medias, `leer_json` lo daba por vacio, y
+        # la escritura siguiente partia de nada: se llevaba por delante los `a_mano`.
+        temporal = f"{ruta}.{os.getpid()}.{threading.get_ident()}.tmp"
+        with open(temporal, "w") as fh:
             json.dump(datos, fh, indent=2, ensure_ascii=False, sort_keys=True)
         # 0600: las notas son texto personal —nombres de gente, en que estas esperando— y
         # con el umask habitual (022) el fichero salia legible para el grupo. En una maquina
         # de un solo usuario no hay exposicion real, pero es gratis no dejarlo abierto.
-        os.chmod(ruta, 0o600)
+        os.chmod(temporal, 0o600)
+        os.replace(temporal, ruta)
     except Exception:
         pass
 
@@ -1559,7 +1991,7 @@ def load_state():
     """
     datos = leer_json(NOTES_FILE, {})
     if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "spaces",
-                                "orden_proyectos")):
+                                "orden_proyectos", "columnas_ocultas")):
         crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
     else:
         crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
@@ -1587,7 +2019,7 @@ def load_notes():
     return sesion, repo
 
 
-def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None):
+def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None, ocultas=None):
     """
     El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff del
     JSON sea legible si alguien lo abre a mano.
@@ -1595,12 +2027,15 @@ def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None):
     `orden=None` CONSERVA el orden de proyectos que haya en disco. Quien guarda una nota o
     una pausa no sabe nada del orden, y no puede borrarlo por no pasarlo: es el fallo que
     ya paso con las pausadas, cuando la primera nota las borraba todas. Cerrado aqui, por
-    construccion, y no confiando en que cada llamador se acuerde.
+    construccion, y no confiando en que cada llamador se acuerde. Las columnas ocultas
+    (specs/005) van igual: `ocultas=None` las conserva.
     """
     escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo,
                                "pausadas": sorted(pausadas), "spaces": spaces or {},
                                "orden_proyectos": (orden_proyectos() if orden is None
-                                                   else list(orden))})
+                                                   else list(orden)),
+                               "columnas_ocultas": sorted(columnas_ocultas() if ocultas is None
+                                                          else ocultas)})
 
 
 def orden_proyectos():
@@ -1620,6 +2055,22 @@ def orden_proyectos():
 def guardar_orden_proyectos(orden):
     sesion, repo, pausadas, spaces = load_state()
     guardar_estado(sesion, repo, pausadas, spaces, orden=orden)
+
+
+def columnas_ocultas():
+    """
+    Las columnas de la tabla que escondiste con `Ctrl-E` (specs/005). Solo nombres que
+    existen: el JSON se puede editar a mano, y uno desconocido no puede llegar al reparto.
+    """
+    crudo = leer_json(NOTES_FILE, {}).get("columnas_ocultas")
+    if not isinstance(crudo, list):
+        return frozenset()
+    return frozenset(c for c in crudo if c in COLUMNAS_OCULTABLES)
+
+
+def guardar_columnas_ocultas(ocultas):
+    sesion, repo, pausadas, spaces = load_state()
+    guardar_estado(sesion, repo, pausadas, spaces, ocultas=ocultas)
 
 
 def note_for(row, notas_sesion, notas_repo):
@@ -1792,8 +2243,10 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
     # una lectura por refresco: es diminuto
     notas_sesion, notas_repo, pausadas, spaces = load_state()
     pausadas = despausar_las_que_trabajan(sessions, pausadas, spaces)
+    cache_ia = leer_ia()
     for s in sessions:
         info = read_transcript(s["sessionId"], s.get("_cfg"))
+        titulo = sin_control(info.get("title"))
         # Un job con su pestaña aparcada se enfoca en ESA pestaña: su propio tty es el del
         # proceso de fondo, que no esta en ningun terminal (specs/003).
         tty = ttys.get(s.get("_pid_terminal") or s["pid"], "")
@@ -1819,7 +2272,8 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             "effort": info.get("effort"),
             "ctx": info.get("ctx"),
             "ctx_ventana": ventana_de(info.get("ctx_model"), s.get("_cfg")),
-            "title": sin_control(info.get("title")),
+            "ia": recomendacion(cache_ia, s["sessionId"], titulo or sin_control(s["name"])),
+            "title": titulo,
             "prompt": sin_control(info.get("prompt")),
             "note": "",   # se rellena abajo, cuando la fila ya existe
             "paused": s["sessionId"] in pausadas,
@@ -2334,6 +2788,24 @@ def marca_contexto(r):
     return (RED if pct >= 80 else YELLOW if pct >= 50 else GREEN)(f"{pct}%")
 
 
+def marca_ia(r):
+    """
+    La familia que recomienda la IA (specs/005): tenue si es la que ya usa, y si no con su
+    color y una flecha — `↓sonnet` bastaria una mas barata, `↑opus` le haria falta una
+    mejor. Sin flecha si el modelo actual no es de Claude: no hay escala que comparar.
+    """
+    rec = r.get("ia")
+    if not rec:
+        return ""
+    actual = familia(r.get("model"))
+    if actual == rec:
+        return DIM(rec)
+    if actual is None:
+        return color_model(rec)
+    sube = IA_FAMILIAS.index(rec) > IA_FAMILIAS.index(actual)
+    return BOLD("↑" if sube else "↓") + color_model(rec)
+
+
 def detail_line(r, width=None):
     """Tu nota · rama · modelo · effort · ultimo prompt. Cada pieza con su color."""
     # La nota va PRIMERA y en su propio color: es lo unico de la linea que escribiste tu,
@@ -2363,45 +2835,64 @@ def detail_line(r, width=None):
 # en la pantalla y hay que hacer scroll para contarlas; asi entran el doble de un vistazo.
 #
 # El precio es el ancho: no caben todas las columnas en 80. En vez de recortarlas todas
-# hasta hacerlas ilegibles, las prescindibles (rama, modelo) DESAPARECEN por debajo de su
-# umbral, y lo que sobra se lo queda la nota. La cuenta corre los umbrales porque ocupa
-# once columnas que en el caso normal (una sola cuenta) no existen.
+# hasta hacerlas ilegibles, las prescindibles (ia, modelo, rama, ctx) DESAPARECEN cuando no
+# caben, y lo que sobra se lo queda la nota. Y con `Ctrl-E` se esconden las que no miras,
+# que es lo que les hace sitio a las demas (specs/005).
+
+# Las que se pueden esconder, en el orden del selector. El numero, el nombre y la nota no:
+# el numero es lo que se teclea, el nombre es la sesion, y la nota se queda lo que sobra.
+COLUMNAS_OCULTABLES = ("estado", "account", "repo", "branch", "model", "ia", "ctx", "ts")
+
+# 13, no 9, la de `ts`: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas.
+# Con nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
+_FIJAS = (("num", 5), ("estado", 11), ("name", 28), ("account", 11), ("repo", 14),
+          ("ts", 13))
+
+# Las prescindibles, de la que mas aguanta a la que antes cae: (clave, ancho, nota minima).
+# Cada una entra solo si, con ella, a la nota le quedan al menos esas columnas. Son los
+# umbrales de siempre sin nada escondido (ctx 86, rama 106, modelo 120; `ia` 128), y la
+# cuenta los corre once porque ocupa once columnas. ctx es la ultima en caer, pero cae: a
+# 80 la fila ya va justa y se perderia el ⚠.
+_PRESCINDIBLES = (("ctx", 6, 9), ("branch", 13, 16), ("model", 9, 21), ("ia", 8, 21))
+
+_ORDEN_COLUMNAS = ("num", "estado", "name", "account", "repo", "branch", "model", "ia",
+                   "ctx", "ts")
 
 
-def _tabla_columnas(width, multi):
-    """[(clave, ancho)] de las columnas fijas que caben en `width`."""
-    extra = 11 if multi else 0
-    cols = [("num", 5), ("estado", 11), ("name", 28)]
-    if multi:
-        cols.append(("account", 11))
-    cols.append(("repo", 14))
-    if width >= 106 + extra:
-        cols.append(("branch", 13))
-    if width >= 120 + extra:
-        cols.append(("model", 9))
-    # La ultima prescindible en caer, pero cae: a 80 la fila ya va justa y se perderia el ⚠.
-    if width >= 86 + extra:
-        cols.append(("ctx", 6))
-    # 13, no 9: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas. Con
-    # nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
-    cols.append(("ts", 13))
-    return cols
+def _tabla_columnas(width, multi, ocultas=()):
+    """[(clave, ancho)] de las columnas fijas que caben en `width`, sin las `ocultas`."""
+    anchos = {k: a for k, a in _FIJAS
+              if k not in ocultas and (multi or k != "account")}
+    usado = sum(anchos.values())
+    for clave, ancho, nota in _PRESCINDIBLES:
+        if clave in ocultas:
+            continue      # escondida a mano: su sitio es para las siguientes
+        if width < usado + ancho + nota:
+            break         # la que no cabe corta a las de detras, que caen antes que ella
+        anchos[clave] = ancho
+        usado += ancho
+    return [(k, anchos[k]) for k in _ORDEN_COLUMNAS if k in anchos]
 
 
-def table_head(width=100, show_account=False):
+def etiqueta_columna(clave):
+    """El nombre de una columna en la cabecera, y en el selector de `Ctrl-E`."""
+    return {"num": "#", "estado": t("col_estado"), "name": t("col_sesion"),
+            "account": t("col_cuenta"), "repo": t("col_repo"),
+            "branch": t("col_rama"), "model": t("col_modelo"), "ia": t("col_ia"),
+            "ctx": t("col_ctx"), "ts": t("col_visto")}[clave]
+
+
+def table_head(width=100, show_account=False, ocultas=()):
     """La fila de nombres de columna. Alineada con `table_line` por construccion."""
-    etiquetas = {"num": "#", "estado": t("col_estado"), "name": t("col_sesion"),
-                 "account": t("col_cuenta"), "repo": t("col_repo"),
-                 "branch": t("col_rama"), "model": t("col_modelo"),
-                 "ctx": t("col_ctx"), "ts": t("col_visto")}
-    fijas = "".join(pad(clip(etiquetas[k], a - 1), a)
-                    for k, a in _tabla_columnas(width, show_account))
+    fijas = "".join(pad(clip(etiqueta_columna(k), a - 1), a)
+                    for k, a in _tabla_columnas(width, show_account, ocultas))
     # el clip final vale para las dos: en una ventana muy estrecha lo que sobra es el
     # nombre de la ultima columna, no la cabecera envolviendose sobre la primera fila
     return DIM(clip(fijas + t("col_nota"), width))
 
 
-def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto=False):
+def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto=False,
+               ocultas=()):
     """
     Una sesion en una sola linea, en columnas. Por proyecto o dentro de la pestaña de un
     proyecto, `repo` pasa a ser `donde`.
@@ -2415,10 +2906,11 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
         "repo": MAGENTA(donde(r) if por_proyecto or en_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),
         "model": color_model(r["model"]),
+        "ia": marca_ia(r),
         "ctx": marca_contexto(r),
         "ts": color_age(r["ts"]),
     }
-    columnas = _tabla_columnas(width, show_account)
+    columnas = _tabla_columnas(width, show_account, ocultas)
     # `clip` a ancho-1 antes de `pad`: garantiza al menos un espacio entre columnas
     # aunque el contenido llegue justo, que es lo que las mantiene legibles.
     fijas = "".join(pad(clip(celda[k], a - 1), a) for k, a in columnas)
@@ -2441,20 +2933,34 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
     return gris_si_falta(r, clip(fijas + clip(cola, resto) + warn, width))
 
 
+def ocultas_de_verdad(rows, ocultas):
+    """
+    Las que escondiste, mas la de la IA si ninguna fila trae nada que poner en ella: con
+    `CCL_IA=0`, sin `claude` o antes de la primera respuesta, ocuparia ocho columnas vacias
+    que son de la nota.
+    """
+    if any(r.get("ia") for r in rows):
+        return ocultas
+    return frozenset(ocultas) | {"ia"}
+
+
 def render(rows, tabla=False, por_proyecto=False):
     """Listado estatico (para --list y terminales sin TTY)."""
     width = (os.get_terminal_size().columns if sys.stdout.isatty() else 110)
     multi = multi_account(rows)
     print()
     if tabla:
-        print("  " + table_head(width - 2, multi))
+        # las mismas que en el panel (specs/005)
+        ocultas = ocultas_de_verdad(rows, columnas_ocultas())
+        print("  " + table_head(width - 2, multi, ocultas))
         for label, color, items in grupos(rows, por_proyecto):
             # la tabla por estado no lleva cabeceras de grupo: el estado es una columna.
-            # Por proyecto si, porque el proyecto no lo es.
-            if por_proyecto:
+            # Por proyecto si, porque el proyecto no lo es; y sin la columna de estado.
+            if por_proyecto or "estado" in ocultas:
                 print("  " + cabecera_grupo(label, color, items, True, width - 2))
             for r in items:
-                print("  " + table_line(r, width - 2, multi, por_proyecto))
+                print("  " + table_line(r, width - 2, multi, por_proyecto,
+                                        ocultas=ocultas))
         print()
         return
     for label, color, items in grupos(rows, por_proyecto):
@@ -2724,6 +3230,8 @@ def _read_key(timeout=None):
             # apaga: congelaria la salida entre lecturas), y Ctrl-Y, que en macOS es
             # VDSUSP: con ISIG encendido, una señal de suspension.
             return "proyectos"
+        if ch == "\x05":            # Ctrl-E: elegir las columnas de la tabla (specs/005)
+            return "columnas"
         if ch == "\x7f":
             return "back"
         return ch
@@ -2869,6 +3377,10 @@ HELP_EN = [
         ("",           "twice as many fit on screen; branch and model drop"),
         ("",           "off on a narrow window"),
         ("ccl --table", "start that way (ccl --list --table also works)"),
+        ("Ctrl-E",     "choose which columns to show; it is remembered"),
+        ("",           "ai: the model Haiku recommends for what the session does,"),
+        ("",           "↑ a better one, ↓ a cheaper one · CCL_IA=0 turns it off"),
+        ("",           "set it yourself: \"a_mano\" in ~/.claude/ccl-ia.json"),
     ]),
     ("by project", [
         ("Ctrl-G",     "group by project instead of by state, and back"),
@@ -2962,6 +3474,10 @@ HELP_ES = [
         ("",           "caben el doble; la rama y el modelo desaparecen"),
         ("",           "si la ventana es estrecha"),
         ("ccl --table", "arrancar así (también vale ccl --list --table)"),
+        ("Ctrl-E",     "elegir qué columnas se ven; se recuerda"),
+        ("",           "ia: el modelo que recomienda Haiku para lo que hace la sesión,"),
+        ("",           "↑ uno mejor, ↓ uno más barato · CCL_IA=0 lo apaga"),
+        ("",           "para fijarlo tú: \"a_mano\" en ~/.claude/ccl-ia.json"),
     ]),
     ("por proyecto", [
         ("Ctrl-G",     "agrupar por proyecto en vez de por estado, y volver"),
@@ -3062,6 +3578,61 @@ def render_help(cols, term_rows, pagina=0, paginas=None):
     return "".join(buf)
 
 
+def render_columnas(claves, ocultas, cursor, cols):
+    """
+    El selector de `Ctrl-E`: una linea por columna, marcada si se ve. La primera va en la
+    fila 3 de la terminal; `elegir_columnas` cuenta con eso para los clics.
+    """
+    buf = ["\033[H\033[2J", " " + CYAN(BOLD("ccl")) + DIM(t("columnas_titulo")) + "\r\n",
+           "\r\n"]
+    for i, k in enumerate(claves):
+        marca = DIM("[ ]") if k in ocultas else GREEN("[x]")
+        linea = clip(marca + " " + pad(etiqueta_columna(k), 10)
+                     + DIM(t("columna_" + k)), cols - 4)
+        if i == cursor:
+            buf.append(CYAN("▌") + con_fondo(" " + linea, cols - 2) + "\r\n")
+        else:
+            buf.append("  " + linea + "\r\n")
+    buf.append("\r\n " + clip(DIM(t("columnas_teclas")), cols - 2) + "\r\n")
+    buf.append(" " + clip(DIM(t("columnas_nota")), cols - 2) + "\r\n")
+    return "".join(buf)
+
+
+def elegir_columnas(ocultas, multi):
+    """
+    El selector de `Ctrl-E` (specs/005). Devuelve las ocultas al salir. Cada cambio se
+    guarda en el momento: salga como salga, no se pierde nada.
+    """
+    claves = [k for k in COLUMNAS_OCULTABLES if multi or k != "account"]
+    ocultas, cursor = set(ocultas), 0
+    ancho, pintar = None, True
+    while True:
+        # con timeout, para repintar si cambia el ancho de la ventana mientras esta abierto
+        cols = os.get_terminal_size().columns
+        if pintar or cols != ancho:
+            sys.stdout.write(render_columnas(claves, ocultas, cursor, cols))
+            sys.stdout.flush()
+            ancho, pintar = cols, False
+        k = read_key(timeout=0.5)
+        if k is None or k == "desconocida" or k.startswith(("mouse-", "soltar:")):
+            continue
+        pintar = True
+        if k in ("esc", "q", "columnas"):
+            return frozenset(ocultas)
+        if k in ("up", "wheelup"):
+            cursor = (cursor - 1) % len(claves)
+        elif k in ("down", "wheeldn"):
+            cursor = (cursor + 1) % len(claves)
+        elif k in (" ", "enter") or k.startswith("click:"):
+            if k.startswith("click:"):
+                i = int(k.split(":")[1]) - 3
+                if not 0 <= i < len(claves):
+                    continue
+                cursor = i
+            ocultas ^= {claves[cursor]}
+            guardar_columnas_ocultas(ocultas)
+
+
 def build_display(rows, width=100, por_proyecto=False, en_proyecto=False):
     """
     Lista plana de (rol, texto, fila). Roles:
@@ -3085,7 +3656,8 @@ def build_display(rows, width=100, por_proyecto=False, en_proyecto=False):
     return lines
 
 
-def build_table_display(rows, width=100, por_proyecto=False, en_proyecto=False):
+def build_table_display(rows, width=100, por_proyecto=False, en_proyecto=False,
+                        ocultas=()):
     """
     Lo mismo que `build_display`, en tabla: cabecera de columnas y una linea por sesion.
 
@@ -3098,26 +3670,28 @@ def build_table_display(rows, width=100, por_proyecto=False, en_proyecto=False):
     # se comia la ultima columna y la cabecera, que NO se recorta, se salia una posicion.
     ancho = max(40, width - 4)
     multi = multi_account(rows)
-    lines = [("head", table_head(ancho, multi), None)]
+    ocultas = ocultas_de_verdad(rows, ocultas)
+    lines = [("head", table_head(ancho, multi, ocultas), None)]
     for label, color, items in grupos(rows, por_proyecto):
         # Por estado, la tabla no lleva cabeceras de grupo: el estado es una columna. Por
-        # proyecto si, porque el proyecto no lo es.
-        if por_proyecto:
+        # proyecto si, porque el proyecto no lo es. Y si escondiste la columna de estado,
+        # tambien: sin ellas la tabla dejaria de decir quien te espera.
+        if por_proyecto or "estado" in ocultas:
             lines.append(("head", cabecera_grupo(label, color, items, True, ancho), None))
         for r in items:
-            lines.append(("main", table_line(r, ancho, multi, por_proyecto, en_proyecto),
-                          r))
+            lines.append(("main", table_line(r, ancho, multi, por_proyecto, en_proyecto,
+                                             ocultas), r))
     return lines
 
 
-def vista(rows, width, tabla, por_proyecto=False, en_proyecto=False):
+def vista(rows, width, tabla, por_proyecto=False, en_proyecto=False, ocultas=()):
     """
     El constructor de lineas que toca. Disposicion (`tabla`, Ctrl-T) y agrupacion
     (`por_proyecto`, Ctrl-G) son independientes: las cuatro combinaciones existen.
     `en_proyecto` es la pestaña de un proyecto: agrupado por estado, `repo` como `donde`.
     """
     if tabla:
-        return build_table_display(rows, width, por_proyecto, en_proyecto)
+        return build_table_display(rows, width, por_proyecto, en_proyecto, ocultas)
     return build_display(rows, width, por_proyecto, en_proyecto)
 
 
@@ -3128,7 +3702,12 @@ def interactive(feed, tabla=False, por_proyecto=False):
     """
     cols0 = os.get_terminal_size().columns if sys.stdout.isatty() else 100
     rows, stamp = feed.snapshot()
-    lines = vista(rows, cols0, tabla, por_proyecto)  # query vacia al arrancar
+    ocultas = columnas_ocultas()   # las columnas de la tabla que escondiste (Ctrl-E)
+    lines = vista(rows, cols0, tabla, por_proyecto, ocultas=ocultas)  # query vacia al arrancar
+    # El modelo que recomienda la IA (specs/005): solo el panel pregunta, en un hilo, y al
+    # terminar fuerza un refresco, que es lo que lo pinta.
+    ia = Recomendador(al_terminar=feed.force)
+    ia.pedir(rows)
     pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
     sel_id = clave_de(lines[pickable[0]][2]) if pickable else None
     typed, top, flash, query = "", 0, "", ""
@@ -3191,7 +3770,9 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # Dentro de la pestaña de un proyecto, por estado: ahi lo que distingue una
                 # sesion de otra es si trabaja o te espera, no de que proyecto es.
                 lines = vista(shown, now_cols, tabla, por_proyecto and pestaña is None,
-                              por_proyecto and pestaña is not None)
+                              por_proyecto and pestaña is not None, ocultas)
+                if not modo_recent:
+                    ia.pedir(fresh)
                 pickable = [i for i, (role, _, _) in enumerate(lines) if role == "main"]
                 if pickable and not any(clave_de(lines[i][2]) == sel_id for i in pickable):
                     sel_id = clave_de(lines[pickable[0]][2])  # el filtro dejo fuera al cursor
@@ -3358,6 +3939,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
                             + CYAN("^N") + DIM(t("barra_nota"))
                             + CYAN("^P") + DIM(t("barra_pausa"))
                             + CYAN("^T") + DIM(t("barra_tabla"))
+                            + ((CYAN("^E") + DIM(t("barra_columnas"))) if tabla else "")
                             + CYAN("^G") + DIM(t("barra_proyectos"))
                             + CYAN("^O") + DIM(t("barra_volver" if modo_recent
                                                  else "barra_recuperables"))
@@ -3541,6 +4123,12 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # Ctrl-T: la misma lista en columnas. El cursor sigue a la sesion (su
                 # clave), asi que cambiar de vista no lo mueve.
                 tabla, requery = not tabla, True
+            elif k == "columnas":
+                # Ctrl-E (specs/005): esconder y mostrar columnas. Son de la tabla, asi que
+                # desde la lista se pasa a ella: lo que se elige tiene que verse al volver.
+                tabla = True
+                ocultas = elegir_columnas(ocultas, multi_account(rows))
+                requery = True
             elif k == "proyectos":
                 # Ctrl-G: agrupar por proyecto o por estado. Independiente de Ctrl-T, y por
                 # lo mismo que alli el cursor no se mueve: sigue a la sesion, no a la fila.
@@ -3824,6 +4412,7 @@ def fila_de_disco(sid, cfg, estado, cwd=None, nombre=None):
     """
     notas_sesion, notas_repo, pausadas, spaces = estado
     info = read_transcript(sid, cfg)
+    titulo = sin_control(info.get("title"))
     cwd = cwd or info.get("cwd")
     if not cwd:
         return None
@@ -3846,7 +4435,8 @@ def fila_de_disco(sid, cfg, estado, cwd=None, nombre=None):
         "effort": info.get("effort"),
         "ctx": info.get("ctx"),
         "ctx_ventana": ventana_de(info.get("ctx_model"), cfg),
-        "title": sin_control(info.get("title")),
+        "ia": recomendacion(leer_ia(), sid, titulo or (sin_control(nombre) if nombre else None)),
+        "title": titulo,
         "prompt": sin_control(info.get("prompt")),
         "note": "",
         "paused": sid in pausadas,

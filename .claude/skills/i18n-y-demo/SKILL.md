@@ -83,8 +83,8 @@ El mismo script escribe la otra imagen del README: `python3 make_demo.py --table
   estado que interesa (nota escrita, sesion pausada, vista de tabla) sin meter fotogramas
   intermedios.
 
-Y va a 128 columnas, no a las 96 del demo animado: por debajo de 110 desaparece la columna de la
-rama y por debajo de 124 la del modelo, que son justo las que la imagen quiere enseñar.
+Y va a 140 columnas, no a las 96 del demo animado: por debajo de 132 desaparece la columna de la
+IA, de 124 la del modelo y de 110 la de la rama, que son justo las que la imagen quiere enseñar.
 
 Los dos SVG los vigila el CI comparando **solo el texto** (el resto del archivo cambia en cada
 grabacion por las posiciones en coma flotante), y avisa sin fallar: el demo es documentacion.

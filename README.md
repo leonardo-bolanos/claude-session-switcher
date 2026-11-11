@@ -18,7 +18,8 @@ what each was doing, and `Enter` takes you to its window.
 ![ccl in action](demo.svg)
 
 Every row shows the branch, model, `effort` level, how full its context is and the last prompt you
-typed, so you can tell sessions apart without opening them. The number on the left is stable: type
+typed, so you can tell sessions apart without opening them. The table adds the model Haiku thinks
+each one should be using. The number on the left is stable: type
 it and you jump.
 
 ```bash
@@ -121,6 +122,7 @@ ccl --version    # print the version
 | `Ctrl-N` | Write **your own note** on this session (`←` `→` `Home` `End` move the cursor) |
 | `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
+| `Ctrl-E` | Choose which **columns** the table shows (it's remembered) |
 | `Ctrl-G` | Group **by project** instead of by state |
 | `←` `→` | In the project view, switch **tabs**: All, then one per project |
 | `Shift-←` `Shift-→` | Move the current tab — or **drag** it with the mouse |
@@ -411,8 +413,14 @@ leftover entry can't pause anyone by mistake.
 Everything the panel does keeps working in the table: the cursor stays on the same session when
 you toggle, clicking picks the row you clicked, and filtering keeps the column header.
 
-Narrow windows drop the columns you can live without (model first, then branch, then context)
-instead of squeezing every column down to unreadable; whatever's left over goes to the note.
+Narrow windows drop the columns you can live without (the AI's pick first, then model, then
+branch, then context) instead of squeezing every column down to unreadable; whatever's left over
+goes to the note. `Ctrl-E` lets you **hide the columns you don't look at** — state, repo, branch,
+model, ai, context, last seen — and their room goes to the rest. It's remembered, and
+`ccl --list --table` follows it too. Hide the state column and the table brings back the group
+headers, so it still tells you who's waiting; and the `ai` column only takes room once some
+session has something to put in it.
+
 `ccl --list --table` prints the same thing without the panel, and with no colours, so it pipes.
 
 </details>
@@ -437,6 +445,34 @@ give.
 A compaction re-injects your files after it, sometimes hundreds of KB, so the last reply can sit
 beyond the 64 KB `ccl` normally reads. Only then does it look further back (up to 2 MB), and only
 once per change to the transcript, not on every refresh.
+
+</details>
+
+<details>
+<summary><b>Which model each session should use</b>, according to Haiku</summary>
+
+The table has an `ai` column with the model family Haiku recommends for each session, judged by
+what it actually does: its name, its title, and the tools and programs it has used lately (edits,
+database queries, `ssh` and `git` read as code work; messages and lookups as coordination).
+`haiku` for reading and formatting, `sonnet` for coordination, analysis and contained changes,
+`opus` for agentic coding, reviews, debugging and security, `fable` for hours-long autonomous
+work. It's dim when it matches the model the session is using; otherwise it carries an
+arrow: `↓sonnet` means a cheaper one would do, `↑opus` that it needs a better one.
+
+- **It only asks when the topic changes.** The panel runs `claude -p --model haiku` in the
+  background when a session appears or Claude Code retitles it: every pending session in one
+  call, and at most one call every 30 s. A call takes about 5 s and costs a fraction of a cent.
+- **It leaves no trace**: no transcript (so it never shows up in `--recent`), and none of your
+  hooks, settings or MCP servers are loaded.
+- **It's cached** in `~/.claude/ccl-ia.json`, so restarting the panel doesn't ask again.
+  `ccl --list` and the global shortcut only read that cache; they never call anything.
+- **You can set it yourself.** Add `"a_mano": "sonnet"` (or `haiku`, `opus`, `fable`) to that
+  session's entry in `~/.claude/ccl-ia.json` — find it by its `titulo` — or create
+  `"<sessionId>": {"a_mano": "sonnet"}`. It overrides Haiku whatever the topic, that session is
+  no longer asked about, and it never expires. Delete the key to hand it back to Haiku.
+- What Haiku gets is each session's name, title and last prompt (clipped), and how many times
+  it used each tool and program — names only, never their arguments or output. `CCL_IA=0` turns
+  it off.
 
 </details>
 

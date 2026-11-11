@@ -140,6 +140,11 @@ ccl.NOTES_FILE = _notas
 # La foto de `--save` tambien: sin desviarla, `--saved` y `--restore` leerian la del usuario
 # y los tests dependerian de que sesiones tenga abiertas quien los corre.
 ccl.SNAPSHOT_FILE = os.environ.get("CCL_TEST_SNAPSHOT") or _notas + ".foto"
+# La cache del modelo recomendado (specs/005) tambien, y sin llamadas a Haiku: un test no
+# gasta ni depende de la red. Las filas de aqui no traen `ai-title`, asi que no pedirian
+# nada, pero eso es un detalle que puede cambiar.
+ccl.IA_FILE = _notas + ".ia"
+os.environ.setdefault("CCL_IA", "0")
 # El panel se arranca con `python -c`, asi que no hay linea de comandos que parsear:
 # los tests de banderas (--table) la pasan por aqui.
 sys.argv = ["ccl"] + os.environ.get("CCL_TEST_ARGS", "").split()
@@ -1153,6 +1158,19 @@ class TestVistaDeTabla(unittest.TestCase):
             p.enviar(b"\033[B")              # si murió, esto lanza OSError
             self.assertEqual(p.cursor(), "beta")
             self.assertNotIn("filtro:", p.barra(), "quedó basura que arrancó un filtro")
+
+    def test_ctrl_e_desde_la_lista_esconde_una_columna_y_lo_recuerda(self):
+        """specs/005: el selector se abre en la tabla, y lo escondido queda guardado."""
+        archivo = os.path.join(_NOTAS_TMP, "notas-columnas.json")
+        with con_panel(notas=archivo) as p:
+            p.enviar(b"\x05")
+            self.assertIn("columnas de la tabla", p.ultima())
+            p.enviar(b"\033[B", b" ", b"\033")    # abajo hasta repo, esconderla, volver
+            cabecera = next(l for l in p.ultima().split("\n") if "sesión" in l)
+            self.assertIn("estado", cabecera, "al volver tiene que estar en la tabla")
+            self.assertNotIn("repo", cabecera)
+        with open(archivo) as fh:
+            self.assertEqual(json.load(fh)["columnas_ocultas"], ["repo"])
 
     def test_ctrl_t_vuelve_a_la_vista_de_dos_lineas(self):
         with con_panel() as p:

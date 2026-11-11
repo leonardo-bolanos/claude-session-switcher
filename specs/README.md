@@ -35,3 +35,4 @@ construido y sus trampas viven en `CLAUDE.md` y en los skills de `.claude/skills
 | 002 | [Orden de las pestañas a mano](002-orden-de-pestañas.md) | implementada (1.5.0) |
 | 003 | [Sesiones aparcadas en un job de fondo](003-sesiones-aparcadas.md) | implementada (1.5.1) |
 | 004 | [Cuánto contexto lleva cada sesión](004-contexto-por-sesion.md) | implementada (sin publicar) |
+| 005 | [El modelo que recomienda la IA, y columnas a la carta](005-modelo-recomendado-y-columnas.md) | implementada (sin publicar) |

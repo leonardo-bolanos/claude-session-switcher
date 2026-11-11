@@ -1051,6 +1051,563 @@ class TestContexto(unittest.TestCase):
         self.assertEqual(ccl.marca_contexto(fila), ccl.GREEN("33%"))
 
 
+# ─────────────────── el modelo que recomienda la IA (specs/005) ───────────────────
+
+
+def fila_ia(sid, titulo="Refactor del panel", **extra):
+    f = {"sessionId": sid, "title": titulo, "prompt": "sigue", "repo": "r",
+         "model": "opus-5-5", "effort": "high"}
+    f.update(extra)
+    return f
+
+
+def salida_haiku(*sesiones, **extra):
+    """Lo que imprime `claude -p --output-format json` con `--json-schema`."""
+    datos = {"type": "result", "is_error": False,
+             "structured_output": {"sesiones": [
+                 {"id": i, "modelo": m, "porque": p} for i, m, p in sesiones]}}
+    datos.update(extra)
+    return json.dumps(datos)
+
+
+class _ConIA(unittest.TestCase):
+    """Cache en un temporal, `claude` falso y `subprocess.run` grabado: nada sale de aqui."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.orig = (ccl.IA_FILE, ccl.claude_bin, ccl.subprocess.run,
+                     os.environ.get("CCL_IA"), ccl.HOME)
+        ccl.IA_FILE = os.path.join(self.dir, "ccl-ia.json")
+        ccl.HOME = self.dir   # la actividad de cada sesion sale de sus transcripts
+        ccl._CACHE_IA.update(firma=None, datos={})
+        ccl.claude_bin = lambda: "/no/existe/claude"
+        os.environ.pop("CCL_IA", None)
+        self.llamadas, self.stdout = [], salida_haiku()
+
+        def falso(orden, **kw):
+            self.llamadas.append((orden, kw))
+            if isinstance(self.stdout, Exception):
+                raise self.stdout
+            return ccl.subprocess.CompletedProcess(orden, 0, self.stdout, "")
+        ccl.subprocess.run = falso
+
+    def tearDown(self):
+        (ccl.IA_FILE, ccl.claude_bin, ccl.subprocess.run, entorno, ccl.HOME) = self.orig
+        if entorno is None:
+            os.environ.pop("CCL_IA", None)
+        else:
+            os.environ["CCL_IA"] = entorno
+        ccl._CACHE_IA.update(firma=None, datos={})
+
+    def _cache(self, **entradas):
+        """Entradas de la version actual, salvo que traigan la suya."""
+        for e in entradas.values():
+            if isinstance(e, dict):
+                e.setdefault("v", ccl.IA_VERSION)
+        with open(ccl.IA_FILE, "w") as fh:
+            json.dump(entradas, fh)
+
+    def _transcript(self, sid, entradas):
+        carpeta = os.path.join(self.dir, ".claude", "projects", "p")
+        os.makedirs(carpeta, exist_ok=True)
+        with open(os.path.join(carpeta, f"{sid}.jsonl"), "w") as fh:
+            fh.write("\n".join(json.dumps(o) for o in entradas))
+
+
+class TestRecomendacionIA(_ConIA):
+
+    # CA1
+    def test_se_pide_con_titulo_y_no_sin_el_ni_para_las_muertas(self):
+        rec = ccl.Recomendador()
+        lote = rec.pendientes([fila_ia("a"), fila_ia("b", titulo=None),
+                               fila_ia("c", recoverable=True)])
+        self.assertEqual([f["sessionId"] for f in lote], ["a"])
+
+    def test_sin_ai_title_el_tema_es_el_nombre(self):
+        """
+        Una sesion con nombre desde el principio nunca recibe `ai-title`: pidiendo solo con
+        titulo, a esas no se les preguntaba jamas y la columna se quedaba vacia.
+        """
+        con_nombre = fila_ia("a", titulo=None, name="Éxito por opción")
+        rec = ccl.Recomendador()
+        self.assertEqual(len(rec.pendientes([con_nombre])), 1)
+        self.stdout = salida_haiku(("s1", "opus", "código"))
+        rec.pedir([con_nombre])
+        rec.hilo.join(5)
+        cache = ccl.leer_ia()
+        self.assertEqual(cache["a"]["titulo"], "Éxito por opción")
+        self.assertEqual(ccl.recomendacion(cache, "a", ccl.tema_de(con_nombre)), "opus")
+        self.assertEqual(rec.pendientes([con_nombre]), [], "y no se vuelve a pedir")
+        # renombrarla es cambiar de tema
+        self.assertEqual(len(rec.pendientes([dict(con_nombre, name="Otro nombre")])), 1)
+
+    def test_la_fila_viva_usa_el_nombre_si_no_hay_ai_title(self):
+        self._cache(viva={"titulo": "Cobranza voz", "modelo": "sonnet"})
+        self._transcript("viva", [{"type": "assistant", "message": {"model": "claude-opus-5-5"}}])
+        sesiones = [{"sessionId": "viva", "name": "Cobranza voz", "cwd": "/x", "pid": 1}]
+        self.assertEqual(ccl.build(sesiones, {}, {}, {"viva": 1})[0]["ia"], "sonnet")
+
+    def test_mismo_tema_no_se_repite_y_tema_nuevo_si(self):
+        self._cache(a={"titulo": "Refactor del panel", "modelo": "opus", "porque": "x",
+                       "cuando": time.time()},
+                    b={"titulo": "Tema viejo", "modelo": "haiku", "porque": "x",
+                       "cuando": time.time()})
+        lote = ccl.Recomendador().pendientes([fila_ia("a"), fila_ia("b")])
+        self.assertEqual([f["sessionId"] for f in lote], ["b"])
+
+    def test_dos_procesos_de_la_misma_conversacion_son_una_pregunta(self):
+        lote = ccl.Recomendador().pendientes([fila_ia("a"), fila_ia("a")])
+        self.assertEqual(len(lote), 1)
+
+    def test_el_lote_tiene_tope(self):
+        filas = [fila_ia(f"s{i}") for i in range(ccl.IA_LOTE + 5)]
+        self.assertEqual(len(ccl.Recomendador().pendientes(filas)), ccl.IA_LOTE)
+
+    def test_un_fallo_no_se_reintenta_hasta_pasado_el_plazo(self):
+        ahora = [1000.0]
+        rec = ccl.Recomendador(reloj=lambda: ahora[0])
+        self.stdout = "no es json"
+        self.assertTrue(rec.pedir([fila_ia("a")]))
+        rec.hilo.join(5)
+        ahora[0] += ccl.IA_PAUSA + 1
+        self.assertFalse(rec.pedir([fila_ia("a")]), "fallo reciente: no se repite")
+        # con otro tema ya es otra pregunta
+        self.assertEqual(len(rec.pendientes([fila_ia("a", titulo="Otro")])), 1)
+        ahora[0] += ccl.IA_REINTENTO
+        self.assertEqual(len(rec.pendientes([fila_ia("a")])), 1)
+
+    def test_una_llamada_a_la_vez_y_una_pausa_entre_dos(self):
+        ahora = [1000.0]
+        rec = ccl.Recomendador(reloj=lambda: ahora[0])
+        rec.en_vuelo = True
+        self.assertFalse(rec.pedir([fila_ia("a")]))
+        rec.en_vuelo = False
+        self.stdout = salida_haiku(("s1", "opus", "código"))
+        self.assertTrue(rec.pedir([fila_ia("a")]))
+        rec.hilo.join(5)
+        ahora[0] += ccl.IA_PAUSA - 1
+        self.assertFalse(rec.pedir([fila_ia("b")]), "dentro de la pausa")
+        ahora[0] += 2
+        self.assertTrue(rec.pedir([fila_ia("b")]))
+        rec.hilo.join(5)
+
+    def test_al_terminar_guarda_y_avisa_al_panel(self):
+        avisos = []
+        rec = ccl.Recomendador(al_terminar=lambda: avisos.append(1))
+        self.stdout = salida_haiku(("s1", "sonnet", "cambios acotados"))
+        rec.pedir([fila_ia("a")])
+        rec.hilo.join(5)
+        self.assertEqual(avisos, [1])
+        guardada = ccl.leer_ia()["a"]
+        self.assertEqual((guardada["titulo"], guardada["modelo"], guardada["porque"]),
+                         ("Refactor del panel", "sonnet", "cambios acotados"))
+        self.assertFalse(rec.en_vuelo)
+
+    # CA2
+    def test_la_respuesta_se_valida(self):
+        lote = [fila_ia("a"), fila_ia("b"), fila_ia("c")]
+        self.stdout = salida_haiku(("s1", "opus", "ok"), ("s2", "gpt-9", "inventado"),
+                                   ("s9", "haiku", "id que no se envio"))
+        self.assertEqual(set(ccl.pedir_recomendaciones(lote)), {"a"})
+        for malo in ("no es json", "[]", salida_haiku(("s1", "opus", "x"), is_error=True),
+                     json.dumps({"structured_output": {"sesiones": "no"}}),
+                     OSError("sin binario")):
+            self.stdout = malo
+            self.assertEqual(ccl.pedir_recomendaciones(lote), {}, repr(malo)[:40])
+
+    def test_el_porque_se_sanea_y_se_recorta(self):
+        self.stdout = salida_haiku(("s1", "opus", "a\033[2Ab" + "x" * 200))
+        porque = ccl.pedir_recomendaciones([fila_ia("a")])["a"][2]
+        self.assertNotIn("\033", porque)
+        self.assertLessEqual(len(porque), 80)
+
+    # CA3
+    def test_la_llamada_no_deja_rastro_ni_hereda_el_terminal(self):
+        ccl.pedir_recomendaciones([fila_ia("a", prompt="p" * 1000)])
+        orden, kw = self.llamadas[0]
+        self.assertEqual(orden[:2], ["/no/existe/claude", "-p"])
+        for bandera in ("--no-session-persistence", "--restricted", "--strict-mcp-config",
+                        "--disable-slash-commands"):
+            self.assertIn(bandera, orden)
+        self.assertEqual(orden[orden.index("--model") + 1], "haiku")
+        self.assertEqual(orden[orden.index("--tools") + 1], "")
+        self.assertIs(kw["stdin"], ccl.subprocess.DEVNULL)
+        self.assertEqual(kw["cwd"], tempfile.gettempdir())
+        # el ultimo prompt va recortado: lo que importa es el tema
+        self.assertNotIn("p" * 301, orden[-1])
+
+    def test_a_haiku_le_llegan_el_nombre_y_lo_que_hace_la_sesion(self):
+        self._transcript("a", [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ssh prod uptime"}}]}}])
+        ccl.pedir_recomendaciones([fila_ia("a", name="new Web php 8.5")])
+        enviado = json.loads(self.llamadas[0][0][-1].split("\n", 1)[1])[0]
+        self.assertEqual(enviado["nombre"], "new Web php 8.5")
+        self.assertEqual(enviado["herramientas_recientes"], {"Bash": 1})
+        self.assertEqual(enviado["comandos_recientes"], {"ssh": 1})
+        self.assertNotIn("sessionId", json.dumps(enviado))
+
+    def test_sin_claude_o_con_CCL_IA_0_no_se_llama(self):
+        os.environ["CCL_IA"] = "0"
+        self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]))
+        os.environ.pop("CCL_IA")
+        ccl.claude_bin = lambda: None
+        self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]))
+        self.assertEqual(self.llamadas, [])
+
+    # R6, R7
+    def test_solo_vale_para_su_tema(self):
+        cache = {"a": {"titulo": "Uno", "modelo": "opus"}}
+        self.assertEqual(ccl.recomendacion(cache, "a", "Uno"), "opus")
+        self.assertIsNone(ccl.recomendacion(cache, "a", "Dos"))
+        self.assertIsNone(ccl.recomendacion(cache, "a", None))
+        self.assertIsNone(ccl.recomendacion(cache, "b", "Uno"))
+
+    def test_un_archivo_roto_vale_lo_mismo_que_uno_vacio(self):
+        with open(ccl.IA_FILE, "w") as fh:
+            fh.write("{roto")
+        self.assertEqual(ccl.leer_ia(), {})
+        self._cache(a={"titulo": "T", "modelo": "gpt"}, b="texto",
+                    c={"titulo": "T", "modelo": "haiku"})
+        self.assertEqual(set(ccl.leer_ia()), {"c"})
+
+    def test_al_guardar_se_purga_lo_caducado(self):
+        ahora = time.time()
+        self._cache(vieja={"titulo": "T", "modelo": "opus", "porque": "",
+                           "cuando": ahora - ccl.IA_CADUCA - 1},
+                    reciente={"titulo": "T", "modelo": "opus", "porque": "",
+                              "cuando": ahora - 60})
+        ccl.guardar_ia({"nueva": ("T", "haiku", "corto")}, ahora)
+        self.assertEqual(set(ccl.leer_ia()), {"reciente", "nueva"})
+
+    def test_la_fila_de_disco_la_lleva_si_el_tema_coincide(self):
+        self._transcript("sid", [{"type": "ai-title", "aiTitle": "Uno", "cwd": "/x"}])
+        estado = ({}, {}, set(), {})
+        self._cache(sid={"titulo": "Uno", "modelo": "sonnet"})
+        self.assertEqual(ccl.fila_de_disco("sid", None, estado)["ia"], "sonnet")
+        self._cache(sid={"titulo": "Otro tema", "modelo": "sonnet", "x": 1})
+        self.assertIsNone(ccl.fila_de_disco("sid", None, estado)["ia"])
+
+    def test_lo_pedido_con_otro_criterio_se_vuelve_a_pedir(self):
+        """Al cambiar lo que se le manda a Haiku sube `IA_VERSION`: lo viejo deja de valer."""
+        self._cache(a={"titulo": "Refactor del panel", "modelo": "opus", "v": 1},
+                    b={"titulo": "Refactor del panel", "modelo": "opus"})
+        self.assertEqual(set(ccl.leer_ia()), {"b"})
+        ccl.guardar_ia({"c": ("T", "haiku", "")})
+        with open(ccl.IA_FILE) as fh:
+            self.assertEqual(json.load(fh)["c"]["v"], ccl.IA_VERSION)
+
+    # R17: a_mano
+    def test_a_mano_manda_sobre_haiku_y_sobre_el_tema(self):
+        self._cache(a={"titulo": "Otro tema", "modelo": "opus", "a_mano": "Sonnet-5-5"},
+                    b={"a_mano": "haiku"},
+                    c={"titulo": "T", "modelo": "opus", "a_mano": "sonet"})   # errata
+        cache = ccl.leer_ia()
+        self.assertEqual(ccl.recomendacion(cache, "a", "Refactor del panel"), "sonnet")
+        self.assertEqual(ccl.recomendacion(cache, "b", None), "haiku", "sin tema tambien")
+        self.assertEqual(ccl.recomendacion(cache, "c", "T"), "opus", "la errata no cuenta")
+
+    def test_a_mano_no_se_le_pregunta_a_haiku(self):
+        self._cache(a={"a_mano": "opus"})
+        lote = ccl.Recomendador().pendientes([fila_ia("a"), fila_ia("b")])
+        self.assertEqual([f["sessionId"] for f in lote], ["b"])
+
+    def test_a_mano_sobrevive_a_guardar_a_caducar_y_a_otra_version(self):
+        ahora = time.time()
+        self._cache(a={"titulo": "T", "modelo": "opus", "porque": "", "cuando": ahora - 60,
+                       "a_mano": "sonnet"},
+                    vieja={"a_mano": "haiku", "cuando": ahora - ccl.IA_CADUCA - 1},
+                    errata={"a_mano": "sonet"},
+                    otra_version={"titulo": "T", "modelo": "opus", "v": 1, "a_mano": "fable"})
+        ccl.guardar_ia({"a": ("T2", "haiku", "corto")}, ahora)
+        with open(ccl.IA_FILE) as fh:
+            crudo = json.load(fh)
+        self.assertEqual(crudo["a"]["a_mano"], "sonnet", "Haiku escribe encima sin pisarlo")
+        self.assertEqual(crudo["a"]["modelo"], "haiku")
+        self.assertEqual(crudo["vieja"]["a_mano"], "haiku", "lo tuyo no caduca")
+        self.assertEqual(crudo["errata"]["a_mano"], "sonet", "ni se borra una errata")
+        cache = ccl.leer_ia()
+        self.assertEqual(ccl.recomendacion(cache, "otra_version", "T"), "fable")
+        self.assertNotIn("modelo", cache["otra_version"], "lo de Haiku si caduca")
+
+    def test_un_archivo_roto_a_mano_no_se_reescribe_ni_se_vuelve_a_pagar(self):
+        """Una coma de mas al editar `a_mano` no puede costar todas las demas."""
+        roto = '{"a": {"a_mano": "opus",}}'
+        with open(ccl.IA_FILE, "w") as fh:
+            fh.write(roto)
+        self.assertFalse(ccl.guardar_ia({"b": ("T", "haiku", "")}))
+        with open(ccl.IA_FILE) as fh:
+            self.assertEqual(fh.read(), roto)
+        avisos, ahora = [], [1000.0]
+        rec = ccl.Recomendador(al_terminar=lambda: avisos.append(1), reloj=lambda: ahora[0])
+        self.stdout = salida_haiku(("s1", "opus", "x"))
+        rec.pedir([fila_ia("a")])
+        rec.hilo.join(5)
+        self.assertEqual(avisos, [], "no hay nada nuevo que pintar")
+        ahora[0] += ccl.IA_PAUSA + 1
+        self.assertEqual(rec.pendientes([fila_ia("a")]), [], "cuenta como fallo: no cada 30 s")
+
+    def test_los_fallos_caducados_se_purgan(self):
+        ahora = [1000.0]
+        rec = ccl.Recomendador(reloj=lambda: ahora[0])
+        rec.fallos = {("vieja", "T"): 1000.0 - ccl.IA_REINTENTO - 1, ("reciente", "T"): 990.0}
+        self.stdout = "no es json"
+        rec.pedir([fila_ia("a")])
+        rec.hilo.join(5)
+        self.assertEqual(set(rec.fallos), {("reciente", "T"), ("a", "Refactor del panel")})
+
+    def test_la_fila_lleva_lo_fijado_a_mano(self):
+        self._transcript("sid", [{"type": "ai-title", "aiTitle": "Uno", "cwd": "/x"}])
+        self._cache(sid={"titulo": "Uno", "modelo": "opus", "a_mano": "haiku"})
+        self.assertEqual(ccl.fila_de_disco("sid", None, ({}, {}, set(), {}))["ia"], "haiku")
+
+    # lo que hace la sesion, no solo como se llama
+    def test_la_actividad_cuenta_herramientas_y_programas_del_hilo_principal(self):
+        def uso(*bloques, **extra):
+            o = {"type": "assistant", "message": {"content": list(bloques)}}
+            o.update(extra)
+            return o
+        bash = lambda orden: {"type": "tool_use", "name": "Bash", "input": {"command": orden}}
+        self._transcript("sid", [
+            uso(bash("cd /x && ssh h 'ls; df' | grep y"), {"type": "tool_use", "name": "Edit"}),
+            uso(bash("git status"), {"type": "text", "text": "hola"}),
+            uso({"type": "tool_use", "name": "mcp__claude_ai_Zoho_Sprints__ZohoSprints_GetItems"},
+                {"type": "tool_use", "name": "mcp__mysql-readonly__mysql_query"}),
+            uso({"type": "tool_use", "name": "Edit"}, isSidechain=True),   # de un subagente
+            {"type": "user", "message": {"content": "Edit tool_use"}},
+        ])
+        herramientas, comandos = ccl.actividad_reciente("sid")
+        self.assertEqual(herramientas, {"Bash": 2, "Edit": 1, "mcp:Zoho_Sprints": 1,
+                                        "mcp:mysql-readonly": 1})
+        self.assertEqual(comandos, {"ssh": 1, "git": 1})
+        self.assertEqual(ccl.actividad_reciente("no-existe"), ({}, {}))
+
+    def test_la_actividad_es_de_lo_ultimo_y_con_tope(self):
+        viejo = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Viejo"}]}}
+        nuevos = [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": f"H{i}"}]}} for i in range(12)]
+        self._transcript("sid", [viejo, {"type": "attachment", "x": "a" * 5000}] + nuevos)
+        herramientas, _ = ccl.actividad_reciente("sid", ventana=3000)
+        self.assertNotIn("Viejo", herramientas, "fuera de la ventana")
+        self.assertEqual(len(herramientas), 8, "solo las mas usadas")
+
+    def test_los_programas_de_una_orden_de_shell(self):
+        casos = {
+            "cd /x && ssh h 'ls; df' | grep y": ["ssh"],          # tuberia: filtro
+            'python3 -c "\nimport os\n"': ["python3"],            # entrecomillado
+            "python3 - <<'EOF'\nimport os\ndef f(): pass\nEOF": ["python3"],   # heredoc
+            "A=1 B=2 git status; rm x && pytest -q": ["git", "rm", "pytest"],
+            "for f in *; do sed -i '' s/a/b/ $f; done": ["sed"],
+            "if true; then sudo git pull; fi": ["git"],
+            "echo hola; cd /tmp": [],
+            # lo de despues del heredoc SI cuenta, y un `<<` que no abre heredoc no corta
+            "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && git push": ["git", "git"],
+            "sed -i 's/a<<b/c/' f && pytest": ["sed", "pytest"],
+            "x=$((1<<3)); make": ["make"],
+        }
+        for orden, esperado in casos.items():
+            self.assertEqual(ccl._comandos_de(orden), esperado, orden)
+
+
+class TestMarcaIA(unittest.TestCase):
+    """CA4: la celda dice si sobra o falta modelo."""
+
+    def marca(self, rec, actual):
+        return ccl.ANSI_RE.sub("", ccl.marca_ia({"ia": rec, "model": actual}))
+
+    def test_igual_sin_flecha(self):
+        self.assertEqual(self.marca("opus", "opus-5-5"), "opus")
+        self.assertEqual(ccl.marca_ia({"ia": "opus", "model": "opus-5-5"}), ccl.DIM("opus"))
+
+    def test_flecha_hacia_abajo_si_basta_uno_mas_barato_y_arriba_si_hace_falta_mejor(self):
+        self.assertEqual(self.marca("sonnet", "opus-5-5"), "↓sonnet")
+        self.assertEqual(self.marca("haiku", "sonnet-5"), "↓haiku")
+        self.assertEqual(self.marca("opus", "haiku-4-5"), "↑opus")
+        self.assertEqual(self.marca("fable", "opus-5-5"), "↑fable")
+
+    def test_sin_flecha_si_el_actual_no_es_de_claude(self):
+        self.assertEqual(self.marca("sonnet", "glm-5.3-flash"), "sonnet")
+        self.assertEqual(self.marca("sonnet", None), "sonnet")
+
+    def test_nada_sin_recomendacion(self):
+        self.assertEqual(ccl.marca_ia({"ia": None, "model": "opus-5-5"}), "")
+
+
+class TestColumnasOcultas(unittest.TestCase):
+    """CA5 y CA6: esconder columnas con Ctrl-E, y lo que eso le hace al reparto."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = ccl.NOTES_FILE
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+
+    def tearDown(self):
+        ccl.NOTES_FILE = self.orig
+        self.tmp.cleanup()
+
+    @staticmethod
+    def claves(ancho, multi=False, ocultas=()):
+        return [k for k, _ in ccl._tabla_columnas(ancho, multi, ocultas)]
+
+    def test_sin_nada_oculto_los_umbrales_de_siempre_y_la_ia_desde_128(self):
+        for clave, umbral in (("ctx", 86), ("branch", 106), ("model", 120), ("ia", 128)):
+            self.assertNotIn(clave, self.claves(umbral - 1), clave)
+            self.assertIn(clave, self.claves(umbral), clave)
+            self.assertNotIn(clave, self.claves(umbral + 10, True), f"{clave} multi")
+            self.assertIn(clave, self.claves(umbral + 11, True), f"{clave} multi")
+
+    def test_la_ia_va_detras_del_modelo(self):
+        cols = self.claves(200)
+        self.assertEqual(cols.index("ia"), cols.index("model") + 1)
+
+    def test_esconder_una_le_hace_sitio_a_las_demas(self):
+        self.assertNotIn("model", self.claves(110))
+        self.assertIn("model", self.claves(110, ocultas={"branch"}))
+        self.assertNotIn("ctx", self.claves(80))
+        self.assertIn("ctx", self.claves(80, ocultas={"estado"}))
+        self.assertNotIn("repo", self.claves(200, ocultas={"repo"}))
+
+    def test_la_que_no_cabe_corta_a_las_de_detras(self):
+        # a 119 la ia cabria por ancho, pero cae antes que el modelo, que no cabe
+        self.assertNotIn("model", self.claves(119))
+        self.assertNotIn("ia", self.claves(119))
+
+    def test_ninguna_fila_desborda_con_ninguna_combinacion(self):
+        import itertools
+        r = row(1, "a", "idle", ts=iso(days=40))
+        r.update(ctx=412000, ctx_ventana=1000000, ia="sonnet", model="opus-5-5",
+                 branch="feature/larguisima", account="trabajo", prompt="x" * 300,
+                 note="nota")
+        for n in range(len(ccl.COLUMNAS_OCULTABLES) + 1):
+            for ocultas in itertools.combinations(ccl.COLUMNAS_OCULTABLES, n):
+                for ancho in (40, 80, 97, 119, 128, 160):
+                    for multi in (False, True):
+                        etiqueta = f"{ocultas} ancho={ancho} multi={multi}"
+                        self.assertLessEqual(
+                            ccl.vis(ccl.table_line(r, ancho, multi, ocultas=ocultas)),
+                            ancho, etiqueta)
+                        self.assertLessEqual(
+                            ccl.vis(ccl.table_head(ancho, multi, ocultas)), ancho, etiqueta)
+
+    def test_la_ia_va_bajo_su_cabecera(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r.update(ia="sonnet", model="opus-5-5")
+        cabecera = ccl.ANSI_RE.sub("", ccl.table_head(160, False))
+        fila = ccl.ANSI_RE.sub("", ccl.table_line(r, 160, False))
+        self.assertEqual(fila.index("↓sonnet"), cabecera.index(ccl.t("col_ia")))
+
+    def test_la_columna_de_la_ia_no_ocupa_sitio_si_esta_vacia(self):
+        """Con `CCL_IA=0`, sin `claude` o antes de la primera respuesta, es de la nota."""
+        filas = [row(1, "a", "idle", ts=iso(minutes=1)), row(2, "b", "busy", ts=iso(minutes=2))]
+        cabecera = lambda: ccl.ANSI_RE.sub("", ccl.build_table_display(filas, 200)[0][1])
+        self.assertNotIn(" " + ccl.t("col_ia") + " ", cabecera())
+        filas[1]["ia"] = "sonnet"
+        self.assertIn(" " + ccl.t("col_ia") + " ", cabecera())
+
+    def test_sin_la_columna_de_estado_vuelven_las_cabeceras_de_grupo(self):
+        filas = [row(1, "a", "busy", ts=iso(minutes=1)), row(2, "b", "idle", ts=iso(minutes=2))]
+        roles = lambda ocultas: [r for r, _, _ in
+                                 ccl.build_table_display(filas, 120, ocultas=ocultas)]
+        self.assertEqual(roles(()).count("head"), 1, "por estado, solo la de columnas")
+        self.assertEqual(roles({"estado"}).count("head"), 3, "columnas y dos grupos")
+        texto = " ".join(ccl.ANSI_RE.sub("", t) for _, t, _ in
+                         ccl.build_table_display(filas, 120, ocultas={"estado"}))
+        self.assertIn(ccl.t("grupo_busy"), texto)
+
+    def test_escribir_json_no_deja_temporales_y_deja_0600(self):
+        ruta = os.path.join(self.tmp.name, "x.json")
+        ccl.escribir_json(ruta, {"a": 1})
+        ccl.escribir_json(ruta, {"a": 2})
+        self.assertEqual(os.listdir(self.tmp.name), ["x.json"])
+        self.assertEqual(stat.S_IMODE(os.stat(ruta).st_mode), 0o600)
+        with open(ruta) as fh:
+            self.assertEqual(json.load(fh), {"a": 2})
+
+    def test_se_guardan_y_sobreviven_a_una_nota_y_a_una_pausa(self):
+        ccl.guardar_columnas_ocultas({"repo", "branch"})
+        ccl.save_note("sid-1", "hola")
+        ccl.toggle_paused("sid-2")
+        self.assertEqual(ccl.columnas_ocultas(), {"repo", "branch"})
+        self.assertEqual(ccl.load_notes()[0], {"sid-1": "hola"})
+
+    def test_nombres_desconocidos_se_descartan(self):
+        with open(ccl.NOTES_FILE, "w") as fh:
+            json.dump({"columnas_ocultas": ["repo", "num", "name", 3, "inventada"]}, fh)
+        self.assertEqual(ccl.columnas_ocultas(), {"repo"})
+        with open(ccl.NOTES_FILE, "w") as fh:
+            json.dump({"columnas_ocultas": "repo"}, fh)
+        self.assertEqual(ccl.columnas_ocultas(), frozenset())
+
+    def test_list_table_respeta_las_ocultas(self):
+        # un nombre que quepa en su columna: uno largo saldria recortado y no se veria
+        # entero tanto si se esconde como si no
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r["repo"] = "zqx"
+        for ocultas, se_ve in (((), True), ({"repo"}, False)):
+            ccl.guardar_columnas_ocultas(ocultas)
+            salida = io.StringIO()
+            with contextlib.redirect_stdout(salida):
+                ccl.render([r], tabla=True)
+            self.assertEqual("zqx" in salida.getvalue(), se_ve, ocultas)
+
+
+class TestSelectorDeColumnas(unittest.TestCase):
+    """R10-R11: el selector de Ctrl-E, con las teclas simuladas."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = (ccl.NOTES_FILE, ccl.read_key, ccl.os.get_terminal_size)
+        ccl.NOTES_FILE = os.path.join(self.tmp.name, "notas.json")
+        ccl.os.get_terminal_size = lambda *a: os.terminal_size((100, 30))
+
+    def tearDown(self):
+        (ccl.NOTES_FILE, ccl.read_key, ccl.os.get_terminal_size) = self.orig
+        self.tmp.cleanup()
+
+    def elegir(self, teclas, ocultas=(), multi=False):
+        cola = list(teclas)
+        ccl.read_key = lambda timeout=None: cola.pop(0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return ccl.elegir_columnas(ocultas, multi)
+
+    def test_espacio_esconde_y_vuelve_a_mostrar_y_se_guarda_al_momento(self):
+        # sin varias cuentas la lista es estado, repo, rama…: abajo una vez es repo
+        self.assertEqual(self.elegir(["down", " ", "esc"]), {"repo"})
+        self.assertEqual(ccl.columnas_ocultas(), {"repo"})
+        self.assertEqual(self.elegir(["down", "enter", "columnas"], {"repo"}), frozenset())
+        self.assertEqual(ccl.columnas_ocultas(), frozenset())
+
+    def test_un_clic_marca_la_fila_pulsada(self):
+        # la primera columna va en la fila 3 de la terminal: la 5 es la tercera, la rama
+        self.assertEqual(self.elegir(["click:5:4", "click:1:1", "mouse-x",
+                                      "desconocida", "q"]), {"branch"})
+
+    def test_repinta_si_cambia_el_ancho_y_no_si_no_pasa_nada(self):
+        anchos = iter([100, 100, 120, 120])
+        ccl.os.get_terminal_size = lambda *a: os.terminal_size((next(anchos), 30))
+        cola = [None, None, "esc"]
+        ccl.read_key = lambda timeout=None: cola.pop(0)
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida):
+            ccl.elegir_columnas((), False)
+        self.assertEqual(salida.getvalue().count("\033[2J"), 2)
+
+    def test_la_cuenta_solo_sale_con_varias(self):
+        pintado = ccl.ANSI_RE.sub("", ccl.render_columnas(
+            [k for k in ccl.COLUMNAS_OCULTABLES if k != "account"], set(), 0, 100))
+        self.assertNotIn(ccl.t("col_cuenta"), pintado)
+        self.assertEqual(self.elegir(["down", " ", "esc"], multi=True), {"account"})
+
+    def test_cada_columna_en_su_fila_con_su_marca(self):
+        claves = list(ccl.COLUMNAS_OCULTABLES)
+        lineas = ccl.ANSI_RE.sub("", ccl.render_columnas(claves, {"ia"}, 1, 100)) \
+            .replace("\033[H\033[2J", "").split("\r\n")
+        for i, k in enumerate(claves):
+            self.assertIn(ccl.etiqueta_columna(k), lineas[2 + i])
+            self.assertIn("[ ]" if k == "ia" else "[x]", lineas[2 + i])
+        self.assertIn("▌", lineas[3], "el cursor esta en la segunda")
+
+
 # ────────────────────────── formato ──────────────────────────
 
 
@@ -3960,7 +4517,7 @@ class TestLecturaDeTeclas(unittest.TestCase):
         """
         for data, esperado in ((b"\x0e", "note"), (b"\x10", "pause"),
                                (b"\x14", "table"), (b"\x0f", "recuperables"),
-                               (b"\x07", "proyectos")):
+                               (b"\x07", "proyectos"), (b"\x05", "columnas")):
             self.assertEqual(self._pulsar(data), esperado, repr(data))
 
     def test_ctrl_r_y_digitos(self):

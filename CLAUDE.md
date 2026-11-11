@@ -95,7 +95,8 @@ cuenta con dos claves — la primera nota borraba todas las pausadas. Por eso `l
 devuelve las tres y **nadie mas llama a `escribir_json(NOTES_FILE, …)`**. Lo mismo vale para la
 deteccion del formato viejo: mira todas las claves, porque un archivo que solo tuviera `pausadas`
 se leia como el formato plano y la lista acababa de nota de un repo. El orden de proyectos
-(specs/002) va aparte: `guardar_estado` lo conserva cuando no se lo pasan.
+(specs/002) y las columnas ocultas (specs/005) van aparte: `guardar_estado` los conserva cuando no
+se los pasan.
 
 **La tabla se construye con `width - 4`.** El panel pinta cada fila como `clip(texto, cols - 4)`
 —margen mas barra del cursor— asi que construyendola al ancho entero el recorte se comia la
@@ -104,8 +105,10 @@ una cabecera de exactamente `cols` columnas se salia una posicion y envolvia.
 
 **`table_head` y `table_line` salen de `_tabla_columnas()`.** Es lo unico que las mantiene
 alineadas; dos listas de anchos en paralelo divergen y la tabla deja de ser tabla. Las columnas
-prescindibles (rama, modelo) **desaparecen** bajo su umbral en vez de encogerse: recortar todas
-las columnas a la vez las vuelve ilegibles antes de que sobre sitio.
+prescindibles (ia, modelo, rama, ctx) **desaparecen** cuando no caben en vez de encogerse:
+recortar todas las columnas a la vez las vuelve ilegibles antes de que sobre sitio. Cada una
+entra si a la nota le queda su minimo, asi que las que escondes con `Ctrl-E` les dejan sitio a
+las demas; sin nada escondido salen los umbrales de siempre, y hay un test que los fija.
 
 **La antiguedad ocupa 13, no 9.** Una sesion vieja pone `03-aug 17:52`, doce columnas; con nueve
 se recortaba a `03-aug 1`, que no dice ni el dia entero ni la hora.
@@ -412,6 +415,7 @@ manda a `--recent`, que lee de disco y no depende del registro.
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status`; de los jobs de fondo, `id` | El panel se queda sin datos |
 | Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, `message.usage`, y los tipos `ai-title` / `last-prompt` / `compact_boundary` (`postTokens`) | Esos campos desaparecen; el resto sigue |
 | `<cfg>/cache/model-catalog/*.json` | `id` y `runtime.max_input_tokens` de cada modelo, estén donde estén dentro del JSON | El contexto sale en tokens, en gris, en vez de en % (specs/004) |
+| `claude -p --model haiku` (specs/005) | `structured_output` con `--json-schema`, y que `--no-session-persistence`, `--restricted` y `--strict-mcp-config` sigan sin dejar transcript ni cargar hooks o MCP | La columna `ia` se queda vacia; el resto del panel, igual |
 | `<cfg>/sessions/<pid>.json` | `parkedJobId` y `sessionId`, solo de los pids vivos que faltan en el registro y solo si hay algún job | Un job deja de llevar a la pestaña que aparcó, y esa conversación vuelve a salir como muerta (specs/003) |
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y
@@ -425,6 +429,33 @@ conversación a un job de fondo con otro `sessionId` y deja la pestaña con el p
 Solo `sessions/<pid>.json` los une (`parkedJobId` ↔ `id`); sin eso el job no lleva a ninguna
 pestaña y la conversación de la pestaña se reanudaba por duplicado. Todo lo que decida «¿está
 viva?» usa `ids_vivos()`, no los `sessionId` a secas.
+
+## La columna `ia`: el modelo que recomienda Haiku (specs/005)
+
+**Solo el panel llama, y solo cuando cambia el tema** (`tema_de`: el `ai-title`, o el nombre si
+no hay). `--list` y `-w` leen la cache (`ccl-ia.json`) y nunca esperan a nadie. **Una sesion con
+nombre desde el principio NUNCA recibe `ai-title`**: pidiendo solo con titulo, la columna se
+quedaba vacia para siempre en justo las sesiones que el usuario cuida. La llamada va en un hilo del `Recomendador`, una a la vez
+y con todas las pendientes; al terminar fuerza un refresco del `Feed`, que es lo que la pinta.
+
+**Sin `--no-session-persistence`, cada llamada deja un transcript** y aparece en `--recent` como
+sesion muerta. Y **`--bare` no sirve**: exige `ANTHROPIC_API_KEY` y no lee el OAuth de la
+suscripcion; lo que quita los hooks y settings del usuario es `--restricted`.
+
+**Manda lo que la sesion HACE, no como se llama.** Con solo el titulo y el ultimo prompt, una
+sesion de desarrollo salio `haiku` porque lo ultimo que se le dijo fue «comit push», y la mas cara
+del dia salio `sonnet` porque Claude Code la habia retitulado con su ultima subtarea. Por eso
+`actividad_reciente` le manda las herramientas y los programas de Bash de los ultimos 8 MB: mucho
+trabajo de codigo va entero por Bash (`sed`, `ssh`, `svn`) y casi no toca `Edit`. Si cambias lo
+que se manda, sube `IA_VERSION`: si no, la cache sigue sirviendo lo pedido con el criterio viejo.
+
+**`a_mano` es del usuario, no de la cache.** Se escribe a mano en `ccl-ia.json` y manda sobre
+Haiku. Por eso `guardar_ia` parte del archivo crudo y no de `leer_ia`: lo conserva al escribir
+encima, no lo purga por edad y no lo pierde al subir `IA_VERSION`, ni siquiera con una errata. Y
+si el JSON no se entiende (una coma de mas al editarlo) **no escribe**: reescribirlo desde cero
+borraba todos los `a_mano`. Lo mismo pedia `escribir_json`, que ahora va a un temporal y hace
+`os.replace`: escribiendo encima, otro lector veia el archivo a medias y lo daba por vacio.
+
 ## Cuándo cargar cada skill
 
 Las trampas condicionales viven en `.claude/skills/`. Se cargan solas cuando su `description`

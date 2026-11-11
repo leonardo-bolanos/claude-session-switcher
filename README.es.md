@@ -18,7 +18,8 @@ repo— llega un punto en que no sabes cuál está en qué pestaña, ni cuál de
 ![ccl en acción](demo.svg)
 
 Cada sesión muestra su rama, modelo, nivel de `effort`, cuánto lleva de contexto y el último prompt
-que le diste, para que reconozcas en cuál estabas sin tener que entrar. El número de la izquierda
+que le diste, para que reconozcas en cuál estabas sin tener que entrar. La tabla añade el modelo
+que, según Haiku, le conviene a cada una. El número de la izquierda
 es fijo: lo tecleas y saltas.
 
 ```bash
@@ -121,6 +122,7 @@ ccl --version    # imprime la versión
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión (`←` `→` `Inicio` `Fin` mueven el cursor) |
 | `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
+| `Ctrl-E` | Elegir qué **columnas** enseña la tabla (se recuerda) |
 | `Ctrl-G` | Agrupar **por proyecto** en vez de por estado |
 | `←` `→` | En la vista por proyecto, cambiar de **pestaña**: Todas y una por proyecto |
 | `Shift-←` `Shift-→` | Mover la pestaña actual — o **arrastrarla** con el ratón |
@@ -413,10 +415,16 @@ Todo lo que hace el panel sigue funcionando en la tabla: el cursor se queda en l
 cambiar de vista, el clic elige la fila que pulsaste, y al filtrar se mantiene la cabecera de
 columnas.
 
-En una ventana estrecha desaparecen las columnas prescindibles (primero el modelo, luego la rama
-y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo que sobra se lo
-queda la nota. `ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede
-pasar por una tubería.
+En una ventana estrecha desaparecen las columnas prescindibles (primero la de la IA, luego el
+modelo, la rama y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo
+que sobra se lo queda la nota. Con `Ctrl-E` **escondes las columnas que no miras** —estado, repo,
+rama, modelo, ia, contexto, visto— y su sitio pasa a las demás. Se recuerda, y
+`ccl --list --table` también lo respeta. Si escondes la de estado, la tabla recupera las
+cabeceras de grupo, para que siga diciendo quién te espera; y la de la `ia` solo ocupa sitio
+cuando alguna sesión tiene algo que poner en ella.
+
+`ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede pasar por una
+tubería.
 
 </details>
 
@@ -439,6 +447,35 @@ en gris el número de tokens (`ctx 412K`): sin el tamaño de la ventana no hay p
 Una compactación vuelve a inyectar tus archivos detrás, a veces cientos de KB, así que la última
 respuesta puede quedar más allá de los 64 KB que lee `ccl` normalmente. Solo entonces busca más
 atrás (hasta 2 MB), y solo una vez por cada cambio del transcript, no en cada refresco.
+
+</details>
+
+<details>
+<summary><b>Qué modelo le conviene a cada sesión</b>, según Haiku</summary>
+
+La tabla lleva una columna `ia` con la familia de modelo que Haiku recomienda para cada sesión,
+juzgando por lo que hace de verdad: su nombre, su título y las herramientas y programas que ha
+usado últimamente (ediciones, consultas a bases de datos, `ssh` y `git` cuentan como trabajo de
+código; mensajes y consultas, como coordinación). `haiku` para leer y formatear, `sonnet` para
+coordinación, análisis y cambios acotados, `opus` para código agéntico, revisiones, depuración y
+seguridad, `fable` para trabajo autónomo de horas. Sale tenue si coincide con el modelo que usa la sesión; si no, lleva una
+flecha: `↓sonnet` quiere decir que bastaría uno más barato, `↑opus` que le hace falta uno mejor.
+
+- **Solo pregunta cuando cambia el tema.** El panel lanza `claude -p --model haiku` en segundo
+  plano cuando aparece una sesión o Claude Code le cambia el título: todas las pendientes en una
+  sola llamada, y como mucho una llamada cada 30 s. Tarda unos 5 s y cuesta una fracción de
+  céntimo.
+- **No deja rastro**: ni transcript (así que nunca sale en `--recent`), ni carga tus hooks,
+  settings o servidores MCP.
+- **Se guarda** en `~/.claude/ccl-ia.json`, así que reabrir el panel no vuelve a preguntar.
+  `ccl --list` y el atajo global solo leen eso; nunca llaman a nada.
+- **Puedes fijarlo tú.** Añade `"a_mano": "sonnet"` (o `haiku`, `opus`, `fable`) a la entrada de
+  esa sesión en `~/.claude/ccl-ia.json` —la encuentras por su `titulo`— o crea
+  `"<sessionId>": {"a_mano": "sonnet"}`. Manda sobre Haiku sea cual sea el tema, ya no se pregunta
+  por esa sesión, y no caduca. Borra la clave para devolvérsela a Haiku.
+- Lo que le llega a Haiku es el nombre, el título y el último prompt de cada sesión (recortado),
+  y cuántas veces usó cada herramienta y cada programa: solo los nombres, nunca sus argumentos
+  ni su salida. `CCL_IA=0` lo apaga.
 
 </details>
 
