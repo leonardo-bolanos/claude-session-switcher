@@ -63,7 +63,11 @@ NOTES_FILE = os.path.join(HOME, ".claude", "ccl-notes.json")
 NOTE_MAX = 200            # la linea se recorta al pintar; esto es solo para no guardar
                           # un pegote de miles de caracteres en el JSON
 TAIL_BYTES = 65536
-REFRESH_SECONDS = 4      # refresco normal, mientras interactuas
+# Hasta donde se busca cuanto contexto lleva una sesion cuando la cola no lo dice. Tras una
+# autocompactacion Claude Code reinyecta los archivos como `attachment`: medido, la ultima
+# respuesta llego a quedar 480 KB por detras del final (specs/004).
+CONTEXTO_BYTES = 2 * 1024 * 1024
+REFRESH_SECONDS = 4     # refresco normal, mientras interactuas
 REFRESH_IDLE = 20        # si no tocas nada, se relaja a esto
 IDLE_AFTER = 120         # segundos sin teclear para considerarte inactivo
 
@@ -223,6 +227,8 @@ TEXTOS = {
         "col_cuenta": "account",
         "col_rama": "branch",
         "col_modelo": "model",
+        "col_ctx": "ctx",
+        "ctx": "ctx",
         "col_visto": "seen",
         "col_nota": "note / last prompt",
         # antiguedad
@@ -338,6 +344,8 @@ TEXTOS = {
         "col_cuenta": "cuenta",
         "col_rama": "rama",
         "col_modelo": "modelo",
+        "col_ctx": "ctx",
+        "ctx": "ctx",
         "col_visto": "visto",
         "col_nota": "nota / último prompt",
         "ahora": "ahora",
@@ -1260,11 +1268,13 @@ def read_transcript(session_id, cfg_dir=None):
         with open(hits[0], "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
+            firma = (size, os.fstat(fh.fileno()).st_mtime_ns)
             fh.seek(max(0, size - TAIL_BYTES))
             chunk = fh.read().decode("utf-8", "ignore")
     except Exception:
         return info
 
+    entradas = []
     for line in chunk.split("\n"):
         line = line.strip()
         if not line:
@@ -1275,6 +1285,7 @@ def read_transcript(session_id, cfg_dir=None):
             continue  # linea truncada por el corte de la cola
         if not isinstance(o, dict):
             continue
+        entradas.append(o)
         # `cwd` hace falta para reanudar una sesion muerta: `claude --resume` tiene que
         # lanzarse en su directorio o abre la conversacion en el sitio equivocado.
         for key, field in (("timestamp", "ts"), ("gitBranch", "branch"),
@@ -1288,7 +1299,165 @@ def read_transcript(session_id, cfg_dir=None):
         msg = o.get("message")
         if isinstance(msg, dict) and msg.get("model"):
             info["model"] = msg["model"]
+
+    # Cuanto contexto lleva (specs/004). Si la cola no lo dice, se busca mas atras.
+    hallado = _contexto_desde_el_final(reversed(entradas))
+    if hallado is None and size > TAIL_BYTES:
+        hallado = _contexto_lejano(hits[0], firma)
+    if hallado is not None:
+        info["ctx"] = hallado[0]
+        info["ctx_model"] = hallado[1] or info.get("model")
     return info
+
+
+def _contexto_de_entrada(o):
+    """
+    `(tokens, modelo)` si la entrada del transcript dice cuanto contexto lleva la sesion, o
+    None si no dice nada.
+
+    Lo dicen dos: la respuesta del hilo principal, con la suma de entrada que usa la
+    statusline (sin `output_tokens`), y la marca de compactacion, con lo que queda despues.
+    Una marca sin `postTokens` (versiones viejas) devuelve tokens None: lo de antes ya no vale,
+    pero no se sabe cuanto queda.
+    """
+    if o.get("type") == "system" and o.get("subtype") == "compact_boundary":
+        md = o.get("compactMetadata")
+        post = md.get("postTokens") if isinstance(md, dict) else None
+        valido = isinstance(post, int) and not isinstance(post, bool) and post > 0
+        return (post if valido else None), None
+    # Los subagentes no ocupan el contexto de la sesion, y `<synthetic>` son los mensajes de
+    # error de la API, que traen el uso a cero.
+    if o.get("type") != "assistant" or o.get("isSidechain"):
+        return None
+    msg = o.get("message")
+    if not isinstance(msg, dict) or msg.get("model") == "<synthetic>":
+        return None
+    uso = msg.get("usage")
+    if not isinstance(uso, dict):
+        return None
+    total = sum(v for v in (uso.get("input_tokens"), uso.get("cache_creation_input_tokens"),
+                            uso.get("cache_read_input_tokens"))
+                if isinstance(v, int) and not isinstance(v, bool))
+    if total <= 0:
+        return None
+    modelo = msg.get("model")
+    return total, (modelo if isinstance(modelo, str) else None)
+
+
+def _contexto_desde_el_final(al_reves):
+    """
+    `(tokens, modelo)` de la entrada MAS RECIENTE que lo diga, o None si ninguna lo dice.
+    `al_reves` va de la mas nueva a la mas vieja, y se consume solo hasta decidir.
+
+    Si la que decide es una compactacion, el modelo se toma de la ultima respuesta anterior:
+    hace falta para saber el tamaño de la ventana.
+    """
+    decide = None
+    for o in al_reves:
+        if not isinstance(o, dict):
+            continue
+        r = _contexto_de_entrada(o)
+        if r is None:
+            continue
+        if decide is None:
+            decide = r
+            if r[1]:
+                return r
+        elif r[1]:
+            return decide[0], r[1]
+    return decide
+
+
+_CACHE_CONTEXTO = {}
+
+
+def _contexto_lejano(ruta, firma):
+    """
+    Como `_contexto_desde_el_final`, pero sobre los ultimos `CONTEXTO_BYTES` del archivo.
+
+    Solo corre cuando la cola de `read_transcript` no trajo ni respuesta ni compactacion, y
+    se cachea por `(tamaño, mtime)`: una sesion compactada y parada no se vuelve a leer en
+    cada refresco. Solo se parsean las lineas que pueden decir algo.
+    """
+    guardado = _CACHE_CONTEXTO.get(ruta)
+    if guardado is not None and guardado[0] == firma:
+        return guardado[1]
+    try:
+        with open(ruta, "rb") as fh:
+            fh.seek(max(0, firma[0] - CONTEXTO_BYTES))
+            bloque = fh.read(CONTEXTO_BYTES)
+    except OSError:
+        return None
+
+    def candidatas():
+        for linea in reversed(bloque.split(b"\n")):
+            if b'"usage"' not in linea and b"compact_boundary" not in linea:
+                continue
+            try:
+                yield json.loads(linea)
+            except Exception:
+                continue   # la primera, cortada por el inicio del bloque
+
+    resultado = _contexto_desde_el_final(candidatas())
+    _CACHE_CONTEXTO[ruta] = (firma, resultado)
+    return resultado
+
+
+_CACHE_CATALOGO = {}
+
+
+def _catalogo_de_modelos(cfg):
+    """
+    `{id de modelo: max_input_tokens}` del catalogo que cachea Claude Code en
+    `<cfg>/cache/model-catalog/`, o {} si no hay.
+
+    Es un formato interno: se busca cualquier dict con `id` y `runtime.max_input_tokens`, en
+    vez de seguir una ruta fija dentro de cada archivo. Si dos dan valores distintos, gana el
+    mayor: con el menor, un % por encima de 100 no tendria arreglo. Se relee solo si cambia
+    algun archivo.
+    """
+    carpeta = os.path.join(cfg, "cache", "model-catalog")
+    try:
+        nombres = sorted(n for n in os.listdir(carpeta) if n.endswith(".json"))
+        firma = tuple((n, os.stat(os.path.join(carpeta, n)).st_mtime_ns) for n in nombres)
+    except OSError:
+        return {}
+    guardado = _CACHE_CATALOGO.get(cfg)
+    if guardado is not None and guardado[0] == firma:
+        return guardado[1]
+    ventanas = {}
+
+    def recorrer(x):
+        if isinstance(x, dict):
+            rt = x.get("runtime")
+            tope = rt.get("max_input_tokens") if isinstance(rt, dict) else None
+            if (isinstance(x.get("id"), str) and isinstance(tope, int)
+                    and not isinstance(tope, bool) and tope > 0):
+                ventanas[x["id"]] = max(tope, ventanas.get(x["id"], 0))
+            for v in x.values():
+                recorrer(v)
+        elif isinstance(x, list):
+            for v in x:
+                recorrer(v)
+
+    for n in nombres:
+        recorrer(leer_json(os.path.join(carpeta, n), {}))
+    _CACHE_CATALOGO[cfg] = (firma, ventanas)
+    return ventanas
+
+
+def ventana_de(modelo, cfg=None):
+    """Tokens que caben en el contexto de `modelo` segun el catalogo, o None."""
+    if not modelo:
+        return None
+    ventanas = _catalogo_de_modelos(cfg or os.path.join(HOME, ".claude"))
+    if modelo in ventanas:
+        return ventanas[modelo]
+    sin_fecha = re.sub(r"-\d{8}$", "", modelo)
+    for id_, tope in ventanas.items():
+        if re.sub(r"-\d{8}$", "", id_) == sin_fecha:
+            return tope
+    return None
 
 
 def leer_json(ruta, defecto):
@@ -1648,6 +1817,8 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             "branch": sin_control(info.get("branch")),
             "model": short_model(info.get("model")),
             "effort": info.get("effort"),
+            "ctx": info.get("ctx"),
+            "ctx_ventana": ventana_de(info.get("ctx_model"), s.get("_cfg")),
             "title": sin_control(info.get("title")),
             "prompt": sin_control(info.get("prompt")),
             "note": "",   # se rellena abajo, cuando la fila ya existe
@@ -2146,6 +2317,23 @@ def main_line(r, show_account=False, por_proyecto=False, en_proyecto=False):
         r, f"{num} {estado}{name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}")
 
 
+def marca_contexto(r):
+    """
+    Cuanto contexto lleva: `41%` coloreado, `412K` en gris si no se sabe la ventana, o ""
+    si no se sabe nada (specs/004).
+
+    Los umbrales son los de la statusline del usuario. Se redondea hacia abajo para que el
+    rojo salga justo al llegar al 80, no en el 79,5.
+    """
+    tokens, ventana = r.get("ctx"), r.get("ctx_ventana")
+    if not tokens:
+        return ""
+    if not ventana:
+        return GREY(f"{tokens / 1e6:.1f}M" if tokens >= 999_500 else f"{round(tokens / 1000)}K")
+    pct = tokens * 100 // ventana
+    return (RED if pct >= 80 else YELLOW if pct >= 50 else GREEN)(f"{pct}%")
+
+
 def detail_line(r, width=None):
     """Tu nota · rama · modelo · effort · ultimo prompt. Cada pieza con su color."""
     # La nota va PRIMERA y en su propio color: es lo unico de la linea que escribiste tu,
@@ -2153,10 +2341,12 @@ def detail_line(r, width=None):
     nota = NOTE("✎ " + r["note"]) if r.get("note") else ""
     # Y por delante de ella el aviso de duplicada: es un problema que resolver ya, y al
     # final de la linea se lo comeria el recorte igual que a la nota.
+    ctx = marca_contexto(r)
     meta = [x for x in (marca_duplicada(r), nota,
                         GREY(r["branch"]) if r["branch"] else "",
                         color_model(r["model"]),
-                        color_effort(r["effort"])) if x]
+                        color_effort(r["effort"]),
+                        DIM(t("ctx")) + " " + ctx if ctx else "") if x]
     out = DIM(" · ").join(meta)
     note = r["prompt"] or r["title"]
     if note:
@@ -2189,6 +2379,9 @@ def _tabla_columnas(width, multi):
         cols.append(("branch", 13))
     if width >= 120 + extra:
         cols.append(("model", 9))
+    # La ultima prescindible en caer, pero cae: a 80 la fila ya va justa y se perderia el ⚠.
+    if width >= 86 + extra:
+        cols.append(("ctx", 6))
     # 13, no 9: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas. Con
     # nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
     cols.append(("ts", 13))
@@ -2200,7 +2393,7 @@ def table_head(width=100, show_account=False):
     etiquetas = {"num": "#", "estado": t("col_estado"), "name": t("col_sesion"),
                  "account": t("col_cuenta"), "repo": t("col_repo"),
                  "branch": t("col_rama"), "model": t("col_modelo"),
-                 "ts": t("col_visto")}
+                 "ctx": t("col_ctx"), "ts": t("col_visto")}
     fijas = "".join(pad(clip(etiquetas[k], a - 1), a)
                     for k, a in _tabla_columnas(width, show_account))
     # el clip final vale para las dos: en una ventana muy estrecha lo que sobra es el
@@ -2222,6 +2415,7 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
         "repo": MAGENTA(donde(r) if por_proyecto or en_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),
         "model": color_model(r["model"]),
+        "ctx": marca_contexto(r),
         "ts": color_age(r["ts"]),
     }
     columnas = _tabla_columnas(width, show_account)
@@ -3650,6 +3844,8 @@ def fila_de_disco(sid, cfg, estado, cwd=None, nombre=None):
         "branch": sin_control(info.get("branch")),
         "model": short_model(info.get("model")),
         "effort": info.get("effort"),
+        "ctx": info.get("ctx"),
+        "ctx_ventana": ventana_de(info.get("ctx_model"), cfg),
         "title": sin_control(info.get("title")),
         "prompt": sin_control(info.get("prompt")),
         "note": "",

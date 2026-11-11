@@ -17,8 +17,9 @@ what each was doing, and `Enter` takes you to its window.
 
 ![ccl in action](demo.svg)
 
-Every row shows the branch, model, `effort` level and the last prompt you typed, so you can tell
-sessions apart without opening them. The number on the left is stable: type it and you jump.
+Every row shows the branch, model, `effort` level, how full its context is and the last prompt you
+typed, so you can tell sessions apart without opening them. The number on the left is stable: type
+it and you jump.
 
 ```bash
 ccl        # interactive panel
@@ -410,9 +411,32 @@ leftover entry can't pause anyone by mistake.
 Everything the panel does keeps working in the table: the cursor stays on the same session when
 you toggle, clicking picks the row you clicked, and filtering keeps the column header.
 
-Narrow windows drop the columns you can live without (branch first, then model) instead of
-squeezing every column down to unreadable; whatever's left over goes to the note. `ccl --list
---table` prints the same thing without the panel, and with no colours, so it pipes.
+Narrow windows drop the columns you can live without (model first, then branch, then context)
+instead of squeezing every column down to unreadable; whatever's left over goes to the note.
+`ccl --list --table` prints the same thing without the panel, and with no colours, so it pipes.
+
+</details>
+
+<details>
+<summary><b>Context usage</b>: how full each session is</summary>
+
+Every session shows how much of its context window it's using: `ctx 41%` on the detail line, and
+a `ctx` column in the table. Green below 50 %, yellow from 50 %, red from 80 %. It's the figure
+your status line shows inside each session, for all of them at once.
+
+- **The tokens** are those of the session's last reply, read from its transcript: input plus
+  cache, the same sum Claude Code uses. Right after a compaction it's what the compaction left,
+  not what there was before.
+- **The window size** comes from the model catalogue Claude Code caches in
+  `~/.claude/cache/model-catalog/`: 1M for the current models, 200K for Haiku 4.5.
+
+A model that isn't in that catalogue — a session running through another provider, say — shows
+its token count in grey instead (`ctx 412K`): without the window size there's no percentage to
+give.
+
+A compaction re-injects your files after it, sometimes hundreds of KB, so the last reply can sit
+beyond the 64 KB `ccl` normally reads. Only then does it look further back (up to 2 MB), and only
+once per change to the transcript, not on every refresh.
 
 </details>
 
@@ -544,8 +568,8 @@ turns it off — the `▌` bar stays either way, so the selection is never ambig
 2. **PID → iTerm window**: `ps -o tty=` gives each process's TTY, and one AppleScript call
    returns the iTerm2 window/tab pair for every TTY.
 3. **Per-session context**: only the **last 64 KB** of the transcript
-   (`~/.claude/projects/*/<sessionId>.jsonl`) is read, for last activity, branch, model, effort
-   and last prompt. This is essential: those files get past 100 MB and reading them whole would
+   (`~/.claude/projects/*/<sessionId>.jsonl`) is read, for last activity, branch, model, effort,
+   context usage and last prompt. This is essential: those files get past 100 MB and reading them whole would
    make the command unusable.
 4. **Refresh**: on a separate thread, every 4 s while you interact, relaxing to 20 s after two
    minutes without typing. Idle, the panel uses 0 % CPU.

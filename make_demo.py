@@ -93,24 +93,25 @@ GUION_TABLA = [
 
 # La tabla necesita mas ancho que el panel de dos lineas: es lo que enseña. A 128 salen
 # todas las columnas —por debajo de 110 desaparece la rama, y de 124 el modelo— y aun
-# quedan treinta columnas para la nota, que es la otra cosa que hay que ver.
+# quedan unas veinte columnas para la nota, que es la otra cosa que hay que ver.
 COLUMNAS_TABLA = 128
 
 # Sesiones de mentira, con la pinta de un dia normal de trabajo.
 SESIONES = [
-    # (numero, nombre, repo, rama, modelo, effort, prompt, minutos, estado)
+    # (numero, nombre, repo, rama, modelo, effort, prompt, minutos, estado, contexto)
+    # El contexto, en tokens, cubre los tres colores; la ventana la pone `fila`.
     (3,  "fix-login-redirect-loop",   "web-app",  "fix/login",  "opus-5",   "high",
-     "the redirect loops when the token has expired", 1,   "busy"),
+     "the redirect loops when the token has expired", 1,   "busy", 412000),
     (7,  "invoice-pdf-margins",       "billing",  "main",       "sonnet-5", None,
-     "the margins are off on A4", 4,   "busy"),
+     "the margins are off on A4", 4,   "busy", 96000),
     (1,  "web-app-checkout-rework",   "web-app",  "main",       "opus-5",   "xhigh",
-     "review the payment flow and tell me what's missing", 12,  "idle"),
+     "review the payment flow and tell me what's missing", 12,  "idle", 836000),
     (5,  "api-rate-limit-headers",    "api",      "develop",    "sonnet-5", None,
-     "add the rate limit headers", 47,  "idle"),
+     "add the rate limit headers", 47,  "idle", 230000),
     (2,  "migrate-jobs-to-queue",     "workers",  "main",       "opus-5",   "high",
-     "migrate the crons to the new queue", 190, "idle"),
+     "migrate the crons to the new queue", 190, "idle", 561000),
     (9,  "docs-api-reference",        "docs",     "main",       "haiku-4-5", None,
-     "generate the reference from the types", 1400, "idle"),
+     "generate the reference from the types", 1400, "idle", 61000),
 ]
 
 ARRANQUE = f'''
@@ -122,7 +123,7 @@ cargador.exec_module(ccl)
 
 ahora = datetime.datetime.now(datetime.timezone.utc)
 
-def fila(num, nombre, repo, rama, modelo, effort, prompt, minutos, estado):
+def fila(num, nombre, repo, rama, modelo, effort, prompt, minutos, estado, contexto):
     marca = (ahora - datetime.timedelta(minutes=minutos)).isoformat().replace("+00:00", "Z")
     return {{"num": num, "name": nombre, "account": "", "repo": repo, "cwd": "/x/" + repo,
             "kind": "interactive", "status": estado, "sessionId": "sid-%d" % num,
@@ -130,7 +131,9 @@ def fila(num, nombre, repo, rama, modelo, effort, prompt, minutos, estado):
             # un par ventana/pestaña de mentira: sin esto todas saldrian con el ⚠ de
             # "no esta en iTerm", que en un demo parece que la herramienta esta rota
             "ventana": ("iTerm2", "1", num), "ts": marca, "branch": rama, "model": modelo,
-            "effort": effort, "title": None, "prompt": prompt, "startedAt": num}}
+            "effort": effort, "title": None, "prompt": prompt, "startedAt": num,
+            # la del catalogo de Claude Code: 200K para Haiku 4.5, 1M para el resto
+            "ctx": contexto, "ctx_ventana": 200000 if modelo.startswith("haiku") else 1000000}}
 
 FIJAS = [fila(*s) for s in {SESIONES!r}]
 

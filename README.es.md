@@ -17,9 +17,9 @@ repo— llega un punto en que no sabes cuál está en qué pestaña, ni cuál de
 
 ![ccl en acción](demo.svg)
 
-Cada sesión muestra su rama, modelo, nivel de `effort` y el último prompt que le diste, para que
-reconozcas en cuál estabas sin tener que entrar. El número de la izquierda es fijo: lo tecleas y
-saltas.
+Cada sesión muestra su rama, modelo, nivel de `effort`, cuánto lleva de contexto y el último prompt
+que le diste, para que reconozcas en cuál estabas sin tener que entrar. El número de la izquierda
+es fijo: lo tecleas y saltas.
 
 ```bash
 ccl        # panel interactivo
@@ -413,10 +413,32 @@ Todo lo que hace el panel sigue funcionando en la tabla: el cursor se queda en l
 cambiar de vista, el clic elige la fila que pulsaste, y al filtrar se mantiene la cabecera de
 columnas.
 
-En una ventana estrecha desaparecen las columnas prescindibles (primero la rama, luego el modelo)
-en vez de recortarlas todas hasta hacerlas ilegibles; lo que sobra se lo queda la nota.
-`ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede pasar por una
-tubería.
+En una ventana estrecha desaparecen las columnas prescindibles (primero el modelo, luego la rama
+y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo que sobra se lo
+queda la nota. `ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede
+pasar por una tubería.
+
+</details>
+
+<details>
+<summary><b>Contexto usado</b>: cuánto lleva cada sesión</summary>
+
+Cada sesión muestra cuánto de su ventana de contexto lleva usado: `ctx 41%` en la línea de
+detalle y una columna `ctx` en la tabla. Verde por debajo del 50 %, amarillo desde el 50 % y rojo
+desde el 80 %. Es la cifra que tu statusline enseña dentro de cada sesión, pero de todas a la vez.
+
+- **Los tokens** son los de la última respuesta de la sesión, sacados de su transcript: entrada
+  más caché, la misma suma que usa Claude Code. Justo después de compactar es lo que dejó la
+  compactación, no lo que había antes.
+- **El tamaño de la ventana** sale del catálogo de modelos que Claude Code guarda en
+  `~/.claude/cache/model-catalog/`: 1M para los modelos actuales, 200K para Haiku 4.5.
+
+Un modelo que no está en ese catálogo —una sesión que va por otro proveedor, por ejemplo— enseña
+en gris el número de tokens (`ctx 412K`): sin el tamaño de la ventana no hay porcentaje que dar.
+
+Una compactación vuelve a inyectar tus archivos detrás, a veces cientos de KB, así que la última
+respuesta puede quedar más allá de los 64 KB que lee `ccl` normalmente. Solo entonces busca más
+atrás (hasta 2 MB), y solo una vez por cada cambio del transcript, no en cada refresco.
 
 </details>
 
@@ -550,7 +572,7 @@ La banda es un fondo de la paleta de 256, que se lee bien en un tema oscuro y ma
    el par ventana/pestaña de iTerm2 para cada TTY.
 3. **Contexto de cada sesión**: se leen **solo los últimos 64 KB** del transcript
    (`~/.claude/projects/*/<sessionId>.jsonl`) para sacar la última actividad, la rama, el modelo,
-   el effort y el último prompt. Es imprescindible: esos archivos llegan a superar los 100 MB y
+   el effort, el contexto usado y el último prompt. Es imprescindible: esos archivos llegan a superar los 100 MB y
    leerlos enteros haría el comando inusable.
 4. **Refresco**: en un hilo aparte, cada 4 s mientras interactúas, relajándose a 20 s tras dos
    minutos sin teclear. En reposo el panel consume 0 % de CPU.

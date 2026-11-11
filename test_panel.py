@@ -841,7 +841,9 @@ class TestSinPanel(unittest.TestCase):
         for nombre in NOMBRES:
             fila = next(l for l in lineas if nombre in l)
             self.assertIn("ESPERANDO", fila, "falta la columna de estado")
-            self.assertIn("prompt de " + nombre, fila, "el detalle deberia ir aqui")
+            # Solo el principio: sin TTY sale a 110 columnas y la de contexto (specs/004) le
+            # quita seis a la nota, asi que «prompt de alfa» llega cortado.
+            self.assertIn('"prompt de ', fila, "el detalle deberia ir aqui")
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

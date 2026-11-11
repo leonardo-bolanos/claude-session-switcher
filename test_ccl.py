@@ -807,6 +807,250 @@ class TestTranscript(unittest.TestCase):
         self.assertNotIn("branch", got, "no deberia haber leido tan atras")
 
 
+def respuesta(entrada, cache_nueva=0, cache_leida=0, model="claude-opus-5-5", **extra):
+    """Una respuesta del transcript con su `usage`, como la escribe Claude Code."""
+    o = {"type": "assistant",
+         "message": {"model": model,
+                     "usage": {"input_tokens": entrada,
+                               "cache_creation_input_tokens": cache_nueva,
+                               "cache_read_input_tokens": cache_leida,
+                               "output_tokens": 777}}}
+    o.update(extra)
+    return o
+
+
+def compactacion(post=None):
+    md = {"trigger": "auto", "preTokens": 400000}
+    if post is not None:
+        md["postTokens"] = post
+    return {"type": "system", "subtype": "compact_boundary", "compactMetadata": md}
+
+
+class TestContexto(unittest.TestCase):
+    """specs/004: cuanto contexto lleva cada sesion, y de que ventana."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._orig = ccl.HOME
+        ccl.HOME = self.dir  # nunca leer los transcripts ni el catalogo reales
+        self.cfg = os.path.join(self.dir, ".claude")
+        os.makedirs(os.path.join(self.cfg, "projects", "proj"))
+        ccl._CACHE_CONTEXTO.clear()
+        ccl._CACHE_CATALOGO.clear()
+
+    def tearDown(self):
+        ccl.HOME = self._orig
+        ccl._CACHE_CONTEXTO.clear()
+        ccl._CACHE_CATALOGO.clear()
+
+    def _write(self, sid, lineas, modo="w"):
+        p = os.path.join(self.cfg, "projects", "proj", f"{sid}.jsonl")
+        with open(p, modo) as fh:
+            if modo == "a":
+                fh.write("\n")
+            fh.write("\n".join(json.dumps(o) for o in lineas))
+        return p
+
+    def _catalogo(self, nombre, datos, cfg=None):
+        carpeta = os.path.join(cfg or self.cfg, "cache", "model-catalog")
+        os.makedirs(carpeta, exist_ok=True)
+        ruta = os.path.join(carpeta, nombre)
+        with open(ruta, "w") as fh:
+            fh.write(datos if isinstance(datos, str) else json.dumps(datos))
+        return ruta
+
+    @staticmethod
+    def _modelos(*pares):
+        """La forma del catalogo real: los modelos van anidados, no en la raiz."""
+        return {"version": 1, "catalog": {"config": {"id": "cc", "models": [
+            {"id": i, "thinking": {"effort_options": [{"id": "low"}]},
+             "runtime": {"max_input_tokens": n}} for i, n in pares]}}}
+
+    # CA1
+
+    def test_suma_la_entrada_y_la_cache_pero_no_la_salida(self):
+        self._write("s", [respuesta(4, 78666, 27483)])
+        got = ccl.read_transcript("s")
+        self.assertEqual(got["ctx"], 4 + 78666 + 27483)
+        self.assertEqual(got["ctx_model"], "claude-opus-5-5")
+
+    def test_manda_la_ultima_respuesta(self):
+        self._write("s", [respuesta(500000), respuesta(120000, model="claude-sonnet-5-5")])
+        got = ccl.read_transcript("s")
+        self.assertEqual((got["ctx"], got["ctx_model"]), (120000, "claude-sonnet-5-5"))
+
+    def test_ignora_subagentes_errores_de_la_api_y_uso_a_cero(self):
+        self._write("s", [respuesta(120000),
+                          respuesta(900000, isSidechain=True),
+                          respuesta(0, model="<synthetic>"),
+                          respuesta(0)])
+        self.assertEqual(ccl.read_transcript("s")["ctx"], 120000)
+
+    def test_sin_respuestas_no_hay_dato(self):
+        self._write("s", [{"type": "user", "message": {"role": "user", "content": "hola"}}])
+        self.assertNotIn("ctx", ccl.read_transcript("s"))
+
+    # CA2
+
+    def test_tras_compactar_manda_lo_que_queda(self):
+        """Si no, una sesion recien compactada seguiria marcando lo de antes."""
+        self._write("s", [respuesta(400000), compactacion(post=26729)])
+        got = ccl.read_transcript("s")
+        self.assertEqual(got["ctx"], 26729)
+        # el modelo sale de la respuesta anterior: hace falta para saber la ventana
+        self.assertEqual(got["ctx_model"], "claude-opus-5-5")
+
+    def test_una_compactacion_sin_post_tokens_no_dice_cuanto(self):
+        self._write("s", [respuesta(400000), compactacion()])
+        got = ccl.read_transcript("s")
+        self.assertIsNone(got["ctx"], "lo de antes de compactar ya no vale")
+        self.assertEqual(ccl.marca_contexto({"ctx": got["ctx"], "ctx_ventana": 10**6}), "")
+
+    def test_una_respuesta_despues_de_compactar_vuelve_a_mandar(self):
+        self._write("s", [respuesta(400000), compactacion(post=26729), respuesta(31000)])
+        self.assertEqual(ccl.read_transcript("s")["ctx"], 31000)
+
+    # CA3
+
+    def _relleno(self, kb):
+        """Lo que reinyecta Claude Code tras compactar: adjuntos de cientos de KB."""
+        return [{"type": "attachment", "attachment": {"content": "x" * 1000}}
+                for _ in range(kb)]
+
+    def test_lo_encuentra_mas_alla_de_la_cola(self):
+        self._write("s", [respuesta(400000), compactacion(post=26729)] + self._relleno(300))
+        self.assertEqual(ccl.read_transcript("s")["ctx"], 26729)
+
+    def test_la_lectura_lejana_se_cachea_y_se_rehace_si_el_archivo_cambia(self):
+        ruta = self._write("s", [respuesta(150000)] + self._relleno(300))
+        aperturas = []
+        real = open
+
+        def contando(p, *a, **k):
+            aperturas.append(p)
+            return real(p, *a, **k)
+
+        ccl.open = contando
+        try:
+            self.assertEqual(ccl.read_transcript("s")["ctx"], 150000)
+            self.assertEqual(aperturas.count(ruta), 2, "la cola y la lectura lejana")
+            del aperturas[:]
+            self.assertEqual(ccl.read_transcript("s")["ctx"], 150000)
+            self.assertEqual(aperturas.count(ruta), 1, "la lejana tenia que salir de la cache")
+            del aperturas[:]
+            self._write("s", self._relleno(1), modo="a")
+            ccl.read_transcript("s")
+            self.assertEqual(aperturas.count(ruta), 2, "el archivo cambio: hay que releer")
+        finally:
+            del ccl.open
+
+    def test_si_la_cola_lo_trae_no_se_lee_mas_atras(self):
+        ruta = self._write("s", self._relleno(300) + [respuesta(150000)])
+        aperturas = []
+        real = open
+        ccl.open = lambda p, *a, **k: aperturas.append(p) or real(p, *a, **k)
+        try:
+            self.assertEqual(ccl.read_transcript("s")["ctx"], 150000)
+        finally:
+            del ccl.open
+        self.assertEqual(aperturas.count(ruta), 1)
+
+    # CA4
+
+    def test_la_ventana_sale_del_catalogo(self):
+        self._catalogo("org-cc.json", self._modelos(("claude-opus-5-5", 1000000),
+                                                    ("claude-haiku-4-5-20251001", 200000)))
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5"), 1000000)
+        self.assertEqual(ccl.ventana_de("claude-haiku-4-5-20251001"), 200000)
+        # sin la fecha, o con otra, es el mismo modelo
+        self.assertEqual(ccl.ventana_de("claude-haiku-4-5"), 200000)
+        self.assertIsNone(ccl.ventana_de("glm-5.3-flash"))
+        self.assertIsNone(ccl.ventana_de(None))
+
+    def test_si_dos_archivos_discrepan_gana_la_mayor(self):
+        # la mayor en el archivo que se lee PRIMERO: si ganara el ultimo, saldria la menor
+        self._catalogo("a.json", {"document": {"surfaces": {"cc": [self._modelos(
+            ("claude-opus-5-5", 1000000))]}}})
+        self._catalogo("b.json", self._modelos(("claude-opus-5-5", 200000)))
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5"), 1000000)
+
+    def test_sin_catalogo_o_con_basura_no_hay_ventana(self):
+        self.assertIsNone(ccl.ventana_de("claude-opus-5-5"))
+        self._catalogo("roto.json", "{no es json")
+        self._catalogo("raro.json", {"catalog": {"models": [
+            {"id": "claude-opus-5-5", "runtime": {"max_input_tokens": "mucho"}},
+            {"id": "claude-opus-5-5", "runtime": {"max_input_tokens": True}},
+            {"id": 7, "runtime": {"max_input_tokens": 5}}]}})
+        self.assertIsNone(ccl.ventana_de("claude-opus-5-5"))
+        # y uno bueno al lado sigue valiendo
+        self._catalogo("bueno.json", self._modelos(("claude-opus-5-5", 1000000)))
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5"), 1000000)
+
+    def test_el_catalogo_se_relee_si_cambia(self):
+        ruta = self._catalogo("c.json", self._modelos(("claude-opus-5-5", 200000)))
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5"), 200000)
+        self._catalogo("c.json", self._modelos(("claude-opus-5-5", 1000000)))
+        os.utime(ruta, (1, 1))   # otro mtime aunque caiga en el mismo instante
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5"), 1000000)
+
+    def test_cada_cuenta_con_su_catalogo(self):
+        otra = os.path.join(self.dir, ".claude-personal")
+        self._catalogo("c.json", self._modelos(("claude-opus-5-5", 1000000)))
+        self._catalogo("c.json", self._modelos(("claude-opus-5-5", 200000)), cfg=otra)
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5", self.cfg), 1000000)
+        self.assertEqual(ccl.ventana_de("claude-opus-5-5", otra), 200000)
+
+    # CA5
+
+    def test_colores_por_umbral(self):
+        marca = lambda tokens: ccl.marca_contexto({"ctx": tokens, "ctx_ventana": 1000})
+        self.assertEqual(marca(490), ccl.GREEN("49%"))
+        self.assertEqual(marca(500), ccl.YELLOW("50%"))
+        self.assertEqual(marca(799), ccl.YELLOW("79%"))
+        self.assertEqual(marca(800), ccl.RED("80%"))
+
+    def test_redondea_hacia_abajo(self):
+        """El rojo sale al llegar al 80, no en el 79,5."""
+        fila = {"ctx": 799999, "ctx_ventana": 1000000}
+        self.assertEqual(ccl.marca_contexto(fila), ccl.YELLOW("79%"))
+
+    def test_sin_ventana_salen_los_tokens_en_gris(self):
+        marca = lambda tokens: ccl.marca_contexto({"ctx": tokens, "ctx_ventana": None})
+        self.assertEqual(marca(412400), ccl.GREY("412K"))
+        self.assertEqual(marca(999600), ccl.GREY("1.0M"))
+        self.assertEqual(marca(1105985), ccl.GREY("1.1M"))
+
+    def test_sin_dato_no_sale_nada(self):
+        for fila in ({}, {"ctx": None, "ctx_ventana": 10**6}, {"ctx": 0, "ctx_ventana": 10**6}):
+            self.assertEqual(ccl.marca_contexto(fila), "")
+        r = row(1, "a")
+        self.assertNotIn(ccl.t("ctx"), ccl.ANSI_RE.sub("", ccl.detail_line(r)))
+
+    def test_la_linea_de_detalle_lo_lleva_tras_el_modelo_y_el_effort(self):
+        r = row(1, "a")
+        r.update(model="opus-5-5", effort="xhigh", prompt="hola", ctx=412000,
+                 ctx_ventana=1000000)
+        plano = ccl.ANSI_RE.sub("", ccl.detail_line(r))
+        self.assertIn("opus-5-5 · xhigh · %s 41%%" % ccl.t("ctx"), plano)
+        self.assertLess(plano.index("41%"), plano.index('"hola"'))
+
+    # R7
+
+    def test_las_recuperables_tambien_lo_llevan(self):
+        self._catalogo("c.json", self._modelos(("claude-opus-5-5", 1000000)))
+        self._write("muerta", [{"cwd": self.dir}, respuesta(250000)])
+        fila = ccl.fila_de_disco("muerta", self.cfg, ({}, {}, set(), {}))
+        self.assertEqual((fila["ctx"], fila["ctx_ventana"]), (250000, 1000000))
+
+    def test_build_lo_lleva_en_la_fila(self):
+        self._catalogo("c.json", self._modelos(("claude-opus-5-5", 1000000)))
+        self._write("viva", [respuesta(330000)])
+        sesiones = [{"sessionId": "viva", "name": "v", "cwd": "/x", "pid": 1,
+                     "_cfg": self.cfg}]
+        fila = ccl.build(sesiones, {}, {}, {"viva": 1})[0]
+        self.assertEqual(ccl.marca_contexto(fila), ccl.GREEN("33%"))
+
+
 # ────────────────────────── formato ──────────────────────────
 
 
@@ -1315,6 +1559,30 @@ class TestTabla(unittest.TestCase):
         # lo imprescindible esta en las dos
         for k in ("num", "estado", "name", "repo", "ts"):
             self.assertIn(k, estrecha)
+
+    def test_la_columna_de_contexto_es_la_ultima_prescindible_en_caer(self):
+        """specs/004: desde 86, no a 80, donde la fila ya va justa y se perderia el ⚠."""
+        claves = lambda ancho, multi=False: [k for k, _ in ccl._tabla_columnas(ancho, multi)]
+        self.assertNotIn("ctx", claves(80))
+        self.assertNotIn("ctx", claves(85))
+        self.assertIn("ctx", claves(86))
+        self.assertNotIn("branch", claves(86), "cae despues que la rama, no antes")
+        # la cuenta corre el umbral, como el de las otras
+        self.assertNotIn("ctx", claves(96, True))
+        self.assertIn("ctx", claves(97, True))
+
+    def test_el_contexto_va_bajo_su_cabecera_y_no_desborda(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r.update(ctx=412000, ctx_ventana=1000000, prompt="x" * 400)
+        cabecera = ccl.ANSI_RE.sub("", ccl.table_head(120, False))
+        fila = ccl.ANSI_RE.sub("", ccl.table_line(r, 120, False))
+        self.assertEqual(fila.index("41%"), cabecera.index(ccl.t("col_ctx")))
+        # tambien con un numero que no cabe en la columna, y con varias cuentas
+        r.update(ctx=10**9, ctx_ventana=None, account="trabajo")
+        for ancho in (80, 86, 97, 100, 120, 160):
+            for multi in (False, True):
+                self.assertLessEqual(ccl.vis(ccl.table_line(r, ancho, multi)), ancho,
+                                     f"ancho={ancho} multi={multi}")
 
     def test_la_cuenta_solo_ocupa_columna_si_hay_varias(self):
         self.assertNotIn("account", [k for k, _ in ccl._tabla_columnas(120, False)])

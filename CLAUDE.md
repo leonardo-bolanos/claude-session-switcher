@@ -36,7 +36,10 @@ acaban con la misma marca exacta. Usa el último campo `timestamp` de dentro del
 
 **Los transcripts superan los 100 MB.** `read_transcript()` lee solo los últimos
 `TAIL_BYTES` (64 KB) y descarta la primera línea si quedó cortada. Leerlos enteros hace el
-comando inusable.
+comando inusable. La única excepción es el % de contexto (specs/004): tras una autocompactación
+Claude Code reinyecta los archivos como `attachment`, y la última respuesta llegó a quedar 480 KB
+atrás. Solo para eso, y solo si la cola no trae nada, `_contexto_lejano` lee hasta 2 MB, y lo
+cachea por tamaño y `mtime`.
 
 **Los códigos ANSI rompen `ljust()`**: cuenta los escapes como caracteres visibles y desalinea
 las columnas. Para cualquier texto con color usa `vis()`, `pad()` y `clip()`, nunca `len()`
@@ -407,7 +410,8 @@ manda a `--recent`, que lee de disco y no depende del registro.
 | Fuente | Qué se usa | Si cambia |
 |---|---|---|
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status`; de los jobs de fondo, `id` | El panel se queda sin datos |
-| Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, y los tipos `ai-title` / `last-prompt` | Esos campos desaparecen; el resto sigue |
+| Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, `message.usage`, y los tipos `ai-title` / `last-prompt` / `compact_boundary` (`postTokens`) | Esos campos desaparecen; el resto sigue |
+| `<cfg>/cache/model-catalog/*.json` | `id` y `runtime.max_input_tokens` de cada modelo, estén donde estén dentro del JSON | El contexto sale en tokens, en gris, en vez de en % (specs/004) |
 | `<cfg>/sessions/<pid>.json` | `parkedJobId` y `sessionId`, solo de los pids vivos que faltan en el registro y solo si hay algún job | Un job deja de llevar a la pestaña que aparcó, y esa conversación vuelve a salir como muerta (specs/003) |
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y
