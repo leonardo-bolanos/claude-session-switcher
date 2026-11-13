@@ -1824,7 +1824,12 @@ class Recomendador:
 
     @staticmethod
     def activo():
-        return os.environ.get("CCL_IA", "1") != "0" and bool(claude_bin())
+        """
+        Solo con `CCL_IA=1` (decision del usuario, 2026-11-11). Quien instala `ccl` por Homebrew
+        no ha pedido gastar cuota de su suscripcion ni mandar titulos y prompts a la API: tiene
+        que encenderlo el. `a_mano` no depende de esto: es leer un archivo, no llamar a nadie.
+        """
+        return os.environ.get("CCL_IA", "0") not in ("", "0") and bool(claude_bin())
 
     def pendientes(self, rows):
         cache, ahora, vistas, lote = leer_ia(), self.reloj(), set(), []
@@ -2936,7 +2941,7 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
 def ocultas_de_verdad(rows, ocultas):
     """
     Las que escondiste, mas la de la IA si ninguna fila trae nada que poner en ella: con
-    `CCL_IA=0`, sin `claude` o antes de la primera respuesta, ocuparia ocho columnas vacias
+    `CCL_IA`, sin `claude` o antes de la primera respuesta, ocuparia ocho columnas vacias
     que son de la nota.
     """
     if any(r.get("ia") for r in rows):
@@ -3379,7 +3384,7 @@ HELP_EN = [
         ("ccl --table", "start that way (ccl --list --table also works)"),
         ("Ctrl-E",     "choose which columns to show; it is remembered"),
         ("",           "ai: the model Haiku recommends for what the session does,"),
-        ("",           "↑ a better one, ↓ a cheaper one · CCL_IA=0 turns it off"),
+        ("",           "↑ a better one, ↓ a cheaper one · off unless CCL_IA=1"),
         ("",           "set it yourself: \"a_mano\" in ~/.claude/ccl-ia.json"),
     ]),
     ("by project", [
@@ -3476,7 +3481,7 @@ HELP_ES = [
         ("ccl --table", "arrancar así (también vale ccl --list --table)"),
         ("Ctrl-E",     "elegir qué columnas se ven; se recuerda"),
         ("",           "ia: el modelo que recomienda Haiku para lo que hace la sesión,"),
-        ("",           "↑ uno mejor, ↓ uno más barato · CCL_IA=0 lo apaga"),
+        ("",           "↑ uno mejor, ↓ uno más barato · apagada salvo CCL_IA=1"),
         ("",           "para fijarlo tú: \"a_mano\" en ~/.claude/ccl-ia.json"),
     ]),
     ("por proyecto", [

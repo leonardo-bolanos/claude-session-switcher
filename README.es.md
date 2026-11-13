@@ -454,12 +454,18 @@ atrás (hasta 2 MB), y solo una vez por cada cambio del transcript, no en cada r
 <summary><b>Qué modelo le conviene a cada sesión</b>, según Haiku</summary>
 
 La tabla lleva una columna `ia` con la familia de modelo que Haiku recomienda para cada sesión,
-juzgando por lo que hace de verdad: su nombre, su título y las herramientas y programas que ha
-usado últimamente (ediciones, consultas a bases de datos, `ssh` y `git` cuentan como trabajo de
-código; mensajes y consultas, como coordinación). `haiku` para leer y formatear, `sonnet` para
-coordinación, análisis y cambios acotados, `opus` para código agéntico, revisiones, depuración y
-seguridad, `fable` para trabajo autónomo de horas. Sale tenue si coincide con el modelo que usa la sesión; si no, lleva una
-flecha: `↓sonnet` quiere decir que bastaría uno más barato, `↑opus` que le hace falta uno mejor.
+juzgando por lo que hace de verdad: su nombre, su título y las herramientas y programas que ha usado
+últimamente (ediciones, consultas a bases de datos, `ssh` y `git` cuentan como trabajo de código;
+mensajes y consultas, como coordinación). `haiku` para leer y formatear, `sonnet` para coordinación,
+análisis y cambios acotados, `opus` para código agéntico, revisiones, depuración y seguridad,
+`fable` para trabajo autónomo de horas. Sale tenue si coincide con el modelo que usa la sesión; si
+no, lleva una flecha: `↓sonnet` quiere decir que bastaría uno más barato, `↑opus` que le hace falta
+uno mejor.
+
+**Está apagada salvo que la enciendas**, porque gasta un poco de tu cuota de Claude y manda a la
+API los títulos y prompts de tus sesiones. Arranca el panel con `CCL_IA=1`, o pon
+`export CCL_IA=1` en tu `~/.zshrc`. Mientras no tenga nada que enseñar la columna no ocupa sitio,
+y los modelos que fijes a mano (abajo) funcionan igual.
 
 - **Solo pregunta cuando cambia el tema.** El panel lanza `claude -p --model haiku` en segundo
   plano cuando aparece una sesión o Claude Code le cambia el título: todas las pendientes en una
@@ -475,7 +481,7 @@ flecha: `↓sonnet` quiere decir que bastaría uno más barato, `↑opus` que le
   por esa sesión, y no caduca. Borra la clave para devolvérsela a Haiku.
 - Lo que le llega a Haiku es el nombre, el título y el último prompt de cada sesión (recortado),
   y cuántas veces usó cada herramienta y cada programa: solo los nombres, nunca sus argumentos
-  ni su salida. `CCL_IA=0` lo apaga.
+  ni su salida.
 
 </details>
 

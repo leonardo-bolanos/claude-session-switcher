@@ -451,13 +451,18 @@ once per change to the transcript, not on every refresh.
 <details>
 <summary><b>Which model each session should use</b>, according to Haiku</summary>
 
-The table has an `ai` column with the model family Haiku recommends for each session, judged by
-what it actually does: its name, its title, and the tools and programs it has used lately (edits,
-database queries, `ssh` and `git` read as code work; messages and lookups as coordination).
-`haiku` for reading and formatting, `sonnet` for coordination, analysis and contained changes,
-`opus` for agentic coding, reviews, debugging and security, `fable` for hours-long autonomous
-work. It's dim when it matches the model the session is using; otherwise it carries an
-arrow: `↓sonnet` means a cheaper one would do, `↑opus` that it needs a better one.
+The table has an `ai` column with the model family Haiku recommends for each session, judged by what
+it actually does: its name, its title, and the tools and programs it has used lately (edits,
+database queries, `ssh` and `git` read as code work; messages and lookups as coordination). `haiku`
+for reading and formatting, `sonnet` for coordination, analysis and contained changes, `opus` for
+agentic coding, reviews, debugging and security, `fable` for hours-long autonomous work. It's dim
+when it matches the model the session is using; otherwise it carries an arrow: `↓sonnet` means a
+cheaper one would do, `↑opus` that it needs a better one.
+
+**It's off unless you turn it on**, because it spends a little of your Claude quota and sends
+session titles and prompts to the API. Start the panel with `CCL_IA=1`, or put
+`export CCL_IA=1` in your `~/.zshrc`. The column stays out of the way while it has nothing to
+show, and the models you set by hand (below) work either way.
 
 - **It only asks when the topic changes.** The panel runs `claude -p --model haiku` in the
   background when a session appears or Claude Code retitles it: every pending session in one
@@ -471,8 +476,7 @@ arrow: `↓sonnet` means a cheaper one would do, `↑opus` that it needs a bette
   `"<sessionId>": {"a_mano": "sonnet"}`. It overrides Haiku whatever the topic, that session is
   no longer asked about, and it never expires. Delete the key to hand it back to Haiku.
 - What Haiku gets is each session's name, title and last prompt (clipped), and how many times
-  it used each tool and program — names only, never their arguments or output. `CCL_IA=0` turns
-  it off.
+  it used each tool and program — names only, never their arguments or output.
 
 </details>
 

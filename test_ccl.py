@@ -1081,7 +1081,7 @@ class _ConIA(unittest.TestCase):
         ccl.HOME = self.dir   # la actividad de cada sesion sale de sus transcripts
         ccl._CACHE_IA.update(firma=None, datos={})
         ccl.claude_bin = lambda: "/no/existe/claude"
-        os.environ.pop("CCL_IA", None)
+        os.environ["CCL_IA"] = "1"   # apagada por defecto (R8): estos tests la quieren encendida
         self.llamadas, self.stdout = [], salida_haiku()
 
         def falso(orden, **kw):
@@ -1246,13 +1246,27 @@ class TestRecomendacionIA(_ConIA):
         self.assertEqual(enviado["comandos_recientes"], {"ssh": 1})
         self.assertNotIn("sessionId", json.dumps(enviado))
 
-    def test_sin_claude_o_con_CCL_IA_0_no_se_llama(self):
-        os.environ["CCL_IA"] = "0"
-        self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]))
-        os.environ.pop("CCL_IA")
+    def test_solo_llama_con_CCL_IA_1_y_con_claude(self):
+        """R8: apagada por defecto. Quien instala por Homebrew no ha pedido gastar cuota."""
+        for valor in (None, "", "0"):
+            if valor is None:
+                os.environ.pop("CCL_IA", None)
+            else:
+                os.environ["CCL_IA"] = valor
+            self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]), repr(valor))
+        os.environ["CCL_IA"] = "1"
         ccl.claude_bin = lambda: None
-        self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]))
+        self.assertFalse(ccl.Recomendador().pedir([fila_ia("a")]), "sin claude")
         self.assertEqual(self.llamadas, [])
+        ccl.claude_bin = lambda: "/no/existe/claude"
+        rec = ccl.Recomendador()
+        self.assertTrue(rec.pedir([fila_ia("a")]))
+        rec.hilo.join(5)
+
+    def test_a_mano_se_ve_aunque_este_apagada(self):
+        os.environ.pop("CCL_IA", None)
+        self._cache(a={"a_mano": "sonnet"})
+        self.assertEqual(ccl.recomendacion(ccl.leer_ia(), "a", "Refactor del panel"), "sonnet")
 
     # R6, R7
     def test_solo_vale_para_su_tema(self):
@@ -1497,7 +1511,7 @@ class TestColumnasOcultas(unittest.TestCase):
         self.assertEqual(fila.index("↓sonnet"), cabecera.index(ccl.t("col_ia")))
 
     def test_la_columna_de_la_ia_no_ocupa_sitio_si_esta_vacia(self):
-        """Con `CCL_IA=0`, sin `claude` o antes de la primera respuesta, es de la nota."""
+        """Sin `CCL_IA`, sin `claude` o antes de la primera respuesta, es de la nota."""
         filas = [row(1, "a", "idle", ts=iso(minutes=1)), row(2, "b", "busy", ts=iso(minutes=2))]
         cabecera = lambda: ccl.ANSI_RE.sub("", ccl.build_table_display(filas, 200)[0][1])
         self.assertNotIn(" " + ccl.t("col_ia") + " ", cabecera())

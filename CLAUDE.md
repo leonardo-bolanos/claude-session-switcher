@@ -432,10 +432,12 @@ viva?» usa `ids_vivos()`, no los `sessionId` a secas.
 
 ## La columna `ia`: el modelo que recomienda Haiku (specs/005)
 
-**Solo el panel llama, y solo cuando cambia el tema** (`tema_de`: el `ai-title`, o el nombre si
-no hay). `--list` y `-w` leen la cache (`ccl-ia.json`) y nunca esperan a nadie. **Una sesion con
-nombre desde el principio NUNCA recibe `ai-title`**: pidiendo solo con titulo, la columna se
-quedaba vacia para siempre en justo las sesiones que el usuario cuida. La llamada va en un hilo del `Recomendador`, una a la vez
+**Apagada salvo `CCL_IA=1`** (decision del usuario): quien instala por Homebrew no ha pedido gastar
+cuota ni mandar prompts a la API. `a_mano` funciona sin ella. **Solo el panel llama, y solo cuando
+cambia el tema** (`tema_de`: el `ai-title`, o el nombre si no hay). `--list` y `-w` leen la cache
+(`ccl-ia.json`) y nunca esperan a nadie. **Una sesion con nombre desde el principio NUNCA recibe
+`ai-title`**: pidiendo solo con titulo, la columna se quedaba vacia para siempre en justo las
+sesiones que el usuario cuida. La llamada va en un hilo del `Recomendador`, una a la vez
 y con todas las pendientes; al terminar fuerza un refresco del `Feed`, que es lo que la pinta.
 
 **Sin `--no-session-persistence`, cada llamada deja un transcript** y aparece en `--recent` como

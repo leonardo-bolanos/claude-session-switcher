@@ -77,7 +77,7 @@ sesión y **lo que ha hecho** (R15).
 | R5 | Una sola llamada a la vez, con todas las pendientes (hasta 20), y al menos 30 s entre una y la siguiente. Si falla, esas sesiones no se reintentan en 10 minutos. |
 | R6 | Se guarda en `~/.claude/ccl-ia.json`: `{sessionId: {titulo, modelo, porque, cuando}}`. Es caché: si se borra o se rompe, se vuelve a pedir. Se purgan las entradas de más de 30 días. |
 | R7 | La recomendación solo vale para el tema con el que se pidió. Si el `ai-title` cambió, la columna sale vacía hasta que llegue la nueva (unos segundos). |
-| R8 | `CCL_IA=0` apaga las llamadas. Sin `claude` en el sistema, tampoco se hacen. |
+| R8 | **Apagada por defecto: solo llama con `CCL_IA=1`.** Sin `claude` en el sistema, tampoco. `a_mano` funciona sin ella. Decisión del usuario del 2026-11-11, antes de publicar: quien instala por Homebrew no ha pedido gastar cuota ni mandar sus prompts a la API. Al principio venía encendida y se apagaba con `CCL_IA=0`. |
 | R9 | La guía de la llamada es la de la skill `claude-models` §2, y el `porque` viene en el idioma de la interfaz. El `porque` se guarda pero no se pinta (fuera de alcance). |
 | R15 | Por cada sesión se manda su nombre, su título, el último prompt recortado, el modelo y effort actuales, y cuántas veces ha usado cada herramienta y cada programa de Bash en los últimos 8 MB del transcript (solo los nombres, sin argumentos). La guía le dice que juzgue por ese trabajo real. |
 | R16 | Cada recomendación guarda la versión del criterio (`v`). Si cambia lo que se manda, lo pedido con el criterio viejo deja de valer y se vuelve a pedir una vez. |
@@ -148,7 +148,8 @@ sesión y **lo que ha hecho** (R15).
   `COLUMNAS_OCULTABLES`. `guardar_estado(…, ocultas=None)` las conserva si no se las pasan, y
   `load_state` reconoce la clave al detectar el formato. `render` (`--list --table`) las respeta.
 - **La barra de estado** lleva `^E columnas` solo en la vista de tabla. **La ayuda** tiene tres
-  filas nuevas en *vista de tabla*: `Ctrl-E`, qué es `ia` con sus flechas, y `CCL_IA=0`.
+  filas nuevas en *vista de tabla*: `Ctrl-E`, qué es `ia` con sus flechas y `CCL_IA=1`, y cómo
+  fijarla con `a_mano`.
 - **Tras la revisión de código del cierre** (nueve hallazgos; seis arreglados):
   - La columna `ia` no ocupa sitio si ninguna fila trae nada (`ocultas_de_verdad`). Con
     `CCL_IA=0`, sin `claude` o antes de la primera respuesta, eran ocho columnas vacías.
@@ -164,8 +165,8 @@ sesión y **lo que ha hecho** (R15).
   - Descartados, con motivo:
     - El coste de leer 8 MB por sesión: medidos 0,13 s para trece.
     - Que `Ctrl-E` desde la lista deje la tabla puesta: es R12, a propósito.
-    - Que la IA venga activada por defecto: es decisión del usuario, pendiente antes de publicar
-      (ver *Riesgos*).
+    - Que la IA viniera activada por defecto no se descartó: lo decidió el usuario, y quedó
+      apagada salvo `CCL_IA=1` (R8).
 - **`make_demo.py`** da una recomendación a cada sesión de mentira (la misma, `↓haiku` y
   `↑sonnet`) y graba la tabla a 140 columnas, porque a 128 la de la IA no entraba. Los dos
   arneses de prueba (`test_panel.py` y `make_demo.py`) desvían `IA_FILE` y ponen `CCL_IA=0`.
@@ -238,11 +239,10 @@ sesión y **lo que ha hecho** (R15).
 - **Coste.** Una llamada por tema nuevo, agrupadas: con ~30 sesiones y unos pocos cambios de tema
   al día, céntimos al mes. El tope `--max-budget-usd 0.05` corta una llamada desbocada.
 - **Privacidad.** El nombre, el título y el último prompt de cada sesión, y los nombres de las
-  herramientas y programas que usó, van a Anthropic, que es quien ya los tiene. `CCL_IA=0` lo
-  apaga.
-- **Activada por defecto, también para quien instale `ccl` por Homebrew.** El usuario la eligió
-  para él. Antes de publicar la 1.6.0 queda por decidir si para los demás debe ser opt-in
-  (`CCL_IA=1`), o anunciarse al primer arranque: gasta cuota de la suscripción sin que nadie lo
-  haya pedido. Lo señaló la revisión de código del cierre.
+  herramientas y programas que usó, van a Anthropic, que es quien ya los tiene. Solo con
+  `CCL_IA=1`.
+- **Resuelto: apagada por defecto.** La revisión de código del cierre señaló que venía
+  encendida también para quien instala por Homebrew, gastando cuota sin que nadie lo hubiera
+  pedido. El usuario decidió que se active con `CCL_IA=1` (R8).
 - **Flags de `claude -p`.** Son interfaz pública del CLI, pero si cambian, la llamada falla y la
   columna se queda vacía (R5): el panel sigue igual.
