@@ -112,5 +112,13 @@ TRABAJANDO, una de background pausada solo a PAUSADAS.
 **Se aplica en memoria al pulsar**, igual que la nota: hasta el refresco siguiente (4 s) no
 cambiaria de grupo y pareceria que la tecla no hizo nada.
 
+**Y despues hay que llamar a `feed.cambio_local(rows)`**, en las dos. El refresco de fondo lee
+`ccl-notes.json` al empezar y publica al acabar: uno que lo leyo antes de la tecla y llegaba
+despues devolvia la sesion a ESPERANDO, y pulsar otra vez —"no funciono"— la despausaba de
+verdad. Reportado como "a veces el Ctrl-P no funciona". `cambio_local` tira el refresco en
+vuelo, sustituye el publicado sin recoger y pide otro al momento. Cualquier tecla nueva que
+escriba algo que viaje en las filas tiene que llamarlo; los tests son
+`test_un_refresco_en_vuelo_no_deshace_*` (panel) y `TestFeedCambioLocal`.
+
 Tampoco se purga: un sessionId es un UUID y no se reutiliza, asi que una entrada huerfana no puede
 pausar a nadie por error.

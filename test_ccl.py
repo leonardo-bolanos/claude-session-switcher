@@ -531,6 +531,77 @@ class TestLasQueFaltan(unittest.TestCase):
             feed.stop()
 
 
+class TestFeedCambioLocal(unittest.TestCase):
+    """
+    "A veces Ctrl-P no funciona": un refresco que leyo el estado ANTES de la tecla y llegaba
+    DESPUES devolvia la sesion a ESPERANDO, y pulsarla otra vez la despausaba de verdad. El
+    test del panel cubre el refresco en vuelo; el ya publicado y aun sin recoger tiene una
+    ventana de decimas, y se prueba aqui, sobre el `Feed`.
+    """
+
+    @staticmethod
+    def _esperar_stamp(feed, n, limite=2.0):
+        fin = time.time() + limite
+        while feed.snapshot()[1] < n and time.time() < fin:
+            time.sleep(0.02)
+
+    def test_el_refresco_en_vuelo_se_tira_y_se_repite(self):
+        leyendo, seguir = threading.Event(), threading.Event()
+        llamadas = []
+
+        def fuente():
+            llamadas.append(1)
+            if len(llamadas) == 1:
+                leyendo.set()
+                seguir.wait(5)
+                return ["de-antes"]
+            return ["de-despues"]
+
+        feed = ccl.Feed(["en-pantalla"], fuente=fuente)
+        try:
+            feed.force()
+            self.assertTrue(leyendo.wait(5))
+            feed.cambio_local(["con-la-pausa"])
+            seguir.set()
+            self._esperar_stamp(feed, 1)
+            self.assertEqual(feed.snapshot(), (["de-despues"], 1),
+                             "publicó el refresco que leyó el estado de antes")
+        finally:
+            seguir.set()
+            feed.stop()
+
+    def test_el_publicado_sin_recoger_se_sustituye_y_se_refresca_ya(self):
+        segunda = threading.Event()
+        llamadas = []
+
+        def fuente():
+            llamadas.append(1)
+            if len(llamadas) > 1:
+                segunda.wait(5)
+                return ["de-ahora"]
+            return ["de-antes"]
+
+        feed = ccl.Feed([], fuente=fuente)
+        try:
+            feed.force()
+            self._esperar_stamp(feed, 1)
+            self.assertEqual(feed.snapshot()[0], ["de-antes"])
+            feed.cambio_local(["con-la-pausa"])
+            self.assertEqual(feed.snapshot()[0], ["con-la-pausa"])
+            segunda.set()
+            # sin esperar al intervalo (4 s): el refresco se pide al momento
+            self._esperar_stamp(feed, 2, limite=1.5)
+            self.assertEqual(feed.snapshot(), (["de-ahora"], 2))
+        finally:
+            segunda.set()
+            feed.stop()
+
+    def test_feedfijo_tiene_la_misma_interfaz(self):
+        feed = ccl.FeedFijo(["fija"])
+        feed.cambio_local(["otra"])
+        self.assertEqual(feed.snapshot(), (["fija"], 0))
+
+
 class TestPestañaNueva(unittest.TestCase):
     """La ventana que abre `--recent` para reanudar. Un guardarrail sobre el fuente."""
 

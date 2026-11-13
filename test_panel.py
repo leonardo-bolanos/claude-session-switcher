@@ -118,6 +118,11 @@ def coleccionar():
     for f in filas:
         f["note"] = ccl.note_for(f, notas_sesion, notas_repo)
         f["paused"] = f["sessionId"] in pausadas
+    # Para probar "un refresco que leyo el estado ANTES de una tecla llega DESPUES": el
+    # estado ya esta leido arriba, y aqui se ensancha lo que tarda en publicarse.
+    if os.environ.get("CCL_TEST_TARDA"):
+        import time
+        time.sleep(float(os.environ["CCL_TEST_TARDA"]))
     return filas
 
 ccl.collect = coleccionar
@@ -1148,6 +1153,37 @@ class TestPausadas(unittest.TestCase):
         with con_panel(notas=archivo) as q:
             self.assertIn("PAUSADAS (1)", q.ultima())
             self.assertIn("✎ esperando a Felipe", q.ultima())
+
+    def _sin_vuelta_atras(self, teclas, debe_verse):
+        """
+        Cada repintado tras las teclas tiene que enseñar `debe_verse`. El refresco de fondo
+        lee el estado al empezar y publica al acabar: uno que lo leyo ANTES de la tecla y
+        llegaba DESPUES la deshacia en pantalla hasta el refresco siguiente, y pulsarla otra
+        vez —"no funciono"— la deshacia de verdad. `CCL_TEST_TARDA` ensancha esa ventana,
+        que en la vida real es de unas decimas cada 4 s: casi siempre hay uno en vuelo.
+        """
+        entorno = {"CCL_TEST_REFRESH": "0.05", "CCL_TEST_TARDA": str(0.6 * FACTOR_ESPERA)}
+        with con_panel(entorno=entorno, arranque=1.6) as p:
+            antes = len(p.pantallas())
+            p.enviar(*teclas)
+            p._drenar(2.0 * FACTOR_ESPERA)    # varios refrescos, en vuelo y posteriores
+            despues = p.pantallas()[antes:]
+            # desde el repintado de la propia tecla: los de antes (el editor a medio
+            # escribir) aun no pueden enseñarlo
+            primera = next((i for i, s in enumerate(despues) if debe_verse in s), None)
+            self.assertIsNotNone(primera, "la tecla no hizo nada")
+            despues = despues[primera:]
+            self.assertGreater(len(despues), 2, "no hubo refrescos detras")
+            perdidas = [s for s in despues if debe_verse not in s]
+            self.assertEqual(len(perdidas), 0, f"{len(perdidas)} de {len(despues)} "
+                             "repintados volvieron al estado de antes de la tecla")
+
+    def test_un_refresco_en_vuelo_no_deshace_la_pausa(self):
+        self._sin_vuelta_atras([b"\x10"], "PAUSADAS (1)")
+
+    def test_un_refresco_en_vuelo_no_deshace_la_nota(self):
+        self._sin_vuelta_atras([b"\x0e", b"esperando a Felipe", b"\r"],
+                               "✎ esperando a Felipe")
 
 
 @unittest.skipUnless(hasattr(os, "openpty"), "necesita pty (no existe en Windows)")

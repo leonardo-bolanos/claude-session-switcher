@@ -3395,6 +3395,9 @@ class Feed:
         self.fuente = fuente
         self.lock = threading.Lock()
         self.stamp = 0
+        # Sube con cada cambio que el panel escribe en disco (pausa, nota): un refresco que
+        # arranco con otra generacion leyo el estado de ANTES, ver `cambio_local`.
+        self.generacion = 0
         self.last_input = time.time()
         self._stop = threading.Event()
         self._wake = threading.Event()  # para forzar un refresco inmediato con 'r'
@@ -3412,17 +3415,41 @@ class Feed:
             self._wake.clear()
             if self._stop.is_set():
                 return
+            generacion = self.generacion
             try:
                 fresh = self.fuente() if self.fuente else collect()
             except Exception:
                 continue  # un fallo puntual no debe tumbar el panel
             with self.lock:
+                if generacion != self.generacion:
+                    # Leyo el estado antes de un Ctrl-P o una nota: publicarlo desharia
+                    # el cambio en pantalla. Se tira y se repite ya, con el de ahora.
+                    self._wake.set()
+                    continue
                 self.rows = fresh
                 self.stamp += 1
 
     def touch(self):
         """El usuario interactuo: volver al refresco rapido."""
         self.last_input = time.time()
+
+    def cambio_local(self, rows=None):
+        """
+        El panel acaba de escribir algo que va en las filas (pausa, nota) y lo ha aplicado
+        ya en memoria, sobre `rows`.
+
+        Sin esto "a veces Ctrl-P no funciona": el refresco de fondo lee el estado al
+        empezar y publica al acabar, y uno que lo leyo antes de la tecla y llegaba despues
+        devolvia la sesion a ESPERANDO hasta el siguiente. Pulsarla otra vez, que es lo que
+        haces al ver que "no funciono", la despausaba de verdad. Hay dos casos y cubre los
+        dos: el que esta en vuelo se tira al acabar (la generacion ya no es la suya), y el
+        que ya se publico pero el panel no ha recogido se sustituye por `rows`.
+        """
+        with self.lock:
+            if rows is not None:
+                self.rows = rows
+            self.generacion += 1
+        self._wake.set()
 
     def snapshot(self):
         with self.lock:
@@ -4150,6 +4177,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
                     for r in rows:
                         if r["sessionId"] == editando_sid:
                             r["note"] = note_for(r, notas_sesion, notas_repo)
+                    feed.cambio_local(None if modo_recent else rows)
                     flash = t("nota_guardada") if editando.strip() else t("nota_borrada")
                     editando, requery = None, True
                 elif k == "esc":
@@ -4231,6 +4259,8 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 for r in rows:
                     if r["sessionId"] == objetivo["sessionId"]:
                         r["paused"] = en_pausa
+                # y que un refresco que leyo el estado antes de la tecla no la deshaga
+                feed.cambio_local(None if modo_recent else rows)
                 flash = t("pausada" if en_pausa else "reanudada", name=objetivo["name"])
                 requery = True
             elif k == "recuperables":
@@ -5002,6 +5032,9 @@ class FeedFijo:
 
     def touch(self):
         pass
+
+    def cambio_local(self, rows=None):
+        pass        # no refresca: no hay refresco que pueda llegar tarde
 
     def force(self):
         pass
