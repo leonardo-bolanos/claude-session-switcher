@@ -2,6 +2,7 @@
 capacidad: context-usage
 estado: implementada
 modo: retroactivo
+version: 1.6.0
 rutas:
   - ccl
   - test_ccl.py
@@ -18,9 +19,9 @@ ultima_verificacion_fecha: 2026-11-10
 
 # 004 · Cuánto contexto lleva cada sesión
 
-> **Implementada** el 2026-11-10, sin versión publicada todavía. Se escribió antes del código, con
-> las dos decisiones del usuario (abajo), y se reconcilió al terminar: salió como se diseñó; lo
-> poco que cambió está en *Cómo quedó*.
+> **Implementada en 1.6.0** (`7f85583`). Se escribió antes del código, con las dos decisiones del
+> usuario (abajo), y se reconcilió al terminar: salió como se diseñó; lo poco que cambió está en
+> *Cómo quedó*.
 
 ## Qué se pide
 

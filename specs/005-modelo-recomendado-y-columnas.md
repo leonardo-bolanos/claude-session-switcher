@@ -2,6 +2,7 @@
 capacidad: model-advice-and-columns
 estado: implementada
 modo: retroactivo
+version: 1.6.0
 rutas:
   - ccl
   - test_ccl.py
@@ -17,9 +18,9 @@ ultima_verificacion_fecha: 2026-11-11
 
 # 005 · El modelo que recomienda la IA, y columnas a la carta
 
-> **Implementada** el 2026-11-11, sin versión publicada todavía. Se escribió antes del código, con
-> la decisión del usuario (abajo), y se reconcilió al terminar: salió como se diseñó; lo que se
-> añadió por el camino está en *Cómo quedó*.
+> **Implementada en 1.6.0** (`474238e`, y `04d27d7` para dejarla apagada salvo `CCL_IA=1`). Se
+> escribió antes del código, con la decisión del usuario (abajo), y se reconcilió al terminar: salió
+> como se diseñó; lo que se añadió por el camino está en *Cómo quedó*.
 
 ## Qué se pide
 
