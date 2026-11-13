@@ -86,6 +86,11 @@ FIJAS = [fila(i + 1, n, i + 1) for i, n in enumerate({NOMBRES!r})]
 # `collect` deja de devolver esa sesion, como si su proceso hubiera muerto.
 _MATAR = os.environ.get("CCL_TEST_MATAR")
 _MUERTA = os.environ.get("CCL_TEST_MUERTA", "alfa")
+# Para probar "un refresco reordena la lista entre los dos clics de un doble".
+_REORDENAR = os.environ.get("CCL_TEST_REORDENAR")
+# La ventana del doble clic, ancha para que un runner lento no la pierda entre eventos.
+if os.environ.get("CCL_TEST_DOBLE"):
+    ccl.DOUBLE_CLICK = float(os.environ["CCL_TEST_DOBLE"])
 
 def coleccionar():
     # Se parchea `collect`, que se salta `build`, y es build quien pega las notas a las
@@ -95,6 +100,12 @@ def coleccionar():
     filas = [dict(f) for f in FIJAS]
     if _MATAR and os.path.exists(_MATAR):
         filas = [f for f in filas if f["name"] != _MUERTA]
+    if _REORDENAR and os.path.exists(_REORDENAR):
+        # `delta` acaba de tener actividad: el refresco la sube arriba del todo, y debajo
+        # del raton queda otra sesion.
+        for f in filas:
+            if f["name"] == "delta":
+                f["ts"] = ahora.isoformat().replace("+00:00", "Z")
     if os.environ.get("CCL_TEST_DUPLICADA"):
         # `claude --resume` sobre `beta` mientras seguia abierta: OTRO proceso con el MISMO
         # sessionId. Un poco mas vieja de actividad, para que salga justo debajo.
@@ -473,6 +484,27 @@ class TestRaton(unittest.TestCase):
             p.enviar(press(FILA_DE["delta"]), press(FILA_DE["delta"]))
             self.assertEqual(p.aviso(), "", "no deberia haber abierto nada")
             self.assertEqual(p.cursor(), "delta")
+
+    def test_un_refresco_entre_los_dos_clics_no_abre_la_vecina(self):
+        """
+        "A veces al dar doble clic me lleva a otra sesión." El doble se reconocia por la
+        FILA de la terminal, y la lista se reordena por actividad en cada refresco: si uno
+        caia entre los dos clics, el segundo abria lo que hubiera quedado debajo. Ahora el
+        refresco espera a que pase la ventana del doble, y se aplica despues.
+        """
+        señal = os.path.join(_NOTAS_TMP, f"reordenar-{next(_contador_notas)}")
+        entorno = {"CCL_TEST_REFRESH": "0.2", "CCL_TEST_REORDENAR": señal,
+                   "CCL_TEST_DOBLE": str(5 * FACTOR_ESPERA)}
+        with con_panel(entorno=entorno) as p:
+            p.enviar(press(FILA_DE["delta"]))
+            open(señal, "w").close()
+            p._drenar(0.8 * FACTOR_ESPERA)   # varios refrescos, ya con delta arriba
+            p.enviar(press(FILA_DE["delta"]))
+            self.assertIn("delta", p.aviso(), "tenia que abrir la del primer clic")
+            # y el refresco retenido no se pierde: llega en cuanto acaba el doble
+            p._drenar(0.8 * FACTOR_ESPERA)
+            lineas = p.ultima().split("\n")
+            self.assertIn("delta", lineas[FILA_DE["alfa"] - 1])
 
     def test_dos_clics_en_filas_distintas_no_son_un_doble(self):
         with con_panel() as p:

@@ -60,8 +60,12 @@ sobrevivia 1**. Se notaba al escribir rapido en el filtro, y hacia imposible el 
 (sus cuatro eventos llegan en una sola rafaga). Va con `termios.TCSANOW` — si alguien lo
 "simplifica" a `tty.setraw(fd)`, vuelve.
 
-**El terminal NO reporta dobles clics**, solo clics sueltos: el doble se sintetiza por tiempo y
-fila (`DOUBLE_CLICK`). Y el **release no es un clic**, o cada clic simple contaria dos veces y
+**El terminal NO reporta dobles clics**, solo clics sueltos: el doble se sintetiza por tiempo,
+fila **y sesión** (`es_doble_clic`). La fila sola no basta: la lista se reordena por actividad en
+cada refresco, y si uno caía entre los dos clics el segundo abría lo que hubiera quedado debajo.
+Por eso además el panel retiene el refresco mientras dura la ventana del doble (`entre_clics`);
+lo prueba `test_un_refresco_entre_los_dos_clics_no_abre_la_vecina`, que falla sin la retención.
+Y el **release no es un clic**, o cada clic simple contaria dos veces y
 pareceria doble. Llega como `soltar:<fila>:<columna>` —en SGR el terminal dice donde se solto— y el
 panel lo ignora sin repintar, salvo para terminar un arrastre de pestaña. Arrastrar no necesita el
 modo 1002: pulsar y soltar en columnas distintas ya lo es. Pero **soltar en la MISMA columna es un

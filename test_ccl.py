@@ -1697,6 +1697,12 @@ class TestFormato(unittest.TestCase):
 # ────────────────────────── agrupacion y orden ──────────────────────────
 
 
+def turno(origen, **delta):
+    """Un mensaje `user` del transcript: quien lo escribio va en `origin.kind`."""
+    return {"type": "user", "timestamp": iso(**delta), "origin": {"kind": origen},
+            "message": {"role": "user", "content": "algo"}}
+
+
 def row(num, sid, status="idle", ts=None, kind="interactive", paused=False):
     return {"num": num, "name": f"s{num}", "repo": "r", "cwd": "/x", "kind": kind,
             "status": status, "sessionId": sid, "pid": num, "tty": "", "ventana": None,
@@ -1948,24 +1954,28 @@ class TestPausadas(unittest.TestCase):
         g = ccl.grouped([row(1, "a", "busy", ts=iso(minutes=1), paused=True)])
         self.assertEqual([lbl for lbl, _, _ in g], [ccl.t("grupo_busy")])
 
-    def test_volver_a_trabajar_le_quita_la_pausa(self):
+    def test_escribirle_despues_de_pausarla_le_quita_la_pausa(self):
         """
-        Pausar dice "espera a otro, no me avises". En cuanto vuelve a estar `busy` esa
-        frase es falsa: le diste trabajo tú. Si la marca se quedara, al terminar caería
-        otra vez en PAUSADAS y sería la única sesión que NO te avisa — justo la que
-        acabas de atender.
+        Pausar dice "espera a otro, no me avises". Si le escribes, esa frase es falsa: le
+        diste trabajo tú. Si la marca se quedara, al terminar caería otra vez en PAUSADAS
+        y sería la única sesión que NO te avisa — justo la que acabas de atender.
         """
         ccl.toggle_paused("sid-a")
-        quedan = ccl.despausar_las_que_trabajan(
-            [{"sessionId": "sid-a", "status": "busy"}], {"sid-a"})
+        quedan = ccl.despausar_las_que_le_escribiste({"sid-a"},
+                                                     {"sid-a": iso(minutes=-1)})
         self.assertEqual(quedan, set())
         self.assertEqual(ccl.load_state()[2], set(), "no se guardó en disco")
 
-    def test_una_pausada_que_sigue_parada_conserva_la_marca(self):
+    def test_un_prompt_de_antes_de_pausarla_no_se_la_quita(self):
+        """Lo normal: le escribiste, contestó, y entonces la pausaste."""
         ccl.toggle_paused("sid-a")
-        quedan = ccl.despausar_las_que_trabajan(
-            [{"sessionId": "sid-a", "status": "idle"}], {"sid-a"})
+        quedan = ccl.despausar_las_que_le_escribiste({"sid-a"}, {"sid-a": iso(hours=1)})
         self.assertEqual(quedan, {"sid-a"})
+        self.assertEqual(ccl.load_state()[2], {"sid-a"})
+
+    def test_una_pausada_a_la_que_no_escribes_conserva_la_marca(self):
+        ccl.toggle_paused("sid-a")
+        self.assertEqual(ccl.despausar_las_que_le_escribiste({"sid-a"}, {}), {"sid-a"})
         self.assertEqual(ccl.load_state()[2], {"sid-a"})
 
     def test_despausar_no_toca_ni_las_notas_ni_los_spaces(self):
@@ -1974,30 +1984,114 @@ class TestPausadas(unittest.TestCase):
         ccl.toggle_paused("sid-a")
         ccl._hs = lambda lua, marca, timeout=8: "4"
         ccl.recordar_space("sid-a")
-        ccl.despausar_las_que_trabajan([{"sessionId": "sid-a", "status": "busy"}],
-                                       {"sid-a"})
+        ccl.despausar_las_que_le_escribiste({"sid-a"}, {"sid-a": iso(minutes=-1)})
         sesion, _, pausadas, spaces = ccl.load_state()
         self.assertEqual(sesion["sid-a"], "esperando a Felipe")
         self.assertEqual(spaces, {"sid-a": 4})
         self.assertEqual(pausadas, set())
 
-    def test_sin_ninguna_trabajando_no_escribe_el_archivo(self):
+    def test_despausar_parte_de_lo_que_hay_en_disco(self):
+        """
+        `build` lee las pausadas al empezar. Si entretanto pausas otra, despausar desde esa
+        copia vieja la borraba al reescribir el archivo entero.
+        """
+        ccl.toggle_paused("sid-a")
+        vistas_por_build = ccl.load_state()[2]
+        ccl.toggle_paused("sid-b")                       # llega mientras build trabaja
+        ccl.despausar_las_que_le_escribiste(vistas_por_build, {"sid-a": iso(minutes=-1)})
+        self.assertEqual(ccl.load_state()[2], {"sid-b"})
+
+    def test_sin_ninguna_atendida_no_escribe_el_archivo(self):
         """Corre en cada refresco: reescribir el JSON por nada es gratis de evitar."""
         ccl.toggle_paused("sid-a")
         antes = os.path.getmtime(ccl.NOTES_FILE)
         time.sleep(0.01)
-        ccl.despausar_las_que_trabajan([{"sessionId": "sid-b", "status": "busy"}],
-                                       {"sid-a"})
+        ccl.despausar_las_que_le_escribiste({"sid-a"}, {"sid-a": iso(hours=1),
+                                                        "sid-b": iso(minutes=-1)})
         self.assertEqual(os.path.getmtime(ccl.NOTES_FILE), antes)
 
-    def test_build_la_despausa_al_construir_las_filas(self):
+    def test_pausar_apunta_cuando_y_reanudar_lo_borra(self):
+        ccl.toggle_paused("sid-a")
+        cuando = ccl.parse_ts(ccl.pausadas_desde()["sid-a"])
+        self.assertLess(abs((datetime.now(timezone.utc) - cuando).total_seconds()), 5)
+        ccl.toggle_paused("sid-a")
+        self.assertNotIn("sid-a", ccl.leer_json(ccl.NOTES_FILE, {})["pausada_desde"])
+
+    def test_las_pausadas_de_antes_cuentan_desde_el_ultimo_guardado(self):
+        """
+        Las pausadas guardadas antes de apuntar la fecha no la tienen. Contar desde el
+        ultimo guardado del archivo, que es posterior a todas, hace que actualizar `ccl`
+        no se lleve ninguna pausa: un prompt anterior a esa hora no las despausa.
+        """
+        ccl.escribir_json(ccl.NOTES_FILE, {"pausadas": ["sid-a", "sid-b"]})
+        hace_una_hora = time.time() - 3600
+        os.utime(ccl.NOTES_FILE, (hace_una_hora, hace_una_hora))
+        quedan = ccl.despausar_las_que_le_escribiste(
+            {"sid-a", "sid-b"}, {"sid-a": iso(hours=2), "sid-b": iso(minutes=30)})
+        self.assertEqual(quedan, {"sid-a"})
+
+    def test_la_fecha_de_las_de_antes_queda_escrita_y_no_se_mueve(self):
+        """Si cada guardado la movia al momento del guardado, un prompt intermedio se
+        perdia. El primer guardado la deja escrita con la hora de antes."""
+        ccl.escribir_json(ccl.NOTES_FILE, {"pausadas": ["sid-a"]})
+        hace_una_hora = time.time() - 3600
+        os.utime(ccl.NOTES_FILE, (hace_una_hora, hace_una_hora))
+        ccl.save_note("sid-x", "un guardado cualquiera")
+        cuando = ccl.parse_ts(ccl.leer_json(ccl.NOTES_FILE, {})["pausada_desde"]["sid-a"])
+        self.assertLess(abs(cuando.timestamp() - hace_una_hora), 2)
+
+    def _cfg_con_transcript(self, sid, *entradas):
+        carpeta = os.path.join(self.tmp.name, "cfg", "projects", "-x")
+        os.makedirs(carpeta, exist_ok=True)
+        with open(os.path.join(carpeta, f"{sid}.jsonl"), "w") as fh:
+            for e in entradas:
+                fh.write(json.dumps(e) + "\n")
+        return os.path.join(self.tmp.name, "cfg")
+
+    def test_build_la_despausa_cuando_le_escribes(self):
         """De punta a punta: es `build` quien lo aplica, en cada `collect`."""
         ccl.toggle_paused("sid-a")
+        cfg = self._cfg_con_transcript("sid-a", turno("human", minutes=-1))
         sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1,
-                     "status": "busy"}]
+                     "status": "busy", "_cfg": cfg}]
         fila = ccl.build(sesiones, {}, {}, {"sid-a": 1})[0]
         self.assertFalse(fila["paused"])
         self.assertEqual(ccl.load_state()[2], set())
+
+    def test_una_tarea_de_fondo_o_otra_sesion_no_le_quitan_la_pausa(self):
+        """
+        El fallo reportado: "la pongo en pausadas y un momento después vuelve a
+        esperando". Se despausaba al verla `busy`, y una sesion se pone `busy` sin ti
+        cuando termina una tarea de fondo o le escribe otra sesion. Mientras corre sale en
+        TRABAJANDO; al acabar tiene que volver a PAUSADAS.
+        """
+        ccl.toggle_paused("sid-a")
+        cfg = self._cfg_con_transcript("sid-a", turno("human", hours=1),
+                                       turno("task-notification", minutes=-1),
+                                       turno("peer", minutes=-2))
+        sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1,
+                     "status": "busy", "_cfg": cfg}]
+        fila = ccl.build(sesiones, {}, {}, {"sid-a": 1})[0]
+        self.assertTrue(fila["paused"])
+        self.assertEqual(ccl.grouped([fila])[0][0], ccl.t("grupo_busy"))
+        fila["status"] = "idle"
+        self.assertEqual(ccl.grouped([fila])[0][0], ccl.t("grupo_pausa"))
+
+    def test_ve_tu_prompt_aunque_haya_quedado_lejos_de_la_cola(self):
+        """
+        Con la cola de 64 KB se perdia el 28 % de los prompts: en los 20 s que tarda el
+        refresco en reposo, el turno ya habia escrito mas. Sin verlo no se despausaba.
+        """
+        ccl.toggle_paused("sid-a")
+        relleno = {"type": "assistant", "timestamp": iso(minutes=-3),
+                   "message": {"content": "x" * 4000}}
+        cfg = self._cfg_con_transcript("sid-a", turno("human", minutes=-1),
+                                       *[relleno] * (ccl.TAIL_BYTES // 4000 + 5))
+        self.assertIsNone(ccl.read_transcript("sid-a", cfg).get("humano"),
+                          "el caso no vale si el prompt cabe en la cola")
+        sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1,
+                     "status": "busy", "_cfg": cfg}]
+        self.assertFalse(ccl.build(sesiones, {}, {}, {"sid-a": 1})[0]["paused"])
 
     def test_una_de_background_pausada_no_sale_dos_veces(self):
         rows = [row(1, "bg", "idle", kind="background", paused=True, ts=iso(minutes=1))]
@@ -2624,8 +2718,7 @@ class TestOrdenDePestañas(unittest.TestCase):
         ccl.toggle_paused("sid-a")
         ccl._hs = lambda lua, marca, timeout=8: "4"
         ccl.recordar_space("sid-a")
-        ccl.despausar_las_que_trabajan([{"sessionId": "sid-a", "status": "busy"}],
-                                       {"sid-a"})
+        ccl.despausar_las_que_le_escribiste({"sid-a"}, {"sid-a": iso(minutes=-1)})
         self.assertEqual(ccl.orden_proyectos(), ["/x/b", "/x/a"])
         sesion, _, _, spaces = ccl.load_state()
         self.assertEqual(sesion["sid-a"], "esperando a Felipe")
@@ -2829,6 +2922,8 @@ class TestTmux(unittest.TestCase):
                           ventanas={"ttys004": ("iTerm2", "42", 3)})
         self.assertEqual(fila["tmux"], ("trabajo:0.1", "trabajo"))
         self.assertEqual(fila["ventana"], ("iTerm2", "42", 3))
+        # y al enfocar se busca ESE tty en iTerm, no el del panel, que alli no existe
+        self.assertEqual(fila["tty_terminal"], "ttys004")
 
     def test_suelta_no_tiene_ventana_pero_tampoco_lleva_el_aviso(self):
         """Se puede llegar a ella —enganchándola—, así que el ⚠ mentiría."""
@@ -2861,20 +2956,105 @@ class TestTmux(unittest.TestCase):
 
     def test_si_esta_enganchada_no_abre_pestaña_ninguna(self):
         self._tmux_falso("", "")
-        abiertas = []
+        abiertas, argvs = [], []
         orig_p, orig_run = ccl.pestaña_nueva, ccl.subprocess.run
         ccl.pestaña_nueva = (lambda orden, quiet=False, space=None:
                              abiertas.append(orden) or 0)
-        ccl.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0,
-                                                            "stderr": ""})()
+        ccl.subprocess.run = lambda argv, **k: argvs.append(argv) or type(
+            "R", (), {"returncode": 0, "stdout": "ok\n", "stderr": ""})()
         try:
             fila = {"tmux": ("trabajo:0.1", "trabajo"), "ventana": ("iTerm2", "42", 3),
-                    "name": "n", "repo": "r", "tty": "", "num": 1, "cwd": "/x"}
+                    "name": "n", "repo": "r", "tty": "ttys092", "tty_terminal": "ttys004",
+                    "num": 1, "cwd": "/x"}
             self.assertEqual(ccl.focus(fila, quiet=True), 0)
         finally:
             ccl.pestaña_nueva, ccl.subprocess.run = orig_p, orig_run
         self.assertEqual(abiertas, [], "ya estaba a la vista: no hay que enganchar nada")
         self.assertIn(("select-pane", "-t", "trabajo:0.1"), self.llamadas)
+        self.assertEqual(argvs[0][-2:], ["/dev/ttys004", "42"],
+                         "hay que buscar el tty del CLIENTE: el del panel no esta en iTerm")
+
+
+class TestEnfocarPorTty(unittest.TestCase):
+    """
+    "A veces al dar Enter o doble clic me lleva a otra sesión." `focus` saltaba a "la
+    pestaña N de la ventana W" con el N del ultimo refresco, de hasta 4 s (20 s en reposo).
+    Cerrar o mover una pestaña en ese rato corre una posicion todas las de detras, y el N
+    viejo es la vecina. Ahora busca el tty en el momento; la ventana es solo la pista.
+    """
+
+    def _enfocar(self, fila, salida="ok\n", codigo=0):
+        argvs = []
+        orig = ccl.subprocess.run
+        ccl.subprocess.run = lambda argv, **k: argvs.append(argv) or type(
+            "R", (), {"returncode": codigo, "stdout": salida, "stderr": "error"})()
+        try:
+            base = {"tmux": None, "num": 1, "name": "n", "repo": "r", "cwd": "/x"}
+            return ccl.focus(dict(base, **fila), quiet=True), argvs
+        finally:
+            ccl.subprocess.run = orig
+
+    def test_busca_el_tty_y_no_usa_el_indice_de_pestaña(self):
+        res, argvs = self._enfocar({"ventana": ("iTerm2", "7", 3), "tty": "ttys012",
+                                    "tty_terminal": "ttys012"})
+        self.assertEqual(res, 0)
+        self.assertEqual(argvs[0][2], ccl.ENFOCAR_ITERM)
+        self.assertEqual(argvs[0][3:], ["/dev/ttys012", "7"])
+        self.assertNotIn("select tab 3", argvs[0][2])
+
+    def test_si_su_pestaña_ya_no_existe_no_enfoca_otra(self):
+        res, _ = self._enfocar({"ventana": ("iTerm2", "7", 3), "tty": "ttys012"},
+                               salida="no\n")
+        self.assertEqual(res, 1)
+
+    def test_si_osascript_falla_tambien_lo_dice(self):
+        res, _ = self._enfocar({"ventana": ("iTerm2", "7", 3), "tty": "ttys012"},
+                               salida="", codigo=1)
+        self.assertEqual(res, 1)
+
+    def test_terminal_app_usa_su_propio_script(self):
+        res, argvs = self._enfocar({"ventana": ("Terminal", "9", 1), "tty": "ttys030"})
+        self.assertEqual(res, 0)
+        self.assertEqual(argvs[0][2], ccl.ENFOCAR_TERMINAL)
+        self.assertEqual(argvs[0][3:], ["/dev/ttys030", "9"])
+
+    def test_build_apunta_el_tty_que_hay_que_buscar(self):
+        ses = [{"sessionId": "sid-a", "name": "n", "cwd": "/x/repo", "pid": 1}]
+        fila = ccl.build(ses, {1: "ttys092"}, {"ttys092": ("iTerm2", "5", 2)},
+                         {"sid-a": 1})[0]
+        self.assertEqual(fila["tty_terminal"], "ttys092")
+
+    def test_los_scripts_reciben_el_texto_por_argv(self):
+        """Nada interpolado: el tty y la pista entran como datos, no como codigo."""
+        for script in (ccl.ENFOCAR_ITERM, ccl.ENFOCAR_TERMINAL):
+            self.assertIn("on run argv", script)
+            self.assertNotIn("{", script.replace("set orden to {}", ""))
+
+
+class TestDobleClic(unittest.TestCase):
+    """
+    Dos clics en la misma FILA de la terminal no son un doble clic si debajo hay otra
+    sesion: un refresco entre ambos reordena la lista, y el segundo abria la vecina.
+    """
+
+    def test_misma_fila_y_misma_sesion_a_tiempo(self):
+        self.assertTrue(ccl.es_doble_clic((9, "sid-a", 10.0), 9, "sid-a", 10.2))
+
+    def test_misma_fila_pero_otra_sesion_no(self):
+        self.assertFalse(ccl.es_doble_clic((9, "sid-a", 10.0), 9, "sid-b", 10.2))
+
+    def test_otra_fila_no(self):
+        self.assertFalse(ccl.es_doble_clic((9, "sid-a", 10.0), 7, "sid-a", 10.2))
+
+    def test_lento_no(self):
+        self.assertFalse(ccl.es_doble_clic((9, "sid-a", 10.0), 9, "sid-a",
+                                           10.0 + ccl.DOUBLE_CLICK + 0.01))
+
+    def test_sobre_una_cabecera_no(self):
+        self.assertFalse(ccl.es_doble_clic((2, None, 10.0), 2, None, 10.1))
+
+    def test_sin_clic_previo_no(self):
+        self.assertFalse(ccl.es_doble_clic(ccl.SIN_CLIC, 9, "sid-a", 10.0))
 
 
 class TestRegistroVacioPeroSesionesVivas(unittest.TestCase):
@@ -3524,7 +3704,7 @@ class TestNoEnsuciarLaConfigReal(unittest.TestCase):
         import inspect
         # Toda clase que llame a algo que escriba tiene que desviar NOTES_FILE en setUp.
         escriben = ("save_note", "toggle_paused", "recordar_space", "guardar_estado",
-                    "despausar_las_que_trabajan", "escribir_json")
+                    "despausar_las_que_le_escribiste", "escribir_json")
         fuente = inspect.getsource(inspect.getmodule(self))
         for bloque in fuente.split("\nclass ")[1:]:
             nombre = bloque.split("(")[0]

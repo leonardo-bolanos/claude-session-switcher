@@ -120,7 +120,7 @@ ccl --version    # print the version
 | `1` `2` … | Type the session number; `⌫` corrects, `Enter` confirms |
 | `⌥1` … `⌥9` | Jump to the 1st, 2nd … **WAITING** session, no confirmation |
 | `Ctrl-N` | Write **your own note** on this session (`←` `→` `Home` `End` move the cursor) |
-| `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when it starts working again) |
+| `Ctrl-P` | **Pause** this session: it's waiting on someone else, not on you (cleared automatically when you write to it again) |
 | `Ctrl-T` | Toggle the **table view**: one line per session, in columns |
 | `Ctrl-E` | Choose which **columns** the table shows (it's remembered) |
 | `Ctrl-G` | Group **by project** instead of by state |
@@ -399,10 +399,13 @@ Pair it with a note saying *what* you're waiting for:
 ```
 
 If a paused session starts working again it shows up under WORKING, not down here: if it's
-running, it isn't waiting on anybody.
+running, it isn't waiting on anybody. But the mark only goes when **you** write to it. A
+background task finishing or another Claude session messaging it also makes it work — and those
+are exactly the sessions you pause — so while that runs it shows under WORKING, and then it's
+back here.
 
 It's stored next to the notes, in `~/.claude/ccl-notes.json` under `pausadas`, as a list of
-session IDs. Nothing is pruned there either — a session ID is a UUID and never comes back, so a
+session IDs, with when you paused each one under `pausada_desde`. Nothing is pruned there either — a session ID is a UUID and never comes back, so a
 leftover entry can't pause anyone by mistake.
 
 </details>
@@ -675,8 +678,6 @@ dependencies, no manual recording step, and it exposes none of your actual repos
   (also undocumented): the row is the job, so it says BACKGROUND, but `Enter` takes you to the
   tab, and the tab's conversation isn't offered for resuming as if it had died. If that format
   changes, the row just stops leading to the tab.
-- **Tab indices shift** if you close a tab in the same window between listing and choosing. The
-  window is seconds wide and the worst case is focusing the neighbouring tab.
 - **iTerm2 only** for the window jump. The listing works in any terminal. Terminal.app would be
   viable (it exposes `tty` over AppleScript) and so would tmux; see [TODO.md](TODO.md).
 - **macOS only.** On Windows the script won't even start: the panel uses `termios`/`tty`, which

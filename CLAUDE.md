@@ -31,6 +31,13 @@ Python (~0,5 s). Si lo reescribes con bucles anidados "más legibles", vuelves a
 (`/dev/ttys035/dev/ttys036...`) y el resultado **enfoca ventanas equivocadas en silencio**.
 Cualquier cambio ahí se verifica comparando contra la versión lenta, fila por fila.
 
+**Y el índice de pestaña de ese mapa NO sirve para saltar.** Es del último refresco (4 s, 20 s
+en reposo), y cerrar o mover una pestaña en ese rato corre una posición todas las de detrás:
+«la pestaña 6» pasa a ser la vecina — reportado como "a veces Enter o el doble clic me lleva a
+otra sesión". `focus()` busca el tty en el momento (`ENFOCAR_ITERM`), empezando por la ventana
+del mapa: una consulta, ~0,2 s, lo mismo que saltar por índice. En tmux busca el del cliente
+(`tty_terminal`).
+
 **El `mtime` del transcript NO es la última actividad.** Se escribe en bloque: varias sesiones
 acaban con la misma marca exacta. Usa el último campo `timestamp` de dentro del archivo.
 
@@ -89,14 +96,22 @@ Los grupos de `grouped()` son **excluyentes**: una pausada que vuelve a `busy` s
 TRABAJANDO (si corre, no espera a nadie) y una de background pausada sale solo en PAUSADAS. Si
 añades un grupo, revisa que ninguna fila pueda caer en dos.
 
+**La pausa solo la quita un prompt TUYO posterior a pausarla, no `busy`.** Una sesión se pone
+`busy` sin ti cuando termina una tarea de fondo o le escribe otra sesión, y son justo las que
+pausas: un tercio de los turnos de las sesiones vivas no los empezó el usuario. Despausando al
+verla `busy`, "la pongo en pausadas y al rato vuelve a esperando". El transcript dice quién
+empezó cada turno (`origin.kind`: `human`, `peer`, `task-notification`) y `toggle_paused` apunta
+cuándo se pausó (`pausada_desde`). Para las pausadas la cola de 64 KB no basta —perdía el 28 % de
+los prompts en los 20 s de un refresco en reposo—: `_humano_lejano` mira hasta 2 MB.
+
 **Un solo escritor de `ccl-notes.json`: `guardar_estado()`.** El archivo ya guarda tres cosas
 (notas por sesion, notas por repo, pausadas) y `save_note` se escribia el JSON entero por su
 cuenta con dos claves — la primera nota borraba todas las pausadas. Por eso `load_state()`
 devuelve las tres y **nadie mas llama a `escribir_json(NOTES_FILE, …)`**. Lo mismo vale para la
 deteccion del formato viejo: mira todas las claves, porque un archivo que solo tuviera `pausadas`
 se leia como el formato plano y la lista acababa de nota de un repo. El orden de proyectos
-(specs/002) y las columnas ocultas (specs/005) van aparte: `guardar_estado` los conserva cuando no
-se los pasan.
+(specs/002), las columnas ocultas (specs/005) y `pausada_desde` van aparte: `guardar_estado` los
+conserva cuando no se los pasan.
 
 **La tabla se construye con `width - 4`.** El panel pinta cada fila como `clip(texto, cols - 4)`
 —margen mas barra del cursor— asi que construyendola al ancho entero el recorte se comia la
@@ -414,6 +429,7 @@ manda a `--recent`, que lee de disco y no depende del registro.
 |---|---|---|
 | `claude agents --cwd ~ --json` | `pid`, `cwd`, `kind`, `name`, `sessionId`, `startedAt`, `status`; de los jobs de fondo, `id` | El panel se queda sin datos |
 | Transcript `<cfg>/projects/*/<id>.jsonl` | `timestamp`, `gitBranch`, `effort`, `message.model`, `message.usage`, y los tipos `ai-title` / `last-prompt` / `compact_boundary` (`postTokens`) | Esos campos desaparecen; el resto sigue |
+| Transcript, entradas `user` | `origin.kind == "human"` (visto también `peer` y `task-notification`) | Una pausa ya no se quita sola al escribirle: hay que quitarla con `Ctrl-P` |
 | `<cfg>/cache/model-catalog/*.json` | `id` y `runtime.max_input_tokens` de cada modelo, estén donde estén dentro del JSON | El contexto sale en tokens, en gris, en vez de en % (specs/004) |
 | `claude -p --model haiku` (specs/005) | `structured_output` con `--json-schema`, y que `--no-session-persistence`, `--restricted` y `--strict-mcp-config` sigan sin dejar transcript ni cargar hooks o MCP | La columna `ia` se queda vacia; el resto del panel, igual |
 | `<cfg>/sessions/<pid>.json` | `parkedJobId` y `sessionId`, solo de los pids vivos que faltan en el registro y solo si hay algún job | Un job deja de llevar a la pestaña que aparcó, y esa conversación vuelve a salir como muerta (specs/003) |
@@ -422,7 +438,9 @@ Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los cam
 `waitingFor` que aparecen en la documentación no existen en la salida real, y `--all` no añade
 nada. Por eso los grupos que salen de los datos son dos —y no los tres del panel oficial—, y por
 eso PAUSADAS lo marca el usuario a mano: no hay de dónde deducirlo. En 2.1.319 los jobs de fondo
-sí traen `state` (visto: `blocked`), pero no se sabe qué significa y no se usa.
+sí traen `state` (visto: `blocked`), pero no se sabe qué significa y no se usa. En 2.1.323 aparece
+`status: "waiting"` con `waitingFor: "input needed"` (un permiso o una pregunta pendiente): como
+todo compara con `!= "busy"`, va a ESPERANDO, que es lo correcto.
 
 **Una sesión APARCADA desaparece del registro** (verificado en 2.1.319): Claude Code pasa la
 conversación a un job de fondo con otro `sessionId` y deja la pestaña con el proceso original.

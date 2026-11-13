@@ -57,9 +57,6 @@ In order of how feasible they look:
 
 - **The age column's clock only moves on refresh.** While idle (20 s) it can be that stale. It's
   cosmetic; it would be fixed by repainting without collecting data.
-- **The tab index shifts** if you close a tab in the same window between listing and choosing.
-  The risk window is seconds and the worst case is focusing the neighbouring tab, but the TTY
-  could be revalidated right before focusing.
 - **Killing or closing a session from the panel.** Deliberately dropped: a key that kills a
   process one keystroke away from the navigation keys is a bad idea without confirmation, and
   with confirmation it stops being fast.

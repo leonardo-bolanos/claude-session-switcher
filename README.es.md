@@ -120,7 +120,7 @@ ccl --version    # imprime la versión
 | `1` `2` … | Teclear el número de sesión; `⌫` corrige, `Enter` confirma |
 | `⌥1` … `⌥9` | Saltar a la 1ª, 2ª … de **ESPERANDO**, sin confirmar |
 | `Ctrl-N` | Escribir **tu propia nota** sobre esta sesión (`←` `→` `Inicio` `Fin` mueven el cursor) |
-| `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando vuelve a trabajar) |
+| `Ctrl-P` | **Pausar** esta sesión: espera a otro, no a ti (se quita sola cuando le vuelves a escribir) |
 | `Ctrl-T` | Cambiar a la **vista de tabla**: una línea por sesión, en columnas |
 | `Ctrl-E` | Elegir qué **columnas** enseña la tabla (se recuerda) |
 | `Ctrl-G` | Agrupar **por proyecto** en vez de por estado |
@@ -400,10 +400,12 @@ Combínalo con una nota que diga *qué* estás esperando:
 ```
 
 Si una pausada vuelve a trabajar aparece en TRABAJANDO, no aquí abajo: si está corriendo, no
-espera a nadie.
+espera a nadie. Pero la marca solo se quita cuando **tú** le escribes. Una tarea de fondo que
+termina o un mensaje de otra sesión de Claude también la ponen a trabajar —y son justo las
+sesiones que pausas—, así que mientras eso corre sale en TRABAJANDO, y después vuelve aquí.
 
 Se guarda junto a las notas, en `~/.claude/ccl-notes.json` bajo `pausadas`, como una lista de
-sessionId. Tampoco se purga nada: un sessionId es un UUID y no vuelve, así que una entrada
+sessionId, y cuándo pausaste cada una bajo `pausada_desde`. Tampoco se purga nada: un sessionId es un UUID y no vuelve, así que una entrada
 huérfana no puede pausar a nadie por error.
 
 </details>
@@ -684,8 +686,6 @@ Sin dependencias, sin paso de grabación manual, y no expone ninguno de tus repo
   `~/.claude/sessions/` (tampoco documentado): la fila es el job, así que dice BACKGROUND, pero
   `Enter` te lleva a la pestaña, y la conversación de la pestaña no se ofrece para reanudar como
   si hubiera muerto. Si ese formato cambia, la fila simplemente deja de llevar a la pestaña.
-- **Los índices de pestaña se desplazan** si cierras una pestaña de la misma ventana entre listar
-  y elegir. El riesgo es de segundos y el peor caso es enfocar la pestaña vecina.
 - **Solo iTerm2** para el salto de ventana. El listado funciona en cualquier terminal.
   Terminal.app sí sería viable (expone `tty` por AppleScript) y tmux también; ver
   [TODO.md](TODO.md).

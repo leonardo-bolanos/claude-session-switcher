@@ -90,8 +90,9 @@ temporal: es el unico archivo que el panel escribe de verdad en disco.
 
 ## Pausadas (`Ctrl-P`), en el mismo archivo
 
-`ccl-notes.json` guarda `por_sesion`, `por_repo`, `pausadas` (lista de sessionId), `spaces` y
-`orden_proyectos` (el orden a mano de las pestañas, specs/002).
+`ccl-notes.json` guarda `por_sesion`, `por_repo`, `pausadas` (lista de sessionId),
+`pausada_desde` (cuándo se pausó cada una: solo un prompt tuyo posterior la despausa, ver
+CLAUDE.md), `spaces` y `orden_proyectos` (el orden a mano de las pestañas, specs/002).
 
 **Un solo escritor: `guardar_estado()`.** `save_note` se escribia el JSON entero por su cuenta con
 dos claves, asi que la primera nota borraba todas las pausadas. Cualquier cosa nueva que se guarde

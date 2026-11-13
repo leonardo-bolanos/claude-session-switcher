@@ -1324,6 +1324,8 @@ def read_transcript(session_id, cfg_dir=None):
             info["title"] = o["aiTitle"]
         if o.get("type") == "last-prompt" and o.get("lastPrompt"):
             info["prompt"] = o["lastPrompt"]
+        if _es_tuyo(o):
+            info["humano"] = o["timestamp"]
         msg = o.get("message")
         if isinstance(msg, dict) and msg.get("model"):
             info["model"] = msg["model"]
@@ -1397,6 +1399,61 @@ def _contexto_desde_el_final(al_reves):
 
 
 _CACHE_CONTEXTO = {}
+
+
+def _es_tuyo(o):
+    """
+    Si esta entrada del transcript es un prompt que escribiste TU. Claude Code apunta quien
+    empezo cada turno en `origin.kind`: "human", "peer" (otra sesion) o "task-notification"
+    (una tarea de fondo que termina). Solo lo primero quita una pausa. Los comandos `!` y lo
+    que se reinyecta al compactar no llevan `origin`: tampoco le dan trabajo al modelo.
+    """
+    origen = o.get("origin")
+    return (o.get("type") == "user" and isinstance(origen, dict)
+            and origen.get("kind") == "human" and bool(o.get("timestamp")))
+
+
+_CACHE_HUMANO = {}
+
+
+def _humano_lejano(session_id, cfg_dir=None):
+    """
+    Cuando le escribiste por ultima vez, buscando hasta `CONTEXTO_BYTES` atras.
+
+    Solo para las PAUSADAS cuya cola no trae ningun prompt tuyo. Con la cola de 64 KB se
+    perdia el 28 % de los prompts: medido en 3068, la mediana escribe 35 KB en los 20 s
+    siguientes (lo que tarda el refresco en reposo), el p99 684 KB, y un prompt con una
+    imagen pegada ya pesa eso el solo. Sin verlo, la pausa no se quitaba nunca. Se cachea
+    por `(tamaño, mtime)`, como `_contexto_lejano`: una pausada quieta no se relee.
+    """
+    base = cfg_dir or os.path.join(HOME, ".claude")
+    hits = glob.glob(os.path.join(base, "projects", "*", f"{session_id}.jsonl"))
+    if not hits:
+        return None
+    try:
+        st = os.stat(hits[0])
+        firma = (st.st_size, st.st_mtime_ns)
+        guardado = _CACHE_HUMANO.get(hits[0])
+        if guardado is not None and guardado[0] == firma:
+            return guardado[1]
+        with open(hits[0], "rb") as fh:
+            fh.seek(max(0, firma[0] - CONTEXTO_BYTES))
+            bloque = fh.read(CONTEXTO_BYTES)
+    except OSError:
+        return None
+    hallado = None
+    for linea in reversed(bloque.split(b"\n")):
+        if b'"human"' not in linea:
+            continue   # filtro barato: casi ninguna linea lo lleva, y parsear 2 MB no
+        try:
+            o = json.loads(linea)
+        except Exception:
+            continue   # la primera, cortada por el inicio del bloque
+        if isinstance(o, dict) and _es_tuyo(o):
+            hallado = o["timestamp"]
+            break
+    _CACHE_HUMANO[hits[0]] = (firma, hallado)
+    return hallado
 
 
 def _contexto_lejano(ruta, firma):
@@ -1995,8 +2052,8 @@ def load_state():
     notas escritas no puede perderlas por un cambio de formato.
     """
     datos = leer_json(NOTES_FILE, {})
-    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "spaces",
-                                "orden_proyectos", "columnas_ocultas")):
+    if any(k in datos for k in ("por_sesion", "por_repo", "pausadas", "pausada_desde",
+                                "spaces", "orden_proyectos", "columnas_ocultas")):
         crudo_sesion, crudo_repo = datos.get("por_sesion"), datos.get("por_repo")
     else:
         crudo_sesion, crudo_repo = {}, datos     # formato viejo: todo era por directorio
@@ -2024,7 +2081,8 @@ def load_notes():
     return sesion, repo
 
 
-def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None, ocultas=None):
+def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None, ocultas=None,
+                   desde=None):
     """
     El unico sitio que escribe el archivo. Las pausadas se ordenan para que el diff del
     JSON sea legible si alguien lo abre a mano.
@@ -2033,14 +2091,42 @@ def guardar_estado(sesion, repo, pausadas, spaces=None, orden=None, ocultas=None
     una pausa no sabe nada del orden, y no puede borrarlo por no pasarlo: es el fallo que
     ya paso con las pausadas, cuando la primera nota las borraba todas. Cerrado aqui, por
     construccion, y no confiando en que cada llamador se acuerde. Las columnas ocultas
-    (specs/005) van igual: `ocultas=None` las conserva.
+    (specs/005) y cuando se pauso cada sesion van igual: `None` las conserva.
     """
+    desde = pausadas_desde() if desde is None else desde
     escribir_json(NOTES_FILE, {"por_sesion": sesion, "por_repo": repo,
                                "pausadas": sorted(pausadas), "spaces": spaces or {},
+                               "pausada_desde": {s: desde[s] for s in pausadas if s in desde},
                                "orden_proyectos": (orden_proyectos() if orden is None
                                                    else list(orden)),
                                "columnas_ocultas": sorted(columnas_ocultas() if ocultas is None
                                                           else ocultas)})
+
+
+def pausadas_desde():
+    """
+    {sessionId pausado: cuando se pauso, en ISO}. Hace falta para saber si le escribiste
+    DESPUES de pausarla, que es lo unico que quita la pausa (`despausar_las_que_le_escribiste`).
+
+    Las pausadas de antes de apuntar la fecha no la tienen, y se les da la del ultimo
+    guardado del archivo: es posterior a todas ellas, asi que un prompt anterior a esa hora
+    no puede despausarlas, y actualizar `ccl` no se lleva las pausas de nadie. El siguiente
+    guardado la deja escrita (`guardar_estado` parte de aqui), asi que no se mueve.
+    """
+    crudo = leer_json(NOTES_FILE, {}).get("pausada_desde")
+    desde = ({k: v for k, v in crudo.items()
+              if isinstance(k, str) and isinstance(v, str) and parse_ts(v)}
+             if isinstance(crudo, dict) else {})
+    try:
+        guardado = datetime.datetime.fromtimestamp(os.path.getmtime(NOTES_FILE),
+                                                   datetime.timezone.utc).isoformat()
+    except OSError:
+        guardado = ahora_iso()
+    return {sid: desde.get(sid) or guardado for sid in load_state()[2]}
+
+
+def ahora_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def orden_proyectos():
@@ -2116,15 +2202,19 @@ def toggle_paused(session_id):
     No se purgan las de sesiones muertas, por lo mismo que las notas: un sessionId es un
     UUID y no se reutiliza, asi que una entrada huerfana no puede pausar a nadie por
     error, y son unos bytes.
+
+    Se apunta CUANDO: la pausa solo se quita si le escribes despues.
     """
     sesion, repo, pausadas, spaces = load_state()
+    desde = pausadas_desde()
     if session_id in pausadas:
         pausadas.discard(session_id)
         queda = False
     else:
         pausadas.add(session_id)
+        desde[session_id] = ahora_iso()
         queda = True
-    guardar_estado(sesion, repo, pausadas, spaces)
+    guardar_estado(sesion, repo, pausadas, spaces, desde=desde)
     return queda
 
 
@@ -2218,28 +2308,37 @@ def short_model(m):
     return m.replace("claude-", "").replace("-20", " ").split()[0]
 
 
-def despausar_las_que_trabajan(sessions, pausadas, spaces=None):
+def despausar_las_que_le_escribiste(pausadas, humanos):
     """
-    Quita la marca de pausa a las sesiones que han vuelto a trabajar. Devuelve el conjunto
-    que queda.
+    Quita la pausa a las sesiones a las que escribiste DESPUES de pausarlas. Devuelve las
+    que quedan. `humanos` es {sessionId: cuando le escribiste tu por ultima vez}.
 
-    Pausar dice "esta espera a otro, no me avises". En cuanto vuelve a estar `busy` esa
-    frase ya es falsa: le diste trabajo tu. Si la marca se quedara puesta, al terminar
-    caeria otra vez en PAUSADAS y **no te avisaria ni contaria para `-w`** — justo la
-    sesion que acabas de atender seria la unica invisible.
+    Pausar dice "esta espera a otro, no me avises". Si le escribes, esa frase ya es falsa:
+    le diste trabajo tu, y con la marca puesta al terminar caeria otra vez en PAUSADAS y
+    **no te avisaria ni contaria para `-w`** — justo la que acabas de atender.
 
-    Se despausa al verla `busy`, no al terminar, porque el flanco de "empieza a trabajar"
-    es el que significa "vuelvo a estar pendiente de esto".
+    Antes se despausaba al verla `busy`, y eso era el fallo: una sesion se pone `busy` sin
+    ti cuando termina una tarea de fondo o le escribe otra sesion — y son justo las que
+    pausas, las que esperan a un compañero. Medido en las sesiones vivas: un tercio de los
+    turnos no los empezo el usuario. Perdian la pausa y al acabar volvian a ESPERANDO.
+    Mientras corren siguen saliendo en TRABAJANDO (eso lo decide `grouped`), y al acabar
+    vuelven a PAUSADAS.
     """
-    trabajando = {s["sessionId"] for s in sessions
-                  if s.get("status") == "busy" and s["sessionId"] in pausadas}
-    if not trabajando:
+    if not any(humanos.get(sid) for sid in pausadas):
+        return pausadas   # corre en cada refresco: sin candidatas, ni se lee el archivo
+    desde = pausadas_desde()
+    atendidas = set()
+    for sid in pausadas:
+        escrito, pausada = parse_ts(humanos.get(sid)), parse_ts(desde.get(sid))
+        if escrito and pausada and escrito > pausada:
+            atendidas.add(sid)
+    if not atendidas:
         return pausadas
-    quedan = pausadas - trabajando
-    # Se relee el estado antes de escribir: entre la lectura de `build` y este punto pudo
-    # guardarse una nota desde el panel, y `guardar_estado` escribe el archivo entero.
-    sesion, repo, _, spaces_disco = load_state()
-    guardar_estado(sesion, repo, quedan, spaces if spaces is not None else spaces_disco)
+    # Se parte de lo que hay en DISCO, no de lo que leyo `build`: entre una cosa y otra pudo
+    # guardarse una nota o pausarse otra sesion, y `guardar_estado` escribe el archivo entero.
+    sesion, repo, en_disco, spaces = load_state()
+    quedan = en_disco - atendidas
+    guardar_estado(sesion, repo, quedan, spaces)
     return quedan
 
 
@@ -2247,10 +2346,19 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
     rows = []
     # una lectura por refresco: es diminuto
     notas_sesion, notas_repo, pausadas, spaces = load_state()
-    pausadas = despausar_las_que_trabajan(sessions, pausadas, spaces)
+    # Los transcripts se leen ANTES del bucle: decidir si una pausa sigue en pie necesita
+    # saber cuando le escribiste a cada sesion. Por sessionId, asi que las dos copias de
+    # una misma conversacion lo leen una vez.
+    infos = {s["sessionId"]: read_transcript(s["sessionId"], s.get("_cfg"))
+             for s in sessions}
+    humanos = {sid: i.get("humano") for sid, i in infos.items()}
+    for s in sessions:
+        if s["sessionId"] in pausadas and not humanos.get(s["sessionId"]):
+            humanos[s["sessionId"]] = _humano_lejano(s["sessionId"], s.get("_cfg"))
+    pausadas = despausar_las_que_le_escribiste(pausadas, humanos)
     cache_ia = leer_ia()
     for s in sessions:
-        info = read_transcript(s["sessionId"], s.get("_cfg"))
+        info = infos[s["sessionId"]]
         titulo = sin_control(info.get("title"))
         # Un job con su pestaña aparcada se enfoca en ESA pestaña: su propio tty es el del
         # proceso de fondo, que no esta en ningun terminal (specs/003).
@@ -2269,6 +2377,7 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             "aparcada": s.get("aparcada"),   # la conversacion de la pestaña que continua
             "pid": s["pid"],
             "tty": tty,
+            "tty_terminal": tty,   # el que se busca al enfocar; en tmux, el del cliente
             "ventana": ventanas.get(tty),
             "tmux": None,   # se rellena abajo: puede cambiar tambien el `iterm`
             "ts": info.get("ts"),
@@ -2293,6 +2402,7 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
         if info_tmux:
             destino, sesion, cliente = info_tmux
             rows[-1]["tmux"] = (destino, sesion)
+            rows[-1]["tty_terminal"] = cliente
             rows[-1]["ventana"] = ventanas.get(cliente) if cliente else None
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
     return marcar_duplicadas(rows)
@@ -3005,6 +3115,21 @@ def _log(*partes):
 MOUSE_ON = "\033[?1000h\033[?1006h"   # solo clics: 1002/1003 (arrastre, movimiento) no
 MOUSE_OFF = "\033[?1006l\033[?1000l"
 DOUBLE_CLICK = 0.4                    # segundos entre dos clics para que cuenten como doble
+SIN_CLIC = (0, None, 0.0)             # (fila, clave, momento) cuando no hay clic pendiente
+
+
+def es_doble_clic(anterior, fila, clave, ahora):
+    """
+    Si este clic completa un doble: misma fila, misma SESION y a tiempo.
+
+    La misma fila no basta. La lista se reordena por actividad en cada refresco, y si uno
+    caia entre los dos clics, bajo el raton quedaba otra sesion: el segundo clic abria la
+    vecina. El panel ademas retiene el refresco entre los dos clics para que el doble
+    salga; esto es lo que garantiza que, si aun asi se mueve, no se abra la equivocada.
+    """
+    fila_a, clave_a, momento = anterior
+    return (clave is not None and fila_a == fila and clave_a == clave
+            and ahora - momento < DOUBLE_CLICK)
 
 
 def _mouse_event(boton, fila, col):
@@ -3744,7 +3869,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
     # (pestaña, columna) pulsadas en la barra, por si el boton se suelta sobre otra: eso es
     # arrastrarla (specs/002). Se vacia en cada `soltar:`, se haya movido algo o no.
     arrastre = None
-    last_click = (0, 0.0)   # (fila, momento) del ultimo clic, para detectar el doble
+    last_click = SIN_CLIC   # (fila, clave, momento) del ultimo clic, para detectar el doble
 
     # El raton se puede desactivar: mientras esta activo, iTerm2 le pasa los clics al
     # programa y pierdes la seleccion de texto normal dentro del panel (con ⌥ pulsado
@@ -3760,7 +3885,10 @@ def interactive(feed, tabla=False, por_proyecto=False):
         while True:
             fresh, new_stamp = feed.snapshot()
             now_cols = os.get_terminal_size().columns
-            if new_stamp != stamp or now_cols != last_cols or requery:
+            # Entre los dos clics de un doble el refresco espera: reordenaria la lista y el
+            # segundo clic caeria sobre otra sesion. Se aplica en la vuelta siguiente.
+            entre_clics = time.time() - last_click[2] < DOUBLE_CLICK
+            if (new_stamp != stamp and not entre_clics) or now_cols != last_cols or requery:
                 stamp, last_cols, requery = new_stamp, now_cols, False
                 rows = filas_recent if modo_recent else fresh
                 # Si se cerraron todas las sesiones del proyecto de la pestaña, se vuelve a
@@ -4176,7 +4304,7 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 # separador, o la pestaña en la que ya estas, no cambian nada.
                 col_b = int(k[6:].partition(":")[2] or 0)
                 zona = pestaña_en(barra_zonas, col_b)
-                last_click = (0, 0.0)
+                last_click = SIN_CLIC
                 # Tambien la activa: arrastrar la pestaña en la que estas es lo normal.
                 arrastre = ((zona[2], col_b) if zona is not None and zona[2] is not None
                             else None)
@@ -4193,16 +4321,16 @@ def interactive(feed, tabla=False, por_proyecto=False):
                 tocada = (lines[idx][2] if idx is not None
                           and lines[idx][0] in ("main", "sub") else None)
                 ahora = time.time()
-                doble = (tocada is not None and last_click[0] == fila_y
-                         and ahora - last_click[1] < DOUBLE_CLICK)
-                last_click = (fila_y, ahora)
+                clave_t = clave_de(tocada) if tocada is not None else None
+                doble = es_doble_clic(last_click, fila_y, clave_t, ahora)
+                last_click = (fila_y, clave_t, ahora)
                 if tocada is None:
                     dirty = False   # cabecera o hueco: no hay nada que elegir ni repintar
                 elif doble:
-                    sel_id = clave_de(tocada)
+                    sel_id = clave_t
                     flash = abrir(tocada, f"→ {tocada['name']}")
                     # que un triple clic no cuente como un segundo doble
-                    last_click = (0, 0.0)
+                    last_click = SIN_CLIC
                 else:
                     sel_id, typed = clave_de(tocada), ""
             elif k.startswith("alt-"):
@@ -4250,6 +4378,78 @@ def interactive(feed, tabla=False, por_proyecto=False):
 # ─────────────────────────────── enfoque ───────────────────────────────
 
 
+# Enfocar BUSCANDO el tty, no por "pestaña N de la ventana W": ver `focus`. Los ids de las
+# ventanas se leen de una vez y se recorren por indice: `repeat with x in (id of windows)`
+# deja referencias perezosas, y `contents of x` dentro del `tell` se le pregunta a iTerm.
+# El texto entra por `argv`, como en `pestaña_nueva`.
+_ORDEN_VENTANAS = '''
+    set ids to id of windows
+    set orden to {}
+    repeat with k from 1 to count of ids
+      set x to item k of ids
+      if (x as text) is pista then
+        set beginning of orden to x
+      else
+        set end of orden to x
+      end if
+    end repeat
+'''
+
+# `tty of sessions of tabs` de UNA ventana es una lista por pestaña ({{"/dev/ttys006"},
+# {"/dev/ttys007", "/dev/ttys008"}}), asi que tambien encuentra un panel dividido, y el
+# `select` de la sesion deja el foco en ESE panel y no en el que estuviera activo.
+ENFOCAR_ITERM = '''
+on run argv
+  set objetivo to item 1 of argv
+  set pista to item 2 of argv
+  tell application "iTerm2"
+''' + _ORDEN_VENTANAS + '''
+    repeat with k from 1 to count of orden
+      set wid to item k of orden
+      set porPestana to tty of sessions of tabs of window id wid
+      repeat with i from 1 to count of porPestana
+        if item i of porPestana contains objetivo then
+          tell window id wid
+            select tab i
+            tell tab i to select (first session whose tty is objetivo)
+          end tell
+          select window id wid
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "no"
+end run
+'''
+
+# Terminal.app no tiene "sesiones" ni `select window`: el tty cuelga de la pestaña, que se
+# elige con `selected tab`, y la ventana se trae con `frontmost`.
+ENFOCAR_TERMINAL = '''
+on run argv
+  set objetivo to item 1 of argv
+  set pista to item 2 of argv
+  tell application "Terminal"
+''' + _ORDEN_VENTANAS + '''
+    repeat with k from 1 to count of orden
+      set wid to item k of orden
+      set ttys to tty of tabs of window id wid
+      repeat with i from 1 to count of ttys
+        if item i of ttys is objetivo then
+          set selected tab of window id wid to tab i of window id wid
+          set frontmost of window id wid to true
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "no"
+end run
+'''
+
+
 def focus(row, quiet=False):
     if row.get("tmux"):
         destino, sesion = row["tmux"]
@@ -4273,30 +4473,26 @@ def focus(row, quiet=False):
                     tty=row["tty"] or t("proceso_muerto")), file=sys.stderr)
             print(t("cwd", cwd=row["cwd"]), file=sys.stderr)
         return 1
-    app, wid, tab = row["ventana"]
-    if app == "Terminal":
-        # Terminal.app no tiene "sesiones" ni `select window`: la pestaña se elige por la
-        # propiedad `selected tab` de la ventana, y la ventana se trae con `frontmost`.
-        script = f'''
-        tell application "Terminal"
-          set selected tab of window id {wid} to tab {tab} of window id {wid}
-          set frontmost of window id {wid} to true
-          activate
-        end tell
-        '''
-    else:
-        script = f'''
-        tell application "iTerm2"
-          tell window id {wid} to select tab {tab}
-          select window id {wid}
-          activate
-        end tell
-        '''
-    res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True,
-                         stdin=subprocess.DEVNULL)
+    # El indice de pestaña del mapa NO se usa para saltar: es de hace hasta 4 s (20 s con el
+    # panel en reposo), y cerrar o mover una pestaña en ese rato corre una posicion todas
+    # las de detras — "la pestaña 6" pasa a ser la vecina y el salto aterriza en OTRA
+    # sesion. Se busca el tty en el momento, empezando por la ventana del mapa, que es una
+    # sola consulta en el caso normal (~0,2 s, lo mismo que antes; ~0,3 s si hay que
+    # recorrerlas todas).
+    app, wid, _ = row["ventana"]
+    objetivo = "/dev/" + (row.get("tty_terminal") or row.get("tty") or "")
+    script = ENFOCAR_TERMINAL if app == "Terminal" else ENFOCAR_ITERM
+    res = subprocess.run(["osascript", "-e", script, objetivo, str(wid)],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if res.returncode != 0:
         if not quiet:
             print(t("no_se_pudo_enfocar", error=res.stderr.strip()), file=sys.stderr)
+        return 1
+    if res.stdout.strip() != "ok":
+        # Su pestaña se cerro despues del ultimo refresco: no esta en ninguna ventana.
+        if not quiet:
+            print(t("no_esta_en_iterm", num=row["num"], name=row["name"],
+                    tty=row["tty"] or t("proceso_muerto")), file=sys.stderr)
         return 1
     if not quiet:
         print(f"→ {row['name']} ({row['repo']})")
