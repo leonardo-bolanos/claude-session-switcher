@@ -400,7 +400,8 @@ Combínalo con una nota que diga *qué* estás esperando:
 ```
 
 Si una pausada vuelve a trabajar aparece en TRABAJANDO, no aquí abajo: si está corriendo, no
-espera a nadie. Pero la marca solo se quita cuando **tú** le escribes. Una tarea de fondo que
+espera a nadie. Ahí lleva un `⏸` azul delante del nombre, para que pausar una que aún trabaja se
+note. Pero la marca solo se quita cuando **tú** le escribes. Una tarea de fondo que
 termina o un mensaje de otra sesión de Claude también la ponen a trabajar —y son justo las
 sesiones que pausas—, así que mientras eso corre sale en TRABAJANDO, y después vuelve aquí.
 

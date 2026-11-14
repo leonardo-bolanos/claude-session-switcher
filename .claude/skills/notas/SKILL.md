@@ -109,6 +109,11 @@ acababa siendo la nota de un repo llamado "pausadas".
 de mandarte a la sesion que espera a otro. Los grupos son excluyentes — una pausada `busy` va a
 TRABAJANDO, una de background pausada solo a PAUSADAS.
 
+**Y la pausada `busy` lleva `⏸` delante del nombre** (`marca_pausa`, en la lista y en la tabla).
+Sin ella, pausar una que trabajaba no movia nada, parecia que Ctrl-P no hizo nada, y pulsarlo
+otra vez la despausaba. Solo ahi: en PAUSADAS ya lo dice el grupo. El nombre cede los dos
+caracteres de la marca para no pegarse a la columna siguiente.
+
 **Se aplica en memoria al pulsar**, igual que la nota: hasta el refresco siguiente (4 s) no
 cambiaria de grupo y pareceria que la tecla no hizo nada.
 

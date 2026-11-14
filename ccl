@@ -2850,6 +2850,20 @@ def gris_si_falta(r, texto):
     return GREY(ANSI_RE.sub("", texto)) if r.get("faltante") and texto else texto
 
 
+def marca_pausa(r):
+    """
+    `⏸ ` delante del nombre si la pausaste y aun asi trabaja; "" en cualquier otro caso.
+
+    Una pausada `busy` se pinta en TRABAJANDO (los grupos son excluyentes), asi que al
+    pausar una que estaba trabajando no se movia nada y parecia que Ctrl-P no hizo nada —
+    y pulsarlo otra vez la despausaba. En PAUSADAS no hace falta: ya lo dice el grupo, o la
+    columna de estado. U+23F8 es de ancho 1 (no es emoji por defecto), asi que no descuadra.
+    """
+    if r.get("paused") and r["status"] == "busy" and not r.get("recoverable"):
+        return BLUE("⏸ ")
+    return ""
+
+
 def main_line(r, show_account=False, por_proyecto=False, en_proyecto=False):
     """
     Linea principal coloreada, con las columnas alineadas por ancho VISIBLE.
@@ -2871,8 +2885,9 @@ def main_line(r, show_account=False, por_proyecto=False, en_proyecto=False):
         estado = pad(clip(color(etiqueta), 10), 11)
     # En rojo si la conversacion esta abierta dos veces: la linea de detalle dice con cual.
     ancho_nombre = 27 if por_proyecto else 36
-    name = pad((RED if r.get("duplicada") else BOLD)(r["name"][:ancho_nombre]),
-               ancho_nombre + 2)
+    pausa = marca_pausa(r)
+    name = pad(pausa + (RED if r.get("duplicada") else BOLD)(
+        r["name"][:ancho_nombre - vis(pausa)]), ancho_nombre + 2)
     repo = pad(MAGENTA((donde(r) if por_proyecto or en_proyecto else r["repo"])[:15]), 17)
     # La cuenta solo se muestra si hay mas de una configurada: en el caso normal
     # seria una columna vacia en todas las filas.
@@ -3016,7 +3031,7 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
     celda = {
         "num": CYAN(BOLD(f"[{r['num']:>2}]")),
         "estado": color(etiqueta),
-        "name": (RED if r.get("duplicada") else BOLD)(r["name"]),
+        "name": marca_pausa(r) + (RED if r.get("duplicada") else BOLD)(r["name"]),
         "account": GREY(r.get("account") or ""),
         "repo": MAGENTA(donde(r) if por_proyecto or en_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),

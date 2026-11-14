@@ -399,7 +399,8 @@ Pair it with a note saying *what* you're waiting for:
 ```
 
 If a paused session starts working again it shows up under WORKING, not down here: if it's
-running, it isn't waiting on anybody. But the mark only goes when **you** write to it. A
+running, it isn't waiting on anybody. There it carries a blue `⏸` before its name, so pausing one
+that's still working visibly does something. But the mark only goes when **you** write to it. A
 background task finishing or another Claude session messaging it also makes it work — and those
 are exactly the sessions you pause — so while that runs it shows under WORKING, and then it's
 back here.

@@ -5026,6 +5026,43 @@ class TestMainLine(unittest.TestCase):
         linea = ccl.main_line(self.r(name="x" * 200))
         self.assertLess(ccl.vis(linea), 120)
 
+    # ── la pausada que trabaja ──
+
+    def test_la_pausada_que_trabaja_lleva_la_marca(self):
+        """
+        "A veces el Ctrl-P no funciona": pausar una que trabaja la dejaba en TRABAJANDO,
+        sin nada que lo dijera, y pulsarlo otra vez —"no funciono"— la despausaba.
+        """
+        plano = lambda **kw: ccl.ANSI_RE.sub("", ccl.main_line(self.r(**kw)))
+        self.assertIn("⏸ mi-sesion", plano(status="busy", paused=True))
+        # en PAUSADAS ya lo dice el grupo, y sin pausa no hay nada que decir
+        self.assertNotIn("⏸", plano(status="idle", paused=True))
+        self.assertNotIn("⏸", plano(status="busy", paused=False))
+        self.assertNotIn("⏸", plano(status="busy", paused=True, recoverable=True))
+
+    def test_la_marca_no_descuadra_las_columnas(self):
+        # la antiguedad, que sale en las dos vistas (por proyecto, `repo` pasa a `donde`)
+        pos = lambda l: ccl.ANSI_RE.sub("", l).index(ccl.t("hace_min", n=2))
+        for por_proyecto in (False, True):
+            for nombre in ("ab", "x" * 200):
+                con = ccl.main_line(self.r(name=nombre, status="busy", paused=True),
+                                    por_proyecto=por_proyecto)
+                sin = ccl.main_line(self.r(name=nombre, status="busy"),
+                                    por_proyecto=por_proyecto)
+                self.assertEqual(pos(con), pos(sin), (nombre, por_proyecto))
+                # y un nombre recortado cede los dos caracteres de la marca: si no, llena la
+                # columna entera y se pega a la siguiente sin espacio
+                if len(nombre) > 40:
+                    x = lambda l: ccl.ANSI_RE.sub("", l).count("x")
+                    self.assertEqual(x(con), x(sin) - 2, por_proyecto)
+
+    def test_la_tabla_tambien_la_marca(self):
+        con = ccl.ANSI_RE.sub("", ccl.table_line(self.r(status="busy", paused=True), 140))
+        sin = ccl.ANSI_RE.sub("", ccl.table_line(self.r(status="busy"), 140))
+        self.assertIn("⏸ mi-sesion", con)
+        self.assertEqual(con.index("mi-repo"), sin.index("mi-repo"))
+        self.assertEqual(ccl.char_width("⏸"), 1)
+
     # ── la misma conversacion abierta dos veces ──
 
     def gemelas(self):
