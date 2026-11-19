@@ -228,6 +228,7 @@ TEXTOS = {
         "col_cuenta": "account",
         "col_rama": "branch",
         "col_modelo": "model",
+        "col_effort": "effort",
         "col_ia": "ai",
         "col_ctx": "ctx",
         "ctx": "ctx",
@@ -241,6 +242,7 @@ TEXTOS = {
         "columna_repo": "the session's folder",
         "columna_branch": "git branch",
         "columna_model": "the model it is using",
+        "columna_effort": "how hard it thinks: low, medium, high, xhigh, max",
         "columna_ia": "the model Haiku recommends for what it is doing",
         "columna_ctx": "how full its context is",
         "columna_ts": "last activity",
@@ -359,6 +361,7 @@ TEXTOS = {
         "col_cuenta": "cuenta",
         "col_rama": "rama",
         "col_modelo": "modelo",
+        "col_effort": "effort",
         "col_ia": "ia",
         "col_ctx": "ctx",
         "ctx": "ctx",
@@ -371,6 +374,7 @@ TEXTOS = {
         "columna_repo": "la carpeta de la sesión",
         "columna_branch": "la rama de git",
         "columna_model": "el modelo que usa",
+        "columna_effort": "cuánto piensa: low, medium, high, xhigh, max",
         "columna_ia": "el modelo que recomienda Haiku para lo que hace",
         "columna_ctx": "cuánto contexto lleva",
         "columna_ts": "la última actividad",
@@ -2971,7 +2975,8 @@ def detail_line(r, width=None):
 
 # Las que se pueden esconder, en el orden del selector. El numero, el nombre y la nota no:
 # el numero es lo que se teclea, el nombre es la sesion, y la nota se queda lo que sobra.
-COLUMNAS_OCULTABLES = ("estado", "account", "repo", "branch", "model", "ia", "ctx", "ts")
+COLUMNAS_OCULTABLES = ("estado", "account", "repo", "branch", "model", "effort", "ia", "ctx",
+                       "ts")
 
 # 13, no 9, la de `ts`: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas.
 # Con nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
@@ -2980,13 +2985,16 @@ _FIJAS = (("num", 5), ("estado", 11), ("name", 28), ("account", 11), ("repo", 14
 
 # Las prescindibles, de la que mas aguanta a la que antes cae: (clave, ancho, nota minima).
 # Cada una entra solo si, con ella, a la nota le quedan al menos esas columnas. Son los
-# umbrales de siempre sin nada escondido (ctx 86, rama 106, modelo 120; `ia` 128), y la
+# umbrales de siempre sin nada escondido (ctx 86, rama 106, modelo 120; effort 127, `ia` 135), y la
 # cuenta los corre once porque ocupa once columnas. ctx es la ultima en caer, pero cae: a
 # 80 la fila ya va justa y se perderia el ⚠.
-_PRESCINDIBLES = (("ctx", 6, 9), ("branch", 13, 16), ("model", 9, 21), ("ia", 8, 21))
+# `effort` aguanta mas que `ia`: esa va apagada salvo CCL_IA=1, y el effort lo pidio el
+# usuario. Siete columnas: "medium", la mas larga, y el espacio.
+_PRESCINDIBLES = (("ctx", 6, 9), ("branch", 13, 16), ("model", 9, 21), ("effort", 7, 21),
+                  ("ia", 8, 21))
 
-_ORDEN_COLUMNAS = ("num", "estado", "name", "account", "repo", "branch", "model", "ia",
-                   "ctx", "ts")
+_ORDEN_COLUMNAS = ("num", "estado", "name", "account", "repo", "branch", "model", "effort",
+                   "ia", "ctx", "ts")
 
 
 def _tabla_columnas(width, multi, ocultas=()):
@@ -3008,7 +3016,8 @@ def etiqueta_columna(clave):
     """El nombre de una columna en la cabecera, y en el selector de `Ctrl-E`."""
     return {"num": "#", "estado": t("col_estado"), "name": t("col_sesion"),
             "account": t("col_cuenta"), "repo": t("col_repo"),
-            "branch": t("col_rama"), "model": t("col_modelo"), "ia": t("col_ia"),
+            "branch": t("col_rama"), "model": t("col_modelo"),
+            "effort": t("col_effort"), "ia": t("col_ia"),
             "ctx": t("col_ctx"), "ts": t("col_visto")}[clave]
 
 
@@ -3036,6 +3045,7 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
         "repo": MAGENTA(donde(r) if por_proyecto or en_proyecto else r["repo"]),
         "branch": GREY(r["branch"] or ""),
         "model": color_model(r["model"]),
+        "effort": color_effort(r.get("effort")),
         "ia": marca_ia(r),
         "ctx": marca_contexto(r),
         "ts": color_age(r["ts"]),
@@ -3065,13 +3075,12 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
 
 def ocultas_de_verdad(rows, ocultas):
     """
-    Las que escondiste, mas la de la IA si ninguna fila trae nada que poner en ella: con
-    `CCL_IA`, sin `claude` o antes de la primera respuesta, ocuparia ocho columnas vacias
-    que son de la nota.
+    Las que escondiste, mas la de la IA y la del effort si ninguna fila trae nada que poner
+    en ellas: la IA sin `CCL_IA`, sin `claude` o antes de la primera respuesta; el effort si
+    ninguna sesion lo apunta en su transcript. Serian columnas vacias que son de la nota.
     """
-    if any(r.get("ia") for r in rows):
-        return ocultas
-    return frozenset(ocultas) | {"ia"}
+    vacias = {k for k in ("ia", "effort") if not any(r.get(k) for r in rows)}
+    return frozenset(ocultas) | vacias if vacias else ocultas
 
 
 def render(rows, tabla=False, por_proyecto=False):

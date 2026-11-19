@@ -91,11 +91,11 @@ GUION_TABLA = [
     (b"\x14",                         3.0),  # Ctrl-T: y a la tabla. Este es el fotograma
 ]
 
-# La tabla necesita mas ancho que el panel de dos lineas: es lo que enseña. A 140 salen
-# todas las columnas —por debajo de 132 desaparece la de la ia, de 124 el modelo y de 110
-# la rama— y aun quedan unas treinta columnas para la nota, que es la otra cosa que hay
-# que ver.
-COLUMNAS_TABLA = 140
+# La tabla necesita mas ancho que el panel de dos lineas: es lo que enseña. A 150 salen
+# todas las columnas —por debajo de 139 desaparece la de la ia, de 131 el effort, de 124 el
+# modelo y de 110 la rama— y aun quedan unas treinta columnas para la nota, que es la otra
+# cosa que hay que ver: a 140, con el effort, se cortaba a media frase.
+COLUMNAS_TABLA = 150
 
 # Sesiones de mentira, con la pinta de un dia normal de trabajo.
 SESIONES = [

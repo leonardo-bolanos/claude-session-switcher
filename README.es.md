@@ -419,12 +419,13 @@ cambiar de vista, el clic elige la fila que pulsaste, y al filtrar se mantiene l
 columnas.
 
 En una ventana estrecha desaparecen las columnas prescindibles (primero la de la IA, luego el
-modelo, la rama y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo
+effort, el modelo, la rama y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo
 que sobra se lo queda la nota. Con `Ctrl-E` **escondes las columnas que no miras** —estado, repo,
-rama, modelo, ia, contexto, visto— y su sitio pasa a las demás. Se recuerda, y
+rama, modelo, effort, ia, contexto, visto— y su sitio pasa a las demás. Se recuerda, y
 `ccl --list --table` también lo respeta. Si escondes la de estado, la tabla recupera las
-cabeceras de grupo, para que siga diciendo quién te espera; y la de la `ia` solo ocupa sitio
-cuando alguna sesión tiene algo que poner en ella.
+cabeceras de grupo, para que siga diciendo quién te espera; y las de la `ia` y el `effort` solo
+ocupan sitio cuando alguna sesión tiene algo que poner en ellas. El effort solo sale en amarillo
+con `xhigh` / `max`.
 
 `ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede pasar por una
 tubería.

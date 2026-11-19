@@ -1534,16 +1534,36 @@ class TestColumnasOcultas(unittest.TestCase):
     def claves(ancho, multi=False, ocultas=()):
         return [k for k, _ in ccl._tabla_columnas(ancho, multi, ocultas)]
 
-    def test_sin_nada_oculto_los_umbrales_de_siempre_y_la_ia_desde_128(self):
-        for clave, umbral in (("ctx", 86), ("branch", 106), ("model", 120), ("ia", 128)):
+    def test_sin_nada_oculto_los_umbrales_de_siempre_el_effort_y_la_ia(self):
+        for clave, umbral in (("ctx", 86), ("branch", 106), ("model", 120), ("effort", 127),
+                              ("ia", 135)):
             self.assertNotIn(clave, self.claves(umbral - 1), clave)
             self.assertIn(clave, self.claves(umbral), clave)
             self.assertNotIn(clave, self.claves(umbral + 10, True), f"{clave} multi")
             self.assertIn(clave, self.claves(umbral + 11, True), f"{clave} multi")
 
-    def test_la_ia_va_detras_del_modelo(self):
+    def test_el_effort_va_detras_del_modelo_y_la_ia_detras(self):
         cols = self.claves(200)
-        self.assertEqual(cols.index("ia"), cols.index("model") + 1)
+        self.assertEqual(cols.index("effort"), cols.index("model") + 1)
+        self.assertEqual(cols.index("ia"), cols.index("effort") + 1)
+
+    def test_el_effort_va_bajo_su_cabecera_y_solo_resalta_lo_caro(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r.update(model="opus-5-5", effort="xhigh")
+        cabecera = ccl.ANSI_RE.sub("", ccl.table_head(160, False))
+        fila = ccl.table_line(r, 160, False)
+        self.assertEqual(ccl.ANSI_RE.sub("", fila).index("xhigh"),
+                         cabecera.index(ccl.t("col_effort")))
+        self.assertIn(ccl.YELLOW("xhigh"), fila)
+        r["effort"] = "medium"
+        self.assertIn(ccl.DIM("medium"), ccl.table_line(r, 160, False))
+
+    def test_la_columna_del_effort_no_ocupa_sitio_si_ninguna_lo_trae(self):
+        filas = [row(1, "a", "idle", ts=iso(minutes=1)), row(2, "b", "busy", ts=iso(minutes=2))]
+        cabecera = lambda: ccl.ANSI_RE.sub("", ccl.build_table_display(filas, 200)[0][1])
+        self.assertNotIn(" " + ccl.t("col_effort") + " ", cabecera())
+        filas[1]["effort"] = "high"
+        self.assertIn(" " + ccl.t("col_effort") + " ", cabecera())
 
     def test_esconder_una_le_hace_sitio_a_las_demas(self):
         self.assertNotIn("model", self.claves(110))
@@ -1560,12 +1580,12 @@ class TestColumnasOcultas(unittest.TestCase):
     def test_ninguna_fila_desborda_con_ninguna_combinacion(self):
         import itertools
         r = row(1, "a", "idle", ts=iso(days=40))
-        r.update(ctx=412000, ctx_ventana=1000000, ia="sonnet", model="opus-5-5",
+        r.update(ctx=412000, ctx_ventana=1000000, ia="sonnet", model="opus-5-5", effort="medium",
                  branch="feature/larguisima", account="trabajo", prompt="x" * 300,
                  note="nota")
         for n in range(len(ccl.COLUMNAS_OCULTABLES) + 1):
             for ocultas in itertools.combinations(ccl.COLUMNAS_OCULTABLES, n):
-                for ancho in (40, 80, 97, 119, 128, 160):
+                for ancho in (40, 80, 97, 119, 127, 135, 160):
                     for multi in (False, True):
                         etiqueta = f"{ocultas} ancho={ancho} multi={multi}"
                         self.assertLessEqual(
@@ -5088,7 +5108,9 @@ class TestMainLine(unittest.TestCase):
         aviso = ccl.t("duplicada", nums="[26]")
         self.assertTrue(ccl.ANSI_RE.sub("", ccl.detail_line(original)).startswith(aviso),
                         "va PRIMERO: al final se lo comeria el recorte")
-        self.assertIn(aviso, ccl.ANSI_RE.sub("", ccl.table_line(original, 140)))
+        # sin la columna de la IA, que en el panel se esconde sola si va vacia
+        self.assertIn(aviso, ccl.ANSI_RE.sub("", ccl.table_line(original, 140,
+                                                                 ocultas={"ia"})))
         self.assertNotIn(ccl.t("duplicada", nums="")[:10],
                          ccl.ANSI_RE.sub("", ccl.detail_line(otra)))
 

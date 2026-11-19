@@ -120,7 +120,7 @@ una cabecera de exactamente `cols` columnas se salia una posicion y envolvia.
 
 **`table_head` y `table_line` salen de `_tabla_columnas()`.** Es lo unico que las mantiene
 alineadas; dos listas de anchos en paralelo divergen y la tabla deja de ser tabla. Las columnas
-prescindibles (ia, modelo, rama, ctx) **desaparecen** cuando no caben en vez de encogerse:
+prescindibles (ia, effort, modelo, rama, ctx) **desaparecen** cuando no caben en vez de encogerse:
 recortar todas las columnas a la vez las vuelve ilegibles antes de que sobre sitio. Cada una
 entra si a la nota le queda su minimo, asi que las que escondes con `Ctrl-E` les dejan sitio a
 las demas; sin nada escondido salen los umbrales de siempre, y hay un test que los fija.

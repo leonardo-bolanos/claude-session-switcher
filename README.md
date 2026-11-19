@@ -417,13 +417,13 @@ leftover entry can't pause anyone by mistake.
 Everything the panel does keeps working in the table: the cursor stays on the same session when
 you toggle, clicking picks the row you clicked, and filtering keeps the column header.
 
-Narrow windows drop the columns you can live without (the AI's pick first, then model, then
-branch, then context) instead of squeezing every column down to unreadable; whatever's left over
+Narrow windows drop the columns you can live without (the AI's pick first, then effort, model,
+branch, and context last) instead of squeezing every column down to unreadable; whatever's left over
 goes to the note. `Ctrl-E` lets you **hide the columns you don't look at** — state, repo, branch,
-model, ai, context, last seen — and their room goes to the rest. It's remembered, and
+model, effort, ai, context, last seen — and their room goes to the rest. It's remembered, and
 `ccl --list --table` follows it too. Hide the state column and the table brings back the group
-headers, so it still tells you who's waiting; and the `ai` column only takes room once some
-session has something to put in it.
+headers, so it still tells you who's waiting; and the `ai` and `effort` columns only take room
+once some session has something to put in them. Effort is yellow only on `xhigh` / `max`.
 
 `ccl --list --table` prints the same thing without the panel, and with no colours, so it pipes.
 
