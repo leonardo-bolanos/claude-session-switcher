@@ -419,13 +419,25 @@ cambiar de vista, el clic elige la fila que pulsaste, y al filtrar se mantiene l
 columnas.
 
 En una ventana estrecha desaparecen las columnas prescindibles (primero la de la IA, luego el
-effort, el modelo, la rama y al final el contexto) en vez de recortarlas todas hasta hacerlas ilegibles; lo
-que sobra se lo queda la nota. Con `Ctrl-E` **escondes las columnas que no miras** —estado, repo,
-rama, modelo, effort, ia, contexto, visto— y su sitio pasa a las demás. Se recuerda, y
-`ccl --list --table` también lo respeta. Si escondes la de estado, la tabla recupera las
-cabeceras de grupo, para que siga diciendo quién te espera; y las de la `ia` y el `effort` solo
-ocupan sitio cuando alguna sesión tiene algo que poner en ellas. El effort solo sale en amarillo
-con `xhigh` / `max`.
+effort, el modelo, la rama, las esperas y al final el contexto) en vez de recortarlas todas hasta
+hacerlas ilegibles; lo que sobra se lo queda la nota. Con `Ctrl-E` **escondes las columnas que no
+miras** —estado, repo, rama, modelo, effort, ia, esperas, contexto, visto— y su sitio pasa a las
+demás. Se recuerda, y `ccl --list --table` también lo respeta. Si escondes la de estado, la tabla
+recupera las cabeceras de grupo, para que siga diciendo quién te espera; y las de la `ia`, el
+`effort` y la `espera` solo ocupan sitio cuando alguna sesión tiene algo que poner en ellas. El
+effort solo sale en amarillo con `xhigh` / `max`.
+
+La columna `espera` cuenta las respuestas que una sesión espera **por Cliq o por correo**. Lee el
+archivo de estado de `cliq-esperas`, `~/.local/state/cliq-esperas/estado.json` (o
+`$CLIQ_ESPERAS_DIR`), y solo lo lee: sin archivo, no hay columna. Cuentan también las esperas
+abiertas que ya recibieron una respuesta, porque el siguiente mensaje sigue llegándole a esa sesión.
+
+El número no dice *de quién*, así que la fila lleva además `✉ Ana×2, Luis +3` detrás de la nota: en
+cian quien aún no ha contestado, apagado quien ya lo hizo (la espera sigue abierta), `×2` si son dos
+esperas con la misma persona y `+N` por las que no caben. El nombre sale abreviado a la primera
+palabra. Se ve también cuando la ventana es demasiado estrecha para la columna `espera`, y esconder
+esa columna con `Ctrl-E` esconde esto también. Si escribes un nombre en el filtro salen las sesiones
+que esperan a esa persona.
 
 `ccl --list --table` imprime lo mismo sin panel y sin colores, así que se puede pasar por una
 tubería.
@@ -599,6 +611,8 @@ Cuando una sesión muere, su número se libera y se recicla.
 | Antigüedad | verde reciente → amarillo → gris viejo |
 | Modelo | azul Opus · verde Sonnet · gris Haiku · magenta Fable |
 | `effort` | amarillo solo en `xhigh` / `max` |
+| `espera` | cuenta en cian de las respuestas que la sesión espera por Cliq o correo; vacía si ninguna |
+| `✉ Ana×2, Luis +3` | de quién espera: cian aún no ha contestado, apagado ya lo hizo; `×2` dos esperas, `+3` tres más |
 | ⚠ rojo | La sesión no está en una ventana de iTerm |
 | `⚡2` | Esa sesión tiene 2 comandos de Bash corriendo ahora mismo |
 | nombre en rojo, `misma conversación que [26]` | La misma conversación está abierta en dos procesos (un `claude --resume` mientras seguía abierta); las dos escriben en el mismo transcript, así que cierra una |

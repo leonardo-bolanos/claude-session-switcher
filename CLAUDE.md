@@ -120,10 +120,29 @@ una cabecera de exactamente `cols` columnas se salia una posicion y envolvia.
 
 **`table_head` y `table_line` salen de `_tabla_columnas()`.** Es lo unico que las mantiene
 alineadas; dos listas de anchos en paralelo divergen y la tabla deja de ser tabla. Las columnas
-prescindibles (ia, effort, modelo, rama, ctx) **desaparecen** cuando no caben en vez de encogerse:
-recortar todas las columnas a la vez las vuelve ilegibles antes de que sobre sitio. Cada una
-entra si a la nota le queda su minimo, asi que las que escondes con `Ctrl-E` les dejan sitio a
+prescindibles (ia, effort, modelo, rama, esperas, ctx) **desaparecen** cuando no caben en vez de
+encogerse: recortar todas las columnas a la vez las vuelve ilegibles antes de que sobre sitio. Cada
+una entra si a la nota le queda su minimo, asi que las que escondes con `Ctrl-E` les dejan sitio a
 las demas; sin nada escondido salen los umbrales de siempre, y hay un test que los fija.
+
+**`esperas` corre los umbrales de las de detras** (rama 113, modelo 127, effort 134, `ia` 142) pero
+solo cuando existe: como `ia` y `effort`, `ocultas_de_verdad()` la quita si ninguna fila tiene nada
+que poner, y entonces los umbrales son los de siempre. Por eso los tests de umbrales la esconden
+(`ocultas=("esperas",)`) y hay otro que fija los nuevos. Cuenta las esperas ABIERTAS de la
+conversacion (`sessionId`, como la nota y la pausa), por Cliq o por correo sin distinguir, y se
+marca una vez por lista (`marcar_esperas`) tambien en `--recent` y `--saved`: una muerta puede
+seguir esperando, y la respuesta le llega al reanudarla.
+
+**A quien espera (`✉ Ana×2, Luis +3`) sale de las mismas esperas** (`personas_que_esperan`) y se
+pinta en la cola de la tabla y en la linea de detalle. Cuatro cosas que no se ven leyendo el codigo:
+el nombre viene de Cliq, o sea de fuera, y pasa por `sin_control()` — un `ESC[2A` en un nombre
+reescribiria la fila de OTRA sesion, y hay test; la persona se identifica por el CORREO (es lo unico
+que comparten una espera de Cliq y una de correo con la misma persona) y despues `cliq_id`, nombre
+y `chat_id`, que es lo que distingue a dos grupos sin nombre; el **tema** de la espera no se lee
+nunca, es largo y privado; y la marca depende de la columna: esconder `esperas` con `Ctrl-E` la
+quita tambien, pero que la columna no CABA no (en una ventana estrecha es donde mas falta hace).
+Va detras de la nota y delante del prompt: el prompt es lo primero que recorta el ancho. Filtrar
+por un nombre encuentra las sesiones que lo esperan (`matches`).
 
 **La antiguedad ocupa 13, no 9.** Una sesion vieja pone `03-aug 17:52`, doce columnas; con nueve
 se recortaba a `03-aug 1`, que no dice ni el dia entero ni la hora.
@@ -432,6 +451,7 @@ manda a `--recent`, que lee de disco y no depende del registro.
 | Transcript, entradas `user` | `origin.kind == "human"` (visto también `peer` y `task-notification`) | Una pausa ya no se quita sola al escribirle: hay que quitarla con `Ctrl-P` |
 | `<cfg>/cache/model-catalog/*.json` | `id` y `runtime.max_input_tokens` de cada modelo, estén donde estén dentro del JSON | El contexto sale en tokens, en gris, en vez de en % (specs/004) |
 | `claude -p --model haiku` (specs/005) | `structured_output` con `--json-schema`, y que `--no-session-persistence`, `--restricted` y `--strict-mcp-config` sigan sin dejar transcript ni cargar hooks o MCP | La columna `ia` se queda vacia; el resto del panel, igual |
+| `~/.local/state/cliq-esperas/estado.json` (o `$CLIQ_ESPERAS_DIR`), del skill `cliq-esperas` del usuario | `esperas[]`: `estado` (`abierta` o `recibida` cuentan), `session_id`, `session` (respaldo, solo si falta el id) y `until_ms`. Solo se LEE; el tema y la persona no se tocan | Sin archivo o con otra forma sale `({}, {})` y la columna `espera` no aparece; el resto sigue |
 | `<cfg>/sessions/<pid>.json` | `parkedJobId` y `sessionId`, solo de los pids vivos que faltan en el registro y solo si hay algún job | Un job deja de llevar a la pestaña que aparcó, y esa conversación vuelve a salir como muerta (specs/003) |
 
 Verificado en Claude Code v2.1.220: el JSON **solo** trae `busy`/`idle`. Los campos `state` y

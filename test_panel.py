@@ -156,6 +156,10 @@ ccl.NOTES_FILE = _notas
 # La foto de `--save` tambien: sin desviarla, `--saved` y `--restore` leerian la del usuario
 # y los tests dependerian de que sesiones tenga abiertas quien los corre.
 ccl.SNAPSHOT_FILE = os.environ.get("CCL_TEST_SNAPSHOT") or _notas + ".foto"
+# Las esperas del skill `cliq-esperas` tambien: se leen en cada refresco, y sin desviarlas la
+# columna `espera` saldria o no segun las que tenga abiertas quien ejecuta los tests. Este
+# archivo no existe, que es el caso de quien no usa el skill.
+ccl.ESPERAS_FILE = os.environ.get("CCL_TEST_ESPERAS") or _notas + ".esperas"
 # La cache del modelo recomendado (specs/005) tambien, y sin llamadas a Haiku: un test no
 # gasta ni depende de la red. Las filas de aqui no traen `ai-title`, asi que no pedirian
 # nada, pero eso es un detalle que puede cambiar.

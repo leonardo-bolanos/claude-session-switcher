@@ -61,7 +61,13 @@ __version__ = "1.6.0"
 HOME = os.path.expanduser("~")
 INDEX_FILE = os.path.join(HOME, ".claude", "ccl-numbers.json")
 NOTES_FILE = os.path.join(HOME, ".claude", "ccl-notes.json")
-NOTE_MAX = 200            # la linea se recorta al pintar; esto es solo para no guardar
+# Las esperas de Cliq y de correo que registra el skill `cliq-esperas` (otra herramienta: aqui
+# solo se LEE). `CLIQ_ESPERAS_DIR` es la misma variable que usa su script, asi que quien aisle
+# uno aisla el otro. Si el archivo no existe, no hay columna.
+ESPERAS_FILE = os.path.join(
+    os.environ.get("CLIQ_ESPERAS_DIR") or os.path.join(HOME, ".local", "state", "cliq-esperas"),
+    "estado.json")
+NOTE_MAX = 200           # la linea se recorta al pintar; esto es solo para no guardar
                           # un pegote de miles de caracteres en el JSON
 TAIL_BYTES = 65536
 # Hasta donde se busca cuanto contexto lleva una sesion cuando la cola no lo dice. Tras una
@@ -229,6 +235,7 @@ TEXTOS = {
         "col_rama": "branch",
         "col_modelo": "model",
         "col_effort": "effort",
+        "col_esperas": "wait",
         "col_ia": "ai",
         "col_ctx": "ctx",
         "ctx": "ctx",
@@ -243,6 +250,8 @@ TEXTOS = {
         "columna_branch": "git branch",
         "columna_model": "the model it is using",
         "columna_effort": "how hard it thinks: low, medium, high, xhigh, max",
+        "columna_esperas": "replies it is waiting for, on Cliq or email",
+        "esperando_chat": "group",
         "columna_ia": "the model Haiku recommends for what it is doing",
         "columna_ctx": "how full its context is",
         "columna_ts": "last activity",
@@ -362,6 +371,7 @@ TEXTOS = {
         "col_rama": "rama",
         "col_modelo": "modelo",
         "col_effort": "effort",
+        "col_esperas": "espera",
         "col_ia": "ia",
         "col_ctx": "ctx",
         "ctx": "ctx",
@@ -375,6 +385,8 @@ TEXTOS = {
         "columna_branch": "la rama de git",
         "columna_model": "el modelo que usa",
         "columna_effort": "cuánto piensa: low, medium, high, xhigh, max",
+        "columna_esperas": "respuestas que espera, por Cliq o correo",
+        "esperando_chat": "grupo",
         "columna_ia": "el modelo que recomienda Haiku para lo que hace",
         "columna_ctx": "cuánto contexto lleva",
         "columna_ts": "la última actividad",
@@ -2346,6 +2358,112 @@ def despausar_las_que_le_escribiste(pausadas, humanos):
     return quedan
 
 
+# Las mismas que `OPEN_STATES` en el `esperas.py` del skill `cliq-esperas`: `recibida` ya trajo
+# una respuesta pero la espera sigue abierta, y cada mensaje nuevo de esa persona le llega.
+ESPERAS_ABIERTAS = ("abierta", "recibida")
+
+
+def esperas_abiertas(ahora_ms=None):
+    """
+    `({sessionId: [espera]}, {nombre de sesion: [espera]})`: las esperas abiertas por Cliq o
+    por correo, tal cual salen del archivo del skill `cliq-esperas`.
+
+    Es un contrato externo que no es nuestro, asi que se lee con toda la desconfianza: sin
+    archivo, con el JSON roto o con otra forma, sale `({}, {})` y la columna no aparece. De
+    cada espera solo se mira quien es (`name`, `email`, `cliq_id`, `chat_id`), desde cuando
+    (`since_ms`) y su estado; **el tema** —lo que se le pregunto— es privado y largo, y aqui
+    no hace falta, asi que no se toca.
+
+    Se agrupa por sessionId, que no cambia. El nombre es el respaldo de las esperas que se
+    registraron sin id —antes del 9-nov, o con la sesion cerrada—: las que lo traen no se
+    cuentan por nombre, o saldrian dos veces.
+
+    `until_ms` se mira aqui y no solo en `estado`: el router marca `vencida` cada 5 minutos,
+    y lo que se enseña no tiene por que depender de que el router este corriendo.
+    """
+    lista = leer_json(ESPERAS_FILE, {}).get("esperas")
+    if not isinstance(lista, list):
+        return {}, {}
+    ahora = time.time() * 1000 if ahora_ms is None else ahora_ms
+    por_sid, por_nombre = {}, {}
+    for w in lista:
+        if not isinstance(w, dict) or w.get("estado") not in ESPERAS_ABIERTAS:
+            continue
+        hasta = w.get("until_ms")
+        if isinstance(hasta, (int, float)) and hasta < ahora:
+            continue
+        sid, nombre = w.get("session_id"), w.get("session")
+        if sid:
+            por_sid.setdefault(sid, []).append(w)
+        elif nombre:
+            por_nombre.setdefault(nombre, []).append(w)
+    return por_sid, por_nombre
+
+
+def _quien_espera(w):
+    """`(clave, nombre)` de quien aguarda una espera: el nombre, o el correo, o "grupo"."""
+    nombre = " ".join(str(sin_control(w.get("name") or "")).split())
+    correo = " ".join(str(sin_control(w.get("email") or "")).split())
+    # el correo primero: es lo unico que comparten una espera de Cliq y una de correo con la
+    # misma persona. Un chat sin persona (grupo, canal) se distingue por su chat_id.
+    clave = (correo.lower() or str(w.get("cliq_id") or "") or nombre.lower()
+             or str(w.get("chat_id") or "") or str(w.get("id") or ""))
+    return clave, nombre or correo.split("@")[0] or t("esperando_chat")
+
+
+def personas_que_esperan(esperas):
+    """
+    De QUIEN espera respuesta una conversacion: `[{"nombre", "quien", "n", "pendiente"}]`.
+
+    Una entrada por persona, con `n` esperas suyas. `pendiente` es que alguna siga sin
+    respuesta (`abierta`); `recibida` ya trajo una, aunque la espera siga abierta, y esa
+    persona va detras de las que faltan. Dentro de cada grupo, la mas reciente primero:
+    es de la que te acuerdas.
+
+    `quien` es lo que se pinta —la primera palabra del nombre, que cabe— y solo se alarga con
+    la inicial del apellido cuando dos personas de la misma sesion chocan. `nombre` es el
+    completo, para buscar. Ambos pasan por `sin_control`: vienen de Cliq, y un `ESC[2A` en
+    un nombre reescribiria la fila de OTRA sesion.
+    """
+    por_clave = {}
+    for w in esperas:
+        clave, nombre = _quien_espera(w)
+        p = por_clave.setdefault(clave, {"nombre": nombre, "n": 0, "pendiente": False,
+                                         "desde": 0})
+        p["n"] += 1
+        p["pendiente"] = p["pendiente"] or w.get("estado") == "abierta"
+        desde = w.get("since_ms")
+        if isinstance(desde, (int, float)):
+            p["desde"] = max(p["desde"], desde)
+    gente = sorted(por_clave.values(), key=lambda p: (not p["pendiente"], -p["desde"]))
+    repetidas = {}
+    for p in gente:
+        p["quien"] = p["nombre"].split()[0] if p["nombre"].split() else p["nombre"]
+        repetidas[p["quien"].lower()] = repetidas.get(p["quien"].lower(), 0) + 1
+    for p in gente:
+        palabras = p["nombre"].split()
+        if repetidas[p["quien"].lower()] > 1 and len(palabras) > 1:
+            p["quien"] += f" {palabras[-1][0]}."
+    return gente
+
+
+def marcar_esperas(rows):
+    """
+    `esperas` (cuantas) y `esperando_a` (de quien) de la CONVERSACION de cada fila.
+
+    Va por sessionId, como la nota y la pausa: las dos copias de una misma conversacion
+    abierta (`marcar_duplicadas`) llevan lo mismo, y es correcto, porque la espera es de la
+    conversacion y no del proceso. Se llama una vez por lista, no una por fila: leer el
+    archivo cuesta ~1 ms y las recuperables son hasta cien.
+    """
+    por_sid, por_nombre = esperas_abiertas()
+    for r in rows:
+        lista = por_sid.get(r["sessionId"], []) + por_nombre.get(r["name"], [])
+        r["esperas"] = len(lista)
+        r["esperando_a"] = personas_que_esperan(lista)
+    return rows
+
+
 def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
     rows = []
     # una lectura por refresco: es diminuto
@@ -2409,7 +2527,7 @@ def build(sessions, ttys, ventanas, numbers, tmux=None, shells=None):
             rows[-1]["tty_terminal"] = cliente
             rows[-1]["ventana"] = ventanas.get(cliente) if cliente else None
         rows[-1]["note"] = note_for(rows[-1], notas_sesion, notas_repo)
-    return marcar_duplicadas(rows)
+    return marcar_duplicadas(marcar_esperas(rows))
 
 
 def marcar_duplicadas(rows):
@@ -2455,6 +2573,9 @@ def matches(row, query):
     if not query:
         return True
     campos = [str(row.get(k) or "") for k in ("name", "repo", "branch", "account", "note")]
+    # y la gente a la que espera: filtrar por un nombre es preguntar "¿quien me espera con
+    # Maria?", que es justo para lo que sirve saber a quien espera cada una
+    campos.extend(p["nombre"] for p in row.get("esperando_a") or [])
     campos.append(proyecto_de(row.get("cwd") or "")[1])
     heno = strip_accents(" ".join(campos).lower())
     return all(t in heno for t in strip_accents(query.lower()).split())
@@ -2905,6 +3026,35 @@ def main_line(r, show_account=False, por_proyecto=False, en_proyecto=False):
         r, f"{num} {estado}{name}{repo}{acct}{color_age(r['ts'])}{marca_shells(r)}{warn}")
 
 
+def marca_esperas(r):
+    """Cuantas respuestas espera la sesion por Cliq o correo (`3`), o "" si ninguna."""
+    n = r.get("esperas")
+    return CYAN(str(n)) if n else ""
+
+
+# Cuantas personas se nombran; el resto va como `+N`. Con nueve (se ha visto) la lista se
+# comeria la cola entera, y el nombre de la novena no es lo que hace falta ver.
+ESPERANDO_MAX = 3
+
+
+def marca_esperando_a(r):
+    """
+    `✉ Ana×2, Luis +3`: a quien espera la sesion, o "" si a nadie.
+
+    Cian a quien aun no ha contestado, apagado a quien ya lo hizo aunque la espera siga
+    abierta (`×2`: dos esperas con esa persona). Es la pregunta que la columna `espera` deja
+    sin contestar: cuantas, si, pero de quien.
+    """
+    gente = r.get("esperando_a")
+    if not gente:
+        return ""
+    trozos = [(CYAN if p["pendiente"] else DIM)(
+        p["quien"] + (f"×{p['n']}" if p["n"] > 1 else "")) for p in gente[:ESPERANDO_MAX]]
+    mas = len(gente) - ESPERANDO_MAX
+    glifo = (CYAN if any(p["pendiente"] for p in gente) else DIM)("✉")
+    return glifo + " " + DIM(", ").join(trozos) + (DIM(f" +{mas}") if mas > 0 else "")
+
+
 def marca_contexto(r):
     """
     Cuanto contexto lleva: `41%` coloreado, `412K` en gris si no se sabe la ventana, o ""
@@ -2948,7 +3098,7 @@ def detail_line(r, width=None):
     # Y por delante de ella el aviso de duplicada: es un problema que resolver ya, y al
     # final de la linea se lo comeria el recorte igual que a la nota.
     ctx = marca_contexto(r)
-    meta = [x for x in (marca_duplicada(r), nota,
+    meta = [x for x in (marca_duplicada(r), nota, marca_esperando_a(r),
                         GREY(r["branch"]) if r["branch"] else "",
                         color_model(r["model"]),
                         color_effort(r["effort"]),
@@ -2975,8 +3125,8 @@ def detail_line(r, width=None):
 
 # Las que se pueden esconder, en el orden del selector. El numero, el nombre y la nota no:
 # el numero es lo que se teclea, el nombre es la sesion, y la nota se queda lo que sobra.
-COLUMNAS_OCULTABLES = ("estado", "account", "repo", "branch", "model", "effort", "ia", "ctx",
-                       "ts")
+COLUMNAS_OCULTABLES = ("estado", "account", "repo", "branch", "model", "effort", "ia",
+                       "esperas", "ctx", "ts")
 
 # 13, no 9, la de `ts`: la antiguedad de una sesion vieja es "03-aug 17:52", doce columnas.
 # Con nueve se recortaba a "03-aug 1", que no dice ni la hora ni el dia entero.
@@ -2990,11 +3140,15 @@ _FIJAS = (("num", 5), ("estado", 11), ("name", 28), ("account", 11), ("repo", 14
 # 80 la fila ya va justa y se perderia el ⚠.
 # `effort` aguanta mas que `ia`: esa va apagada salvo CCL_IA=1, y el effort lo pidio el
 # usuario. Siete columnas: "medium", la mas larga, y el espacio.
-_PRESCINDIBLES = (("ctx", 6, 9), ("branch", 13, 16), ("model", 9, 21), ("effort", 7, 21),
-                  ("ia", 8, 21))
+# `esperas` aguanta justo detras de ctx, por encima de la rama y el modelo: solo existe
+# cuando alguna sesion espera una respuesta (`ocultas_de_verdad`), o sea cuando es lo que
+# hay que mirar. Con ella presente los umbrales de las de detras corren siete columnas
+# (rama 113, modelo 127, effort 134, `ia` 142); sin ella, o escondida, son los de arriba.
+_PRESCINDIBLES = (("ctx", 6, 9), ("esperas", 7, 9), ("branch", 13, 16), ("model", 9, 21),
+                  ("effort", 7, 21), ("ia", 8, 21))
 
 _ORDEN_COLUMNAS = ("num", "estado", "name", "account", "repo", "branch", "model", "effort",
-                   "ia", "ctx", "ts")
+                   "ia", "esperas", "ctx", "ts")
 
 
 def _tabla_columnas(width, multi, ocultas=()):
@@ -3018,6 +3172,7 @@ def etiqueta_columna(clave):
             "account": t("col_cuenta"), "repo": t("col_repo"),
             "branch": t("col_rama"), "model": t("col_modelo"),
             "effort": t("col_effort"), "ia": t("col_ia"),
+            "esperas": t("col_esperas"),
             "ctx": t("col_ctx"), "ts": t("col_visto")}[clave]
 
 
@@ -3047,6 +3202,7 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
         "model": color_model(r["model"]),
         "effort": color_effort(r.get("effort")),
         "ia": marca_ia(r),
+        "esperas": marca_esperas(r),
         "ctx": marca_contexto(r),
         "ts": color_age(r["ts"]),
     }
@@ -3057,6 +3213,12 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
     warn = "" if r["ventana"] or r.get("recoverable") or r.get("tmux") else RED(" ⚠")
 
     cola = NOTE("✎ " + r["note"]) if r.get("note") else ""
+    # A quien espera va detras de la nota (lo unico que escribiste tu) y antes del prompt.
+    # Va aunque la columna no quepa —en una ventana estrecha es donde mas falta hace—, y
+    # esconderla con Ctrl-E lo esconde: quien la quita no quiere ver esto tampoco.
+    esperando = "" if "esperas" in ocultas else marca_esperando_a(r)
+    if esperando:
+        cola = f"{cola} {esperando}" if cola else esperando
     shells = marca_shells(r).strip()
     if shells:
         cola = f"{shells} {cola}" if cola else shells
@@ -3075,11 +3237,13 @@ def table_line(r, width=100, show_account=False, por_proyecto=False, en_proyecto
 
 def ocultas_de_verdad(rows, ocultas):
     """
-    Las que escondiste, mas la de la IA y la del effort si ninguna fila trae nada que poner
-    en ellas: la IA sin `CCL_IA`, sin `claude` o antes de la primera respuesta; el effort si
-    ninguna sesion lo apunta en su transcript. Serian columnas vacias que son de la nota.
+    Las que escondiste, mas la de la IA, la del effort y la de las esperas si ninguna fila
+    trae nada que poner en ellas: la IA sin `CCL_IA`, sin `claude` o antes de la primera
+    respuesta; el effort si ninguna sesion lo apunta en su transcript; las esperas si no hay
+    archivo del skill `cliq-esperas` o ninguna sesion espera nada. Serian columnas vacias que
+    son de la nota.
     """
-    vacias = {k for k in ("ia", "effort") if not any(r.get(k) for r in rows)}
+    vacias = {k for k in ("ia", "effort", "esperas") if not any(r.get(k) for r in rows)}
     return frozenset(ocultas) | vacias if vacias else ocultas
 
 
@@ -4751,7 +4915,8 @@ def recent_rows(limite=RECENT_MAX):
     filas = filas[:limite]
     for i, f in enumerate(filas, 1):
         f["num"] = i
-    return filas
+    # una muerta puede seguir esperando una respuesta: le llega en cuanto la reanudes
+    return marcar_esperas(filas)
 
 
 def orden_reanudar(row):
@@ -4969,7 +5134,7 @@ def faltantes(snapshot, rows):
             fila.update({"num": siguiente, "faltante": True,
                          "space": ses.get("space") or fila.get("space")})
             filas.append(fila)
-    return filas
+    return marcar_esperas(filas)
 
 
 def con_faltantes(rows):

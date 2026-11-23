@@ -418,12 +418,23 @@ Everything the panel does keeps working in the table: the cursor stays on the sa
 you toggle, clicking picks the row you clicked, and filtering keeps the column header.
 
 Narrow windows drop the columns you can live without (the AI's pick first, then effort, model,
-branch, and context last) instead of squeezing every column down to unreadable; whatever's left over
-goes to the note. `Ctrl-E` lets you **hide the columns you don't look at** — state, repo, branch,
-model, effort, ai, context, last seen — and their room goes to the rest. It's remembered, and
-`ccl --list --table` follows it too. Hide the state column and the table brings back the group
-headers, so it still tells you who's waiting; and the `ai` and `effort` columns only take room
-once some session has something to put in them. Effort is yellow only on `xhigh` / `max`.
+branch, the waits, and context last) instead of squeezing every column down to unreadable; whatever's
+left over goes to the note. `Ctrl-E` lets you **hide the columns you don't look at** — state, repo,
+branch, model, effort, ai, waits, context, last seen — and their room goes to the rest. It's
+remembered, and `ccl --list --table` follows it too. Hide the state column and the table brings back
+the group headers, so it still tells you who's waiting; and the `ai`, `effort` and `wait` columns only
+take room once some session has something to put in them. Effort is yellow only on `xhigh` / `max`.
+
+The `wait` column counts the replies a session is waiting for **on Cliq or email**. It reads the
+`cliq-esperas` state file, `~/.local/state/cliq-esperas/estado.json` (or `$CLIQ_ESPERAS_DIR`), and
+only ever reads it: no file, no column. Open waits that have already had a reply count too, because
+the next message still reaches that session.
+
+The count doesn't say *who*, so the row also carries `✉ Ana×2, Luis +3` after the note: cyan for
+whoever hasn't answered yet, dim for whoever already did (the wait stays open), `×2` for two waits
+with the same person and `+N` for the ones that don't fit. Names are shortened to the first word.
+It shows even when the window is too narrow for the `wait` column, and hiding that column with
+`Ctrl-E` hides this too. Type a name in the filter and you get the sessions waiting for that person.
 
 `ccl --list --table` prints the same thing without the panel, and with no colours, so it pipes.
 
@@ -593,6 +604,8 @@ a session dies its number is freed and recycled.
 | Age | green recent → yellow → grey old |
 | Model | blue Opus · green Sonnet · grey Haiku · magenta Fable |
 | `effort` | yellow only on `xhigh` / `max` |
+| `wait` | cyan count of replies the session is waiting for on Cliq or email; empty when none |
+| `✉ Ana×2, Luis +3` | who it's waiting for: cyan hasn't answered yet, dim already did; `×2` two waits, `+3` three more |
 | red ⚠ | The session isn't in an iTerm window |
 | `⚡2` | That session has 2 Bash commands running right now |
 | red name, `same conversation as [26]` | The same conversation is open in two processes (a `claude --resume` while it was still open); both write to one transcript, so close one |

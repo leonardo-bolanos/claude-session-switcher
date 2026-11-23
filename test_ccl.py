@@ -44,6 +44,10 @@ ccl._TTY = True  # forzar colores: es lo que hace interesantes los tests de anch
 _NOTES_FILE_REAL = ccl.NOTES_FILE
 _NOTAS_TMP = tempfile.TemporaryDirectory()
 ccl.NOTES_FILE = os.path.join(_NOTAS_TMP.name, "ccl-notes.json")
+# Y tampoco las esperas reales del skill `cliq-esperas`: sin esto, `build` contaria las que
+# tenga abiertas quien ejecuta los tests, y la columna `espera` apareceria en los demas. Apunta
+# a un archivo que no existe, que es el caso de quien no usa el skill; `TestEsperas` pone el suyo.
+ccl.ESPERAS_FILE = os.path.join(_NOTAS_TMP.name, "sin-esperas", "estado.json")
 
 # El idioma se FIJA: si no, los tests heredan el locale de quien los ejecute y las
 # cadenas cambian — pasaban en una maquina con LANG=es_ES y fallaban en el CI, que corre
@@ -1534,13 +1538,32 @@ class TestColumnasOcultas(unittest.TestCase):
     def claves(ancho, multi=False, ocultas=()):
         return [k for k, _ in ccl._tabla_columnas(ancho, multi, ocultas)]
 
-    def test_sin_nada_oculto_los_umbrales_de_siempre_el_effort_y_la_ia(self):
+    def test_sin_la_de_esperas_los_umbrales_de_siempre_el_effort_y_la_ia(self):
+        sin = ("esperas",)
         for clave, umbral in (("ctx", 86), ("branch", 106), ("model", 120), ("effort", 127),
                               ("ia", 135)):
+            self.assertNotIn(clave, self.claves(umbral - 1, ocultas=sin), clave)
+            self.assertIn(clave, self.claves(umbral, ocultas=sin), clave)
+            self.assertNotIn(clave, self.claves(umbral + 10, True, sin), f"{clave} multi")
+            self.assertIn(clave, self.claves(umbral + 11, True, sin), f"{clave} multi")
+
+    def test_con_la_de_esperas_las_de_detras_corren_siete_columnas(self):
+        """Entra justo detras de ctx, y rama, modelo, effort e `ia` se corren lo que ocupa."""
+        for clave, umbral in (("ctx", 86), ("esperas", 93), ("branch", 113), ("model", 127),
+                              ("effort", 134), ("ia", 142)):
             self.assertNotIn(clave, self.claves(umbral - 1), clave)
             self.assertIn(clave, self.claves(umbral), clave)
             self.assertNotIn(clave, self.claves(umbral + 10, True), f"{clave} multi")
             self.assertIn(clave, self.claves(umbral + 11, True), f"{clave} multi")
+
+    def test_las_esperas_van_antes_del_contexto_y_se_pueden_esconder(self):
+        cols = self.claves(200)
+        self.assertEqual(cols.index("esperas"), cols.index("ctx") - 1)
+        self.assertIn("esperas", ccl.COLUMNAS_OCULTABLES)
+        self.assertNotIn("esperas", self.claves(200, ocultas=("esperas",)))
+        # y esconderla le devuelve su sitio a la rama, que vuelve a caber a 106
+        self.assertNotIn("branch", self.claves(106))
+        self.assertIn("branch", self.claves(106, ocultas=("esperas",)))
 
     def test_el_effort_va_detras_del_modelo_y_la_ia_detras(self):
         cols = self.claves(200)
@@ -1566,8 +1589,10 @@ class TestColumnasOcultas(unittest.TestCase):
         self.assertIn(" " + ccl.t("col_effort") + " ", cabecera())
 
     def test_esconder_una_le_hace_sitio_a_las_demas(self):
-        self.assertNotIn("model", self.claves(110))
-        self.assertIn("model", self.claves(110, ocultas={"branch"}))
+        # sobre la base sin `esperas` (que corre los umbrales siete columnas) para que
+        # los anchos sean los de siempre; el mecanismo es el mismo con ella
+        self.assertNotIn("model", self.claves(110, ocultas={"esperas"}))
+        self.assertIn("model", self.claves(110, ocultas={"esperas", "branch"}))
         self.assertNotIn("ctx", self.claves(80))
         self.assertIn("ctx", self.claves(80, ocultas={"estado"}))
         self.assertNotIn("repo", self.claves(200, ocultas={"repo"}))
@@ -1582,7 +1607,7 @@ class TestColumnasOcultas(unittest.TestCase):
         r = row(1, "a", "idle", ts=iso(days=40))
         r.update(ctx=412000, ctx_ventana=1000000, ia="sonnet", model="opus-5-5", effort="medium",
                  branch="feature/larguisima", account="trabajo", prompt="x" * 300,
-                 note="nota")
+                 note="nota", esperas=12)
         for n in range(len(ccl.COLUMNAS_OCULTABLES) + 1):
             for ocultas in itertools.combinations(ccl.COLUMNAS_OCULTABLES, n):
                 for ancho in (40, 80, 97, 119, 127, 135, 160):
@@ -5108,9 +5133,10 @@ class TestMainLine(unittest.TestCase):
         aviso = ccl.t("duplicada", nums="[26]")
         self.assertTrue(ccl.ANSI_RE.sub("", ccl.detail_line(original)).startswith(aviso),
                         "va PRIMERO: al final se lo comeria el recorte")
-        # sin la columna de la IA, que en el panel se esconde sola si va vacia
+        # sin las columnas de la IA y de las esperas, que en el panel se esconden solas
+        # si van vacias
         self.assertIn(aviso, ccl.ANSI_RE.sub("", ccl.table_line(original, 140,
-                                                                 ocultas={"ia"})))
+                                                                 ocultas={"ia", "esperas"})))
         self.assertNotIn(ccl.t("duplicada", nums="")[:10],
                          ccl.ANSI_RE.sub("", ccl.detail_line(otra)))
 
@@ -5119,6 +5145,271 @@ class TestMainLine(unittest.TestCase):
         viva, muerta = self.r(num=1), self.r(num=2, recoverable=True)
         ccl.marcar_duplicadas([viva, muerta])
         self.assertEqual((viva["duplicada"], muerta["duplicada"]), ([], []))
+
+
+# ───────── la columna `espera`: respuestas que espera por Cliq o correo (skill cliq-esperas) ─────────
+
+
+class _EsperasBase(unittest.TestCase):
+    """Un `estado.json` de mentira en un temporal. Sin tests propios: los heredan las de abajo."""
+
+    AHORA = 1_800_000_000_000   # ms, fijo: nada depende del reloj
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.orig = ccl.ESPERAS_FILE
+        ccl.ESPERAS_FILE = os.path.join(self.tmp.name, "estado.json")
+
+    def tearDown(self):
+        ccl.ESPERAS_FILE = self.orig
+        self.tmp.cleanup()
+
+    def espera(self, estado="abierta", sid="sid-a", nombre="a", canal="cliq", hasta=None,
+               quien="Una Persona", email="x@y.z", desde=0, chat=None):
+        w = {"id": "e1", "session": nombre, "estado": estado, "canal": canal,
+             "until_ms": self.AHORA + 86_400_000 if hasta is None else hasta,
+             "since_ms": desde, "name": quien, "email": email,
+             # lo que NO se lee: tiene que dar igual
+             "topic": "algo privado"}
+        if sid:
+            w["session_id"] = sid
+        if chat:
+            w["chat_id"] = chat
+        return w
+
+    def escribir(self, *esperas):
+        with open(ccl.ESPERAS_FILE, "w") as fh:
+            json.dump({"version": 1, "esperas": list(esperas), "router": {}}, fh)
+
+    def contar(self):
+        """`({sessionId: n}, {nombre: n})`: lo que `esperas_abiertas` agrupa, contado."""
+        por_sid, por_nombre = ccl.esperas_abiertas(self.AHORA)
+        return ({k: len(v) for k, v in por_sid.items()},
+                {k: len(v) for k, v in por_nombre.items()})
+
+
+class TestEsperas(_EsperasBase):
+    """Se lee el `estado.json` del skill `cliq-esperas`: un contrato externo, solo lectura."""
+
+    def test_sin_archivo_no_hay_esperas(self):
+        self.assertFalse(os.path.exists(ccl.ESPERAS_FILE))
+        self.assertEqual(self.contar(), ({}, {}))
+
+    def test_un_archivo_roto_o_de_otra_forma_no_revienta(self):
+        for contenido in ("{no es json", "[]", '{"esperas": {"a": 1}}',
+                          '{"esperas": [1, "x", null, []]}'):
+            with open(ccl.ESPERAS_FILE, "w") as fh:
+                fh.write(contenido)
+            self.assertEqual(self.contar(), ({}, {}), contenido)
+
+    def test_cuenta_las_abiertas_y_las_recibidas_y_nada_mas(self):
+        """`recibida` ya trajo una respuesta pero sigue abierta: son las `OPEN_STATES` del skill."""
+        self.escribir(self.espera("abierta"), self.espera("recibida"),
+                      self.espera("cerrada"), self.espera("vencida"))
+        self.assertEqual(self.contar(), ({"sid-a": 2}, {}))
+
+    def test_cliq_y_correo_suman(self):
+        """El canal no distingue: una espera de correo es una espera. Y las viejas no traen canal."""
+        self.escribir(self.espera(canal="cliq"), self.espera(canal="gmail"),
+                      self.espera(canal=None))
+        self.assertEqual(self.contar(), ({"sid-a": 3}, {}))
+
+    def test_una_vencida_por_fecha_no_cuenta_aunque_el_router_no_la_haya_marcado(self):
+        self.escribir(self.espera(hasta=self.AHORA - 1), self.espera(hasta=self.AHORA + 1))
+        self.assertEqual(self.contar(), ({"sid-a": 1}, {}))
+
+    def test_por_id_y_el_nombre_es_el_respaldo_solo_de_las_que_no_traen_id(self):
+        """Con id y nombre se cuenta UNA vez, por id: por nombre saldria dos."""
+        self.escribir(self.espera(sid="x", nombre="n"), self.espera(sid=None, nombre="vieja"))
+        self.assertEqual(self.contar(), ({"x": 1}, {"vieja": 1}))
+
+    def test_marcar_va_por_conversacion_y_las_dos_copias_llevan_lo_mismo(self):
+        self.escribir(self.espera(sid="sid-a"), self.espera(sid="sid-a", canal="gmail"),
+                      self.espera(sid=None, nombre="s3"))
+        copia, original = row(1, "sid-a"), row(2, "sid-a")
+        por_nombre, ninguna = row(3, "sid-c"), row(4, "sid-d")
+        ccl.marcar_esperas([copia, original, por_nombre, ninguna])
+        self.assertEqual([r["esperas"] for r in (copia, original, por_nombre, ninguna)],
+                         [2, 2, 1, 0])
+
+    def test_las_recibe_la_fila_de_build(self):
+        self.escribir(self.espera(sid="sid-a"), self.espera(sid="sid-a"))
+        sesiones = [{"sessionId": "sid-a", "name": "a", "cwd": "/x", "pid": 1},
+                    {"sessionId": "sid-b", "name": "b", "cwd": "/x", "pid": 2}]
+        filas = ccl.build(sesiones, {}, {}, {"sid-a": 1, "sid-b": 2})
+        self.assertEqual({f["sessionId"]: f["esperas"] for f in filas},
+                         {"sid-a": 2, "sid-b": 0})
+        self.assertEqual([(p["quien"], p["n"]) for p in filas[0]["esperando_a"]],
+                         [("Una", 2)])
+        self.assertEqual(filas[1]["esperando_a"], [])
+
+    def test_tambien_las_que_faltan_de_una_foto(self):
+        """Una sesion muerta puede seguir esperando: la respuesta le llega al reanudarla."""
+        self.escribir(self.espera(sid="muerta"))
+        foto = {"sesiones": [{"sessionId": "muerta", "cwd": self.tmp.name, "name": "m",
+                              "cfg": None}]}
+        self.assertEqual(ccl.faltantes(foto, [])[0]["esperas"], 1)
+
+    def test_la_celda_va_vacia_sin_esperas_y_en_cian_con_ellas(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        self.assertEqual(ccl.marca_esperas(r), "")
+        r["esperas"] = 0
+        self.assertEqual(ccl.marca_esperas(r), "")
+        r["esperas"] = 4
+        self.assertEqual(ccl.marca_esperas(r), ccl.CYAN("4"))
+
+    def test_va_bajo_su_cabecera(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r["esperas"] = 7
+        cabecera = ccl.ANSI_RE.sub("", ccl.table_head(160, False))
+        fila = ccl.ANSI_RE.sub("", ccl.table_line(r, 160, False))
+        self.assertEqual(fila.index("7"), cabecera.index(ccl.t("col_esperas")))
+
+    def test_no_desborda_ni_con_un_numero_enorme(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        r.update(esperas=10**9, prompt="x" * 400)
+        for ancho in (80, 93, 100, 120, 160):
+            for multi in (False, True):
+                self.assertLessEqual(ccl.vis(ccl.table_line(r, ancho, multi)), ancho,
+                                     f"ancho={ancho} multi={multi}")
+
+    def test_la_columna_solo_existe_si_alguna_sesion_espera_algo(self):
+        """Sin archivo, o con todas a cero, seria una columna vacia que es de la nota."""
+        filas = [row(1, "a"), row(2, "b")]
+        for r in filas:
+            r["esperas"] = 0
+        self.assertIn("esperas", ccl.ocultas_de_verdad(filas, frozenset()))
+        self.assertIn("esperas", ccl.ocultas_de_verdad([row(3, "c")], frozenset()),
+                      "una fila sin la clave (la de un `collect` parcheado) tampoco")
+        filas[1]["esperas"] = 2
+        self.assertNotIn("esperas", ccl.ocultas_de_verdad(filas, frozenset()))
+        # y si la escondiste a mano, sigue escondida aunque haya
+        self.assertIn("esperas", ccl.ocultas_de_verdad(filas, frozenset({"esperas"})))
+
+
+class TestEsperandoA(_EsperasBase):
+    """DE QUIEN espera respuesta cada sesion: lo que `espera` solo cuenta."""
+
+    def quienes(self, *esperas):
+        return ccl.personas_que_esperan(list(esperas))
+
+    def fila(self, *esperas):
+        r = row(1, "sid-a", "idle", ts=iso(minutes=1))
+        r.update(esperando_a=self.quienes(*esperas), esperas=len(esperas))
+        return r
+
+    def plano(self, texto):
+        return ccl.ANSI_RE.sub("", texto)
+
+    def test_agrupa_por_persona_aunque_cambien_las_mayusculas_del_correo(self):
+        a1 = self.espera(quien="Ana Perez Gil", email="ana@x.co", desde=3)
+        a2 = self.espera("recibida", quien="Ana Perez Gil", email="ANA@x.co", desde=1)
+        b = self.espera(quien="Luis Mora Diaz", email="luis@x.co", desde=2)
+        gente = self.quienes(a1, a2, b)
+        self.assertEqual([(p["quien"], p["n"]) for p in gente], [("Ana", 2), ("Luis", 1)])
+        self.assertEqual(gente[0]["nombre"], "Ana Perez Gil", "el completo, para buscar")
+
+    def test_los_que_ya_contestaron_van_detras_de_los_que_faltan(self):
+        """`recibida`: ya llego una respuesta, aunque la espera siga abierta."""
+        ya = self.espera("recibida", quien="Ya Contesto", email="ya@x.co", desde=9)
+        falta = self.espera("abierta", quien="Falta Aun", email="falta@x.co", desde=1)
+        gente = self.quienes(ya, falta)
+        self.assertEqual([(p["quien"], p["pendiente"]) for p in gente],
+                         [("Falta", True), ("Ya", False)])
+
+    def test_una_persona_con_una_abierta_y_una_recibida_sigue_pendiente(self):
+        gente = self.quienes(self.espera("recibida", email="a@x.co"),
+                             self.espera("abierta", email="a@x.co"))
+        self.assertEqual([p["pendiente"] for p in gente], [True])
+
+    def test_entre_iguales_la_mas_reciente_primero(self):
+        gente = self.quienes(self.espera(quien="Vieja Uno", email="v@x.co", desde=1),
+                             self.espera(quien="Nueva Dos", email="n@x.co", desde=2))
+        self.assertEqual([p["quien"] for p in gente], ["Nueva", "Vieja"])
+
+    def test_el_nombre_va_corto_y_solo_se_alarga_si_dos_chocan(self):
+        gente = self.quienes(self.espera(quien="Carlos Ruiz Pena", email="c1@x.co"),
+                             self.espera(quien="Carlos Mora Diaz", email="c2@x.co"),
+                             self.espera(quien="Ana Gil", email="a@x.co"))
+        self.assertEqual(sorted(p["quien"] for p in gente), ["Ana", "Carlos D.", "Carlos P."])
+
+    def test_sin_nombre_cae_al_correo_y_un_grupo_se_dice_grupo(self):
+        gente = self.quienes(self.espera(quien="", email="jhon.fabin@x.co", desde=2),
+                             self.espera(quien="", email="", chat="chat-9", desde=1))
+        self.assertEqual([p["quien"] for p in gente], ["jhon.fabin", ccl.t("esperando_chat")])
+
+    def test_dos_grupos_distintos_no_se_funden(self):
+        gente = self.quienes(self.espera(quien="", email="", chat="g1"),
+                             self.espera(quien="", email="", chat="g2"))
+        self.assertEqual(len(gente), 2)
+
+    def test_lo_que_viene_de_fuera_se_pinta_sin_control(self):
+        """El nombre sale de Cliq: un `ESC[2A` reescribiria la fila de OTRA sesion."""
+        gente = self.quienes(self.espera(quien="Ana\x1b[2A\x07 Gil", email="a@x.co"))
+        self.assertNotIn("\x1b", gente[0]["quien"] + gente[0]["nombre"])
+        self.assertNotIn("\x07", gente[0]["quien"] + gente[0]["nombre"])
+
+    def test_la_marca_dice_los_nombres_y_cuantas_veces(self):
+        r = self.fila(self.espera(quien="Ana Gil", email="a@x.co", desde=3),
+                      self.espera(quien="Ana Gil", email="a@x.co", desde=2),
+                      self.espera(quien="Luis Mora", email="l@x.co", desde=1))
+        self.assertEqual(self.plano(ccl.marca_esperando_a(r)), "✉ Ana×2, Luis")
+
+    def test_con_mas_de_tres_personas_dice_cuantas_quedan_sin_nombrar(self):
+        r = self.fila(*[self.espera(quien=f"Pers{i} X", email=f"p{i}@x.co", desde=i)
+                        for i in range(6)])
+        self.assertEqual(self.plano(ccl.marca_esperando_a(r)),
+                         "✉ Pers5, Pers4, Pers3 +3")
+
+    def test_los_pendientes_en_cian_y_los_que_ya_contestaron_apagados(self):
+        r = self.fila(self.espera("abierta", quien="Falta Aun", email="f@x.co"),
+                      self.espera("recibida", quien="Ya Contesto", email="y@x.co"))
+        marca = ccl.marca_esperando_a(r)
+        self.assertIn(ccl.CYAN("Falta"), marca)
+        self.assertIn(ccl.DIM("Ya"), marca)
+
+    def test_sin_esperas_no_marca_nada(self):
+        r = row(1, "a", "idle", ts=iso(minutes=1))
+        self.assertEqual(ccl.marca_esperando_a(r), "", "una fila sin la clave")
+        r["esperando_a"] = []
+        self.assertEqual(ccl.marca_esperando_a(r), "")
+
+    def test_la_tabla_los_pone_en_la_cola_y_esconder_la_columna_los_esconde(self):
+        r = self.fila(self.espera(quien="Ana Gil", email="a@x.co"))
+        r["prompt"] = "hola"
+        con = self.plano(ccl.table_line(r, 160, False))
+        self.assertIn("✉ Ana", con)
+        self.assertLess(con.index("✉ Ana"), con.index('"hola"'),
+                        "antes del prompt, que es lo primero que se recorta")
+        self.assertNotIn("✉", self.plano(ccl.table_line(r, 160, False,
+                                                         ocultas={"esperas"})))
+
+    def test_tambien_cuando_la_columna_no_cabe_en_una_ventana_estrecha(self):
+        r = self.fila(self.espera(quien="Ana Gil", email="a@x.co"))
+        self.assertNotIn("esperas", [k for k, _ in ccl._tabla_columnas(80, False)])
+        self.assertIn("✉ Ana", self.plano(ccl.table_line(r, 80, False)))
+
+    def test_con_muchas_personas_ninguna_fila_desborda(self):
+        r = self.fila(*[self.espera(quien=f"Persona{i} Muy Larga", email=f"p{i}@x.co")
+                        for i in range(9)])
+        r.update(prompt="x" * 400, note="nota", account="trabajo", branch="rama-larga")
+        for ancho in (40, 80, 93, 100, 120, 160):
+            for multi in (False, True):
+                self.assertLessEqual(ccl.vis(ccl.table_line(r, ancho, multi)), ancho,
+                                     f"ancho={ancho} multi={multi}")
+        self.assertLessEqual(ccl.vis(ccl.detail_line(r, 60)), 60)
+
+    def test_la_vista_de_dos_lineas_tambien_los_dice(self):
+        r = self.fila(self.espera(quien="Ana Gil", email="a@x.co"))
+        self.assertIn("✉ Ana", self.plano(ccl.detail_line(r)))
+
+    def test_se_encuentra_una_sesion_por_la_persona_que_espera(self):
+        """Filtrar por un nombre contesta a "¿quien me espera a mi con Maria?"."""
+        r = self.fila(self.espera(quien="Maria Fernanda Lopez", email="m@x.co"))
+        self.assertTrue(ccl.matches(r, "fernanda"))
+        self.assertTrue(ccl.matches(r, "maria lopez"))
+        self.assertTrue(ccl.matches(r, "MARÍA"), "sin acentos ni mayusculas, como el resto")
+        self.assertFalse(ccl.matches(r, "pedro"))
 
 
 if __name__ == "__main__":
