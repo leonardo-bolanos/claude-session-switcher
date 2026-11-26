@@ -36,3 +36,4 @@ construido y sus trampas viven en `CLAUDE.md` y en los skills de `.claude/skills
 | 003 | [Sesiones aparcadas en un job de fondo](003-sesiones-aparcadas.md) | implementada (1.5.1) |
 | 004 | [Cuánto contexto lleva cada sesión](004-contexto-por-sesion.md) | implementada (1.6.0) |
 | 005 | [El modelo que recomienda la IA, y columnas a la carta](005-modelo-recomendado-y-columnas.md) | implementada (1.6.0) |
+| 006 | [`ccl` en WSL, saltando por tmux](006-wsl-con-tmux.md) | borrador |

@@ -6,16 +6,15 @@ esto son las trampas que no se ven leyendo el código.
 
 ## Flujo de git
 
-**Se trabaja sobre `master` y se commitea ahí directamente.** Es un proyecto de un solo autor:
-no hay PR que revisar ni nadie a quien no romperle la rama.
+**El dueño del repo (`leonardo-bolanos`) trabaja sobre `master` y commitea ahí directamente.**
 
-Si por lo que sea el trabajo acabó en una rama, el cierre es siempre el mismo: mergear a `master`
-(en fast-forward, el historial va lineal), empujar, y **borrar la rama en local y en remoto**. No
-se dejan ramas colgando.
+**Cualquier otra persona trabaja en una rama y abre un PR contra `master`**; no empuja a
+`master`. Hoy es Jhonatan Ibarra (`jhondil`), con el soporte de WSL (specs/006). Quién eres lo
+dice `gh api user --jq .login`. El dueño mergea el PR en fast-forward (el historial va lineal)
+y borra la rama en local y en remoto: no se dejan ramas colgando.
 
 Antes de empujar, las dos suites en verde: `python3 test_ccl.py` y `python3 test_panel.py`.
-El CI **solo se dispara con push a `master`** (o con un PR), asi que empujar a una rama no prueba
-nada.
+El CI se dispara con push a `master` o con un PR: empujar a una rama sin PR no prueba nada.
 
 ## Trampas verificadas
 
